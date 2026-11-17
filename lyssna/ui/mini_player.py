@@ -101,7 +101,7 @@ DISC = 30.0       # the small stand-alone buttons
 DOCK_GAP_V = 6.0  # between the discs and the capsule
 CAPSULE_MAIN_H = 12 + BAR_H + 10 + DOCK_SKIP + 4 + DOCK_PLAY + 4 + DOCK_SKIP + 10  # 130
 DOCK_H = CAPSULE_MAIN_H + (DOCK_GAP_V + DISC) * 2  # 202
-DOCK_GAP = 6.0    # distance from the screen edge when the control pill is open
+DOCK_GAP = 10.0   # distance from the screen edge when the control pill is open
 SNAP = 48.0       # drop within this many points of a screen edge to dock
 
 HOVER_SECS = 0.18

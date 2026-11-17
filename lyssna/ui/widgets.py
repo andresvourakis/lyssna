@@ -21,9 +21,9 @@ KNOB = 14.0       # playhead knob shown while hovering / scrubbing the bar
 
 # Resting capsule: a slim progress sliver flush with the screen edge. The window is a bit
 # wider than the drawn capsule so a cursor pushed against the edge still hovers it.
-SLIVER_W, SLIVER_H = 20.0, 64.0
+SLIVER_W, SLIVER_H = 26.0, 64.0
 CAPSULE_W, CAPSULE_H = 8.0, 56.0
-CAPSULE_INSET = 5.0  # from the screen edge
+CAPSULE_INSET = 10.0  # from the screen edge
 
 
 def clear_glow():
