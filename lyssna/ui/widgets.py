@@ -279,13 +279,11 @@ class Sliver(AppKit.NSView):
     the whole fill dims. Transparent around the capsule.
 
 At rest (set_rest(True), the idle pill when nothing plays) it is the same capsule with no fill
-at all: the content colour at a low, calm alpha, and nothing animating.
+at all: the same track colour as while reading, and nothing animating.
 
 On the bottom edge (edge "bottom") the view is SLIVER_H wide and SLIVER_W tall and the whole
 capsule layer is turned a quarter clockwise, so the fill grows from the left and the sparks
 drift right: the same layers, lying flat."""
-
-    REST_ALPHA = 0.22  # the resting capsule's tint
 
     CAP = 7.0      # height of the waterline glow
     BLOOM = 22.0   # diameter of the sentence bloom
@@ -413,7 +411,7 @@ drift right: the same layers, lying flat."""
         self.capsule.setBorderColor_(theme.HAIRLINE.CGColor())
         self.clip.setHidden_(self.rest)
         if self.rest:
-            self.capsule.setBackgroundColor_(theme.content(self.REST_ALPHA).CGColor())
+            self.capsule.setBackgroundColor_(theme.surface(0.97).CGColor())
             Quartz.CATransaction.commit()
             _freeze(self.body)
             _freeze(self.cap)
