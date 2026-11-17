@@ -71,6 +71,11 @@ class Cleaner:
     def recipient(self) -> str:
         return self.vendor or self.label
 
+    def check_key(self) -> str:
+        """Prove the key works with one request that costs nothing. "" when it works, else a
+        short message for the user. Cleaners without such a request say so."""
+        return f"Lyssna can't check a {self.vendor or self.label} key here yet."
+
     def clean(self, raw: str, terms: Sequence[str] = (), budget_s: float = 0.0) -> str | None:
         raise NotImplementedError
 

@@ -6,8 +6,8 @@ preferences (defaults domain) read as unset unless a test fakes them. The Kokoro
 live under the temp dir too, and nothing may download them or load onnxruntime: the HTTP
 client and the model loader refuse unless a test fakes them.
 Dictation is kept off the machine the same way: its vocabulary and model files live under the
-temp dir, the speech and cleanup models cannot load, and httpx.post (every online engine)
-refuses unless a test fakes it. Tests that need a config file write their own on top of this."""
+temp dir, the speech and cleanup models cannot load, and httpx.post and httpx.get (every
+online engine, and the key checks) refuse unless a test fakes them. Tests that need a config file write their own on top of this."""
 
 import httpx
 import pytest
@@ -148,4 +148,5 @@ def offline_dictation(isolated_paths, monkeypatch):
     monkeypatch.setattr(s1mini, "_loading", None)
     monkeypatch.setattr(s1mini, "_timer", None)
     monkeypatch.setattr(httpx, "post", no_network)
+    monkeypatch.setattr(httpx, "get", no_network)
     return isolated_paths / "state" / "dictation"

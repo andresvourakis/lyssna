@@ -20,12 +20,14 @@ import httpx
 
 from ... import usage
 from ...providers.base import error_summary
+from ..transcribers.base import check_key_request
 from . import prompt
 from .base import Cleaner, max_output_tokens
 
 log = logging.getLogger("lyssna.dictation")
 
 URL = "https://api.anthropic.com/v1/messages"
+MODELS_URL = "https://api.anthropic.com/v1/models?limit=1"  # the key check: authenticated, costs nothing
 API_VERSION = "2026-10-21"
 TIMEOUT = 10.0
 MAX_TOKENS_CEILING = 1024
@@ -65,6 +67,11 @@ class HaikuCleaner(Cleaner):
     @property
     def model(self) -> str:
         return self.cfg.get("model") or self.default_model
+
+    def check_key(self) -> str:
+        """List one model: authenticated and free (no tokens), so a wrong key fails at no cost."""
+        headers = {"x-api-key": self.api_key, "anthropic-version": API_VERSION}
+        return check_key_request(self.name, self.vendor, MODELS_URL, headers)
 
     def clean(self, raw: str, terms: Sequence[str] = (), budget_s: float = 0.0) -> str | None:
         if not raw.strip():

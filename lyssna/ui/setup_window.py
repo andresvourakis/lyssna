@@ -4,25 +4,35 @@
     2  Choose a voice                       the free voice on this Mac (download, progress, ready)
                                             or the user's own API key (engine, Get a key, Save)
     3  Try it                               the speak shortcut and a Read a Sample button
+    4  Dictate                              the dictation keys, microphone access, the Globe key
+                                            setting, and the engines: the speech models on this
+                                            Mac (download, progress, ready) or the user's own
+                                            OpenAI and Anthropic keys (Get a key, Save)
 
 Why one window and not alerts: a new user had one dense alert and then had to find
 everything in the menu. Here every step shows its state, errors appear inline, and steps 2
 and 3 work before Accessibility is granted (the sample goes through speak_text, not the
 selection).
 
-It is a regular titled window, not a floating panel: it takes the keyboard (the key field),
-centres on the screen under the mouse and closing it never quits the app. Lyssna is an
+It is a regular titled window, not a floating panel: it takes the keyboard (the key fields),
+centres on the screen under the mouse and closing it never quits the app. When the steps are
+taller than the screen, the window stops at the screen's height and scrolls. Lyssna is an
 accessory app with no Edit menu, so the window handles the editing shortcuts itself, or
 Cmd+V would do nothing in the key field.
 
 Colours are the brand cream and ink from theme.py (green and red only for success and
 error), all dynamic, so it follows light and dark mode. Buttons and radios are drawn here
-rather than left to the system, whose versions take the blue accent colour."""
+rather than left to the system, whose versions take the blue accent colour.
+
+Nothing here waits: key questions go through the controller's non-blocking checks (the
+Keychain may be waiting on a password prompt), and the Globe key setting, which takes a
+`defaults` call to read, is read on a worker thread a few times a minute."""
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 
 import AppKit
@@ -39,6 +49,7 @@ from AppKit import (
     NSImageView,
     NSPopUpButton,
     NSProgressIndicator,
+    NSScrollView,
     NSSecureTextField,
     NSTextField,
     NSView,
@@ -47,8 +58,12 @@ from AppKit import (
 )
 from Foundation import NSURL, NSInsetRect, NSMakeRect, NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 
+from ..controller import KEYBOARD_SETTINGS_URL, MIC_SETTINGS_URL
+from ..dictation import cleaners, transcribers
+from ..dictation.hotkey import globe_key_action
 from ..events import accessibility_trusted
 from ..hotkeys import pretty, tokens
+from ..menu import key_name
 from ..providers import REGISTRY, allowed, kokoro
 from . import theme
 from .mainthread import on_main
@@ -73,6 +88,13 @@ PILL_PAD = 14.0    # title to pill edge
 RADIO = 16.0       # the drawn radio circle; its image is INDENT wide, so the title lines up with the text below
 FIELD_H = 26.0     # the key field's box, level with the Save pill beside it
 POLL = 0.3         # seconds between live status checks while the window is open
+GLOBE_POLL = 2.0   # seconds between reads of the Globe key setting (a `defaults` call)
+SCREEN_GAP = 48.0  # room kept free above and below the window on a short screen
+PENDING = "exclamationmark.circle"  # beside a dictation check that still needs doing (a plain circle reads as a radio)
+
+# The online dictation engines the dictation step takes keys for, with the job each does.
+DICTATION_KEYS = (("openai", "transcription"), ("haiku", "cleanup"))
+DICTATION_KEY_ENGINES = tuple(name for name, _ in DICTATION_KEYS)
 
 # Editing shortcuts an accessory app gets no menu for: key -> selector sent down the responder chain.
 _EDIT_KEYS = {"x": "cut:", "c": "copy:", "v": "paste:", "a": "selectAll:", "z": "undo:"}
@@ -219,6 +241,26 @@ def _radio(title: str, target, action: str) -> NSButton:
     return b
 
 
+def _size_text(n_bytes: int) -> str:
+    """A download size the way Finder writes it: "about 1.1 GB", "about 660 MB"."""
+    if n_bytes >= 1_000_000_000:
+        return f"about {n_bytes / 1e9:.1f} GB"
+    return f"about {max(10, round(n_bytes / 1e7) * 10)} MB"
+
+
+def _engine_class(name: str):
+    return transcribers.REGISTRY.get(name) or cleaners.REGISTRY[name]
+
+
+class _KeyRow:
+    """One dictation engine's key: its heading, Get a key, the field, Save and the status."""
+
+    def __init__(self, name: str, job: str):
+        self.name, self.job = name, job
+        self.message = ("", "secondary")  # inline note under the field: (text, tone)
+        self.saving = False
+
+
 def _fit(view, width: float | None = None) -> tuple[float, float]:
     """Size a view to its content (wrapping labels to `width`) and return that size."""
     if width is not None and isinstance(view, NSTextField):
@@ -248,17 +290,25 @@ class SetupWindow(NSObject):
         self._saving = False
         self._key_message = ("", "secondary")  # inline note under the key field: (text, tone)
         self._shape = None  # which rows were visible at the last layout
+        self.globe_action: Callable[[], str] = globe_key_action  # read on a worker thread
+        self._globe = "unknown"  # the last answer
+        self._globe_read_at = 0.0
+        self._globe_busy = False
+        self.key_rows = [_KeyRow(name, job) for name, job in DICTATION_KEYS]
         return self
 
     # -- showing -----------------------------------------------------------------------
 
     @objc.python_method
-    def show(self, engine: str | None = None) -> None:
-        """Bring the window up (building it the first time). `engine` preselects that engine
-        under "Use my own API key", for the menu's key entries."""
+    def show(self, engine: str | None = None, dictation: str | None = None) -> None:
+        """Bring the window up (building it the first time). `engine` preselects that voice
+        engine under "Use my own API key", for the menu's key entries; `dictation` picks the
+        online dictation option and puts the cursor in that engine's key field."""
         if self.window is None:
             self._build()
         self._choose_radio(engine)
+        self._choose_dictation(dictation)
+        self._read_globe(force=True)
         self._refresh(force=True)
         if not self.window.isVisible():
             vf = screen_under_mouse().visibleFrame()
@@ -268,8 +318,14 @@ class SetupWindow(NSObject):
             self.window.setFrameOrigin_((round(x), round(y)))
         NSApp.activateIgnoringOtherApps_(True)
         self.window.makeKeyAndOrderFront_(None)
-        if engine is not None and self.key_field.isEnabled():
+        row = next((r for r in self.key_rows if r.name == dictation), None)
+        if row is not None and not row.box.isHidden():
+            self.content.scrollRectToVisible_(NSInsetRect(row.box.frame(), 0, -96))
+            self.window.makeFirstResponder_(row.field)
+        elif engine is not None and self.key_field.isEnabled():
             self.window.makeFirstResponder_(self.key_field)
+        else:
+            self.content.scrollPoint_((0, 0))
         if self._timer is None:
             self._timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(POLL, self, "tick:", None, True)
             NSRunLoop.mainRunLoop().addTimer_forMode_(self._timer, NSRunLoopCommonModes)
@@ -294,9 +350,18 @@ class SetupWindow(NSObject):
         win.setBackgroundColor_(theme.SURFACE)
         win.setReleasedWhenClosed_(False)  # we keep it and show it again from the menu
         win.setDelegate_(self)
+        # The steps sit in a scroll view: on a short screen the window stops at its height.
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, W, 400))
+        scroll.setDrawsBackground_(False)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setScrollerStyle_(AppKit.NSScrollerStyleOverlay)
+        scroll.contentView().setDrawsBackground_(False)
         content = FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, W, 400))
-        win.setContentView_(content)
+        scroll.setDocumentView_(content)
+        win.setContentView_(scroll)
         self.window = win
+        self.scroll = scroll
         self.content = content
         secondary = theme.CONTENT_DIM
 
@@ -307,8 +372,8 @@ class SetupWindow(NSObject):
         self.mark = add(MarkView.make(MARK_H))
         self.title = add(_label("Welcome to Lyssna", 20))
         self.title.setFont_(_serif(20))
-        self.subtitle = add(_wrapping("Lyssna reads text aloud. Three quick steps and you are set. "
-                                      "You can come back here any time from the menu.", 13))
+        self.subtitle = add(_wrapping("Lyssna reads text aloud and types what you say. A few quick steps "
+                                      "and you are set. You can come back here any time from the menu.", 13))
 
         # Step 1
         self.icon1 = add(NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, ICON, ICON)))
@@ -339,33 +404,13 @@ class SetupWindow(NSObject):
         self.popup.setTarget_(self)
         self.popup.setAction_("pickEngine:")
         self.popup.sizeToFit()
-        self.get_key = add(_button("Get a key", self, "getKey:"))
-        self.get_key.setImage_(_symbol("arrow.up.right", 10, AppKit.NSFontWeightSemibold))
-        self.get_key.setImagePosition_(AppKit.NSImageTrailing)
-        self.get_key.setImageHugsTitle_(True)
-        self.get_key.sizeToFit()
-        # The field sits borderless inside a hairline box: the system bezel has no brand colours.
-        self.key_box = add(TintedView.make(NSMakeRect(0, 0, 260, FIELD_H), theme.SURFACE, 6.0, theme.HAIRLINE))
-        self.key_field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 22))
-        self.key_field.setPlaceholderString_("Paste your API key")
-        self.key_field.setTarget_(self)
-        self.key_field.setAction_("saveKey:")
-        self.key_field.setBezeled_(False)
-        self.key_field.setBordered_(False)
-        self.key_field.setDrawsBackground_(False)
-        self.key_field.setFocusRingType_(AppKit.NSFocusRingTypeNone)  # the caret shows focus; a ring would be blue
-        self.key_field.setFont_(_font(13))
-        self.key_field.setTextColor_(theme.CONTENT)
-        self.key_field.cell().setUsesSingleLineMode_(True)
-        self.key_field.cell().setScrollable_(True)
-        self.key_box.addSubview_(self.key_field)
+        self.get_key = add(self._get_key_button("getKey:"))
+        self.key_box, self.key_field = self._key_field("saveKey:")
+        add(self.key_box)
         self.save = add(_button("Save", self, "saveKey:"))
-        self.spinner = add(NSProgressIndicator.alloc().initWithFrame_(NSMakeRect(0, 0, 16, 16)))
-        self.spinner.setStyle_(AppKit.NSProgressIndicatorStyleSpinning)
-        self.spinner.setControlSize_(AppKit.NSControlSizeSmall)
-        self.spinner.setDisplayedWhenStopped_(False)
+        self.spinner = add(self._spinner())
         self.key_status = add(_wrapping("", 12))
-        self.local_only_note = add(_wrapping("Online voices are off because \u201cOnly Use Voices on This Mac\u201d is on."))
+        self.local_only_note = add(_wrapping("Online voices are off because \u201cKeep Everything on This Mac\u201d is on."))
         self.sep2 = add(self._separator())
 
         # Step 3
@@ -375,49 +420,139 @@ class SetupWindow(NSObject):
         self.keycap = add(self._keycap(self.ctl.cfg["hotkeys"]["speak"]))
         self.sample = add(_button("Read a Sample", self, "sample:"))
         self.try_note = add(_wrapping("The shortcut works once step 1 is done. The sample works now."))
+        self.sep3 = add(self._separator())
+
+        # Step 4
+        section = self.ctl.cfg.get("dictation", {})
+        hotkey = str(section.get("hotkey", "fn"))
+        self.icon4 = add(NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, ICON, ICON)))
+        self.head4 = add(_label("Dictate", 14, AppKit.NSFontWeightSemibold))
+        self.dictate_body = add(_wrapping(f"Hold {key_name(hotkey)} and speak. Lyssna types what you said, "
+                                          "cleaned up, wherever your cursor is.", 13))
+        self.hold_text = add(_label("Hold", 13, color=secondary))
+        self.hold_keys = add(self._keycaps([key_name(hotkey)]))
+        self.hold_after = add(_label("to talk.", 13, color=secondary))
+        self.free_text = add(_label("Hands-free:", 13, color=secondary))
+        self.free_keys = add(self._keycaps([key_name(hotkey), pretty(str(section.get("hands_free", "space")))]))
+        self.mic_row = add(self._status_row("", PENDING, secondary))
+        self.mic_allow = add(_button("Allow", self, "allowMicrophone:"))
+        self.mic_settings = add(_button("Open Settings", self, "openMicrophoneSettings:"))
+        self.globe_row = add(self._status_row("", PENDING, secondary))
+        self.globe_settings = add(_button("Open Keyboard Settings", self, "openKeyboardSettings:"))
+
+        self.dict_local = add(_radio("On this Mac (free, private)", self, "chooseDictation:"))
+        self.dict_local_note = add(_wrapping(""))
+        self.dict_download = add(_button("Download", self, "downloadModels:"))
+        self.dict_progress = add(ProgressBar.alloc().initWithFrame_(NSMakeRect(0, 0, 200, BAR_H)))
+        self.dict_progress_text = add(_label("", 12, color=secondary))
+        self.dict_progress_text.setFont_(NSFont.monospacedDigitSystemFontOfSize_weight_(12, AppKit.NSFontWeightRegular))
+        self.dict_ready = add(self._status_row("Ready", "checkmark.circle.fill", NSColor.systemGreenColor()))
+        self.dict_error = add(_wrapping("", 12, NSColor.systemRedColor()))
+        self.dict_online = add(_radio("Online, with my own keys (best with names and unusual words)", self, "chooseDictation:"))
+        vendors = [_engine_class(row.name).vendor for row in self.key_rows]
+        self.dict_online_note = add(_wrapping(f"Your voice is sent to {vendors[0]} and the text to {vendors[1]} "
+                                              "for cleanup. Each needs your own key."))
+        for row in self.key_rows:
+            cls = _engine_class(row.name)
+            row.head = add(_label(f"{cls.vendor} ({row.job})", 13, AppKit.NSFontWeightMedium))
+            row.get_key = add(self._get_key_button("getDictationKey:"))
+            row.box, row.field = self._key_field("saveDictationKey:")
+            add(row.box)
+            row.save = add(_button("Save", self, "saveDictationKey:"))
+            row.spinner = add(self._spinner())
+            row.status = add(_wrapping("", 12))
+        self.dict_local_only_note = add(_wrapping("Online dictation is off because \u201cKeep Everything on This Mac\u201d is on."))
 
         self.sep_footer = add(self._separator())
         self.done = add(_button("Done", self, "done:", primary=True))
         self.done.setKeyEquivalent_("\r")
-        for view in (self.done, self.sample, self.save, self.download, self.open_settings, self.relaunch_btn):
+        for view in (self.done, self.sample, self.save, self.download, self.open_settings, self.relaunch_btn,
+                     self.dict_download, self.mic_allow, *(row.save for row in self.key_rows)):
             _fit(view)
             f = view.frame().size
             view.setFrameSize_((max(f.width, 84.0), f.height))
+
+    @objc.python_method
+    def _get_key_button(self, action: str) -> NSButton:
+        """"Get a key" with a small arrow: it opens the provider's page in the browser."""
+        b = _button("Get a key", self, action)
+        b.setImage_(_symbol("arrow.up.right", 10, AppKit.NSFontWeightSemibold))
+        b.setImagePosition_(AppKit.NSImageTrailing)
+        b.setImageHugsTitle_(True)
+        b.sizeToFit()
+        return b
+
+    @objc.python_method
+    def _key_field(self, action: str):
+        """(box, field): a secure field sitting borderless inside a hairline box, since the
+        system bezel has no brand colours. Return in the field runs `action`."""
+        box = TintedView.make(NSMakeRect(0, 0, 260, FIELD_H), theme.SURFACE, 6.0, theme.HAIRLINE)
+        field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 22))
+        field.setPlaceholderString_("Paste your API key")
+        field.setTarget_(self)
+        field.setAction_(action)
+        field.setBezeled_(False)
+        field.setBordered_(False)
+        field.setDrawsBackground_(False)
+        field.setFocusRingType_(AppKit.NSFocusRingTypeNone)  # the caret shows focus; a ring would be blue
+        field.setFont_(_font(13))
+        field.setTextColor_(theme.CONTENT)
+        field.cell().setUsesSingleLineMode_(True)
+        field.cell().setScrollable_(True)
+        box.addSubview_(field)
+        return box, field
+
+    @objc.python_method
+    def _spinner(self) -> NSProgressIndicator:
+        spinner = NSProgressIndicator.alloc().initWithFrame_(NSMakeRect(0, 0, 16, 16))
+        spinner.setStyle_(AppKit.NSProgressIndicatorStyleSpinning)
+        spinner.setControlSize_(AppKit.NSControlSizeSmall)
+        spinner.setDisplayedWhenStopped_(False)
+        return spinner
 
     @objc.python_method
     def _separator(self) -> NSView:
         return TintedView.make(NSMakeRect(0, 0, W - 2 * MARGIN, 1), theme.HAIRLINE)
 
     @objc.python_method
-    def _size_key_box(self, width: float) -> None:
-        """Size the key box and the borderless field inside it, text vertically centred."""
-        self.key_box.setFrameSize_((width, FIELD_H))
-        h = self.key_field.cell().cellSizeForBounds_(NSMakeRect(0, 0, width, 100)).height
-        self.key_field.setFrame_(NSMakeRect(8, (FIELD_H - h) / 2, width - 16, h))
+    def _size_key_box(self, box, field, width: float) -> None:
+        """Size a key box and the borderless field inside it, text vertically centred."""
+        box.setFrameSize_((width, FIELD_H))
+        h = field.cell().cellSizeForBounds_(NSMakeRect(0, 0, width, 100)).height
+        field.setFrame_(NSMakeRect(8, (FIELD_H - h) / 2, width - 16, h))
 
     @objc.python_method
     def _status_row(self, text: str, symbol: str, tint) -> NSView:
-        """A small symbol followed by a word, e.g. a green check and "Ready"."""
+        """A small symbol followed by a few words, e.g. a green check and "Ready"."""
         row = FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 18))
-        img = NSImageView.imageViewWithImage_(_symbol(symbol, 13, AppKit.NSFontWeightMedium))
-        img.setContentTintColor_(tint)
-        img.setFrame_(NSMakeRect(0, 1, 16, 16))
-        lbl = _label(text, 13, AppKit.NSFontWeightMedium)
-        w, h = _fit(lbl)
-        lbl.setFrameOrigin_((20, (18 - h) / 2))
-        row.addSubview_(img)
-        row.addSubview_(lbl)
-        row.setFrameSize_((20 + w, 18))
-        row.label = lbl
+        row.image = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 1, 16, 16))
+        row.label = _label("", 13, AppKit.NSFontWeightMedium)
+        row.addSubview_(row.image)
+        row.addSubview_(row.label)
+        self._set_status_row(row, text, symbol, tint)
         return row
+
+    @objc.python_method
+    def _set_status_row(self, row, text: str, symbol: str, tint) -> None:
+        row.image.setImage_(_symbol(symbol, 13, AppKit.NSFontWeightMedium))
+        row.image.setContentTintColor_(tint)
+        row.label.setStringValue_(text)
+        w, h = _fit(row.label)
+        row.label.setFrameOrigin_((20, (18 - h) / 2))
+        row.setFrameSize_((20 + w, 18))
 
     @objc.python_method
     def _keycap(self, spec: str) -> NSView:
         """The shortcut as a row of key caps, e.g. [⌃] [⌥] [S]."""
+        return self._keycaps([pretty(part) for part in tokens(spec)])
+
+    @objc.python_method
+    def _keycaps(self, labels: list[str]) -> NSView:
+        """A row of key caps, one per label."""
         row = FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 24))
         x = 0.0
-        for part in tokens(spec):
-            lbl = _label(pretty(part), 13, AppKit.NSFontWeightMedium)
+        for text in labels:
+            lbl = _label(text, 13, AppKit.NSFontWeightMedium)
             tw, th = _fit(lbl)
             cw = max(24.0, tw + 12)
             cap = TintedView.make(NSMakeRect(x, 0, cw, 24), theme.FILL_SOFT, 6.0, theme.HAIRLINE)
@@ -445,6 +580,46 @@ class SetupWindow(NSObject):
     @objc.python_method
     def _engine(self) -> str:
         return self.engines[max(0, self.popup.indexOfSelectedItem())]
+
+    @objc.python_method
+    def _dictation_online_allowed(self) -> bool:
+        return all(self._allowed(row.name) for row in self.key_rows)
+
+    @objc.python_method
+    def _allowed(self, name: str) -> bool:
+        cfg = self.ctl.cfg
+        return transcribers.allowed(name, cfg) if name in transcribers.REGISTRY else cleaners.allowed(name, cfg)
+
+    @objc.python_method
+    def _choose_dictation(self, engine: str | None) -> None:
+        """Point the dictation choice at the online option when asked for an engine's key or
+        when dictation uses an online engine now; else at the engines on this Mac."""
+        section = self.ctl.cfg.get("dictation", {})
+        in_use = {str(section.get("transcriber", "")), str(section.get("cleaner", "")) if section.get("cleanup", True) else ""}
+        online = self._dictation_online_allowed() and (engine in DICTATION_KEY_ENGINES or bool(in_use & set(DICTATION_KEY_ENGINES)))
+        self.dict_online.setState_(1 if online else 0)
+        self.dict_local.setState_(0 if online else 1)
+        if engine is not None:
+            for row in self.key_rows:
+                row.message = ("", "secondary")
+
+    @objc.python_method
+    def _read_globe(self, force: bool = False) -> None:
+        """Read the Globe key setting on a worker thread, at most every GLOBE_POLL seconds;
+        the next tick shows the answer."""
+        if self._globe_busy or (not force and time.monotonic() - self._globe_read_at < GLOBE_POLL):
+            return
+        self._globe_busy = True
+
+        def read() -> None:
+            try:
+                answer = self.globe_action()
+            except Exception:
+                log.debug("Globe key setting unreadable", exc_info=True)
+                answer = "unknown"
+            self._globe, self._globe_read_at, self._globe_busy = answer, time.monotonic(), False
+
+        threading.Thread(target=read, daemon=True, name="lyssna-globe-read").start()
 
     @objc.python_method
     def _set_step_icon(self, view, number: int, done: bool) -> None:
@@ -505,6 +680,8 @@ class SetupWindow(NSObject):
         for view in (self.popup, self.key_field, self.save):
             view.setEnabled_(not self._saving)
 
+        dictation = self._refresh_dictation()
+
         local_chosen = bool(self.radio_local.state())
         shape = {
             "relaunch": needs_relaunch,
@@ -520,10 +697,85 @@ class SetupWindow(NSObject):
             "local_only_note": local_only,
             "try_note": not trusted,
             "texts": (self.body1.stringValue(), error, text, self._saving),
+            "dictation": dictation,
         }
         if force or shape != self._shape:
             self._shape = shape
             self._layout(shape)
+
+    @objc.python_method
+    def _refresh_dictation(self) -> tuple:
+        """Step 4's live state (microphone, Globe key, models, keys) onto its views. Returns
+        what decides its layout, so a change re-lays the window out."""
+        ctl = self.ctl
+        secondary = theme.CONTENT_DIM
+        mic = ctl.microphone_status()
+        if mic == "granted":
+            self._set_status_row(self.mic_row, "Microphone allowed", "checkmark.circle.fill", NSColor.systemGreenColor())
+        elif mic == "undetermined":
+            self._set_status_row(self.mic_row, "Allow the microphone so Lyssna can hear you", PENDING, secondary)
+        else:
+            self._set_status_row(self.mic_row, "Microphone access is off. Turn it on in Settings.", PENDING, secondary)
+
+        on_fn = str(ctl.cfg.get("dictation", {}).get("hotkey", "fn")) == "fn"
+        globe_ok = not on_fn or self._globe == "nothing"
+        if on_fn:
+            self._read_globe()
+            if globe_ok:
+                self._set_status_row(self.globe_row, "Globe key set to Do Nothing", "checkmark.circle.fill",
+                                     NSColor.systemGreenColor())
+            else:
+                self._set_status_row(self.globe_row, "Set \u201cPress Globe key to\u201d to Do Nothing", PENDING, secondary)
+
+        local_only = ctl.local_only()
+        if (local_only or not self._dictation_online_allowed()) and self.dict_online.state():
+            self._choose_dictation(None)
+        models = ctl.local_dictation_models()
+        can_run = transcribers.REGISTRY[transcribers.LOCAL].can_run()
+        self.dict_local.setEnabled_(can_run)
+        self.dict_local_note.setStringValue_(
+            "Your voice and text stay on this Mac. One download of "
+            f"{_size_text(sum(m.total_bytes for m in models))}." if can_run else "")
+        progress = ctl.dictation_download_progress()
+        ready = can_run and all(m.present() for m in models)
+        error = ""
+        if not can_run:
+            error = "Dictation on this Mac is not available in this build."
+        elif progress is None and not ready:
+            error = next((m.download().error for m in models if not m.present() and m.download().error), "")
+        if progress is not None:
+            self.dict_progress.set_fraction(progress)
+            self.dict_progress_text.setStringValue_(f"{int(progress * 100)}%")
+        self.dict_error.setStringValue_(error)
+        self.dict_download.setTitle_("Try Again" if error and can_run else "Download")
+
+        texts = []
+        for row in self.key_rows:
+            state = ctl.dictation_key_state(row.name)
+            text, tone = row.message
+            if not text and not row.saving:
+                if state and self._in_use(row.name):
+                    text, tone = "Using your saved key.", "good"
+                elif state:
+                    text = "A key is already saved. Paste a new one to replace it."
+            row.status.setStringValue_(text)
+            row.status.setTextColor_({"good": NSColor.systemGreenColor(), "bad": NSColor.systemRedColor()}.get(
+                tone, theme.CONTENT_DIM))
+            for view in (row.field, row.save):
+                view.setEnabled_(not row.saving)
+            texts.append((text, row.saving))
+
+        local_chosen = bool(self.dict_local.state())
+        speech_ready = ready if local_chosen else ctl.dictation_key_state(self.key_rows[0].name) is True
+        self._set_step_icon(self.icon4, 4, mic == "granted" and globe_ok and speech_ready)
+        return (mic, on_fn, globe_ok, local_only or not self._dictation_online_allowed(), local_chosen,
+                progress is not None, ready, error, can_run, tuple(texts), self.dict_local_note.stringValue())
+
+    @objc.python_method
+    def _in_use(self, name: str) -> bool:
+        if name in transcribers.REGISTRY:
+            return self.ctl.current_transcriber() == name
+        return self.ctl.current_cleaner() == name
 
     # -- layout ------------------------------------------------------------------------
 
@@ -559,7 +811,7 @@ class SetupWindow(NSObject):
             return hh
 
         # Step 1
-        y += step(self.icon1, self.head1, y) + 3
+        y += step(self.icon1, self.head1, y) + 4
         y += put(self.body1, TEXT_X, y, TEXT_W)
         row = []
         x = TEXT_X  # pills have no transparent inset, so their edge lines up with the text as is
@@ -580,7 +832,7 @@ class SetupWindow(NSObject):
         y += put(self.radio_local, TEXT_X, y) + 2
         if show["local_body"]:
             sub_x = TEXT_X + INDENT
-            y += put(self.local_note, sub_x, y, TEXT_W - INDENT) + 6
+            y += put(self.local_note, sub_x, y, TEXT_W - INDENT) + 8
             if show["download"]:
                 y += centre_row([(self.download, sub_x)], y)
             elif show["progress"]:
@@ -606,7 +858,7 @@ class SetupWindow(NSObject):
             self.popup.sizeToFit()
             y += centre_row([(self.popup, sub_x - 3), (self.get_key, sub_x + self.popup.frame().size.width + 10)], y) + 8
             save_w = self.save.frame().size.width
-            self._size_key_box(sub_w - save_w - 8)  # the Save pill's edge ends the row
+            self._size_key_box(self.key_box, self.key_field, sub_w - save_w - 8)  # the Save pill's edge ends the row
             field_right = sub_x + self.key_box.frame().size.width
             y += centre_row([(self.key_box, sub_x), (self.save, field_right + 8)], y)
             if show["key_status"]:
@@ -630,6 +882,13 @@ class SetupWindow(NSObject):
         y += centre_row([(self.sample, TEXT_X)], y)
         if show["try_note"]:
             y += 6 + put(self.try_note, TEXT_X, y + 6, TEXT_W)
+        y += 16
+        self.sep3.setFrame_(NSMakeRect(MARGIN, y, W - 2 * MARGIN, 1))
+        visible.add(self.sep3)
+        y += 16
+
+        # Step 4
+        y = self._layout_dictation(show["dictation"], y, put, centre_row, step, visible)
         y += 20
 
         # Footer
@@ -642,10 +901,88 @@ class SetupWindow(NSObject):
 
         for view in self.content.subviews():
             view.setHidden_(view not in visible)
+        self.content.setFrameSize_((W, y))
+        screen = self.window.screen() or screen_under_mouse()
+        limit = screen.visibleFrame().size.height - 2 * SCREEN_GAP if screen is not None else y
         frame = self.window.frame()
-        new = self.window.frameRectForContentRect_(NSMakeRect(0, 0, W, y))
+        new = self.window.frameRectForContentRect_(NSMakeRect(0, 0, W, min(y, max(limit, 320.0))))
         top = frame.origin.y + frame.size.height
         self.window.setFrame_display_(NSMakeRect(frame.origin.x, top - new.size.height, W, new.size.height), True)
+
+    @objc.python_method
+    def _layout_dictation(self, state: tuple, y: float, put, centre_row, step, visible) -> float:
+        """Step 4, from y down; returns where it ends."""
+        mic, on_fn, globe_ok, online_off, local_chosen, downloading, ready, error, can_run, _, _ = state
+        y += step(self.icon4, self.head4, y) + 4
+        y += put(self.dictate_body, TEXT_X, y, TEXT_W) + 8
+
+        # Hold [fn] to talk.   Hands-free: [fn] [Space]
+        row, x = [], TEXT_X
+        for view, gap in ((self.hold_text, 6), (self.hold_keys, 6), (self.hold_after, 16),
+                          (self.free_text, 6), (self.free_keys, 0)):
+            w, _ = _fit(view) if isinstance(view, NSTextField) else view.frame().size
+            row.append((view, x))
+            x += w + gap
+        y += centre_row(row, y) + 16
+
+        def check(status_row, pill, y):
+            """A status line, with its pill under the words when something is left to do."""
+            y += centre_row([(status_row, TEXT_X)], y)
+            if pill is not None:
+                y += 8 + centre_row([(pill, TEXT_X + 20)], y + 8)
+            return y
+
+        y = check(self.mic_row, {"undetermined": self.mic_allow, "denied": self.mic_settings}.get(mic), y)
+        if on_fn:
+            y = check(self.globe_row, None if globe_ok else self.globe_settings, y + 8)
+        y += 16
+
+        sub_x, sub_w = TEXT_X + INDENT, TEXT_W - INDENT
+        _fit(self.dict_local)
+        y += put(self.dict_local, TEXT_X, y) + 2
+        if local_chosen:
+            if self.dict_local_note.stringValue():
+                y += put(self.dict_local_note, sub_x, y, sub_w) + 8
+            if downloading:
+                self.dict_progress_text.setStringValue_("100%")  # measure the widest it gets
+                tw, _ = _fit(self.dict_progress_text)
+                self.dict_progress.setFrameSize_((sub_w - tw - 8, BAR_H))
+                self.dict_progress_text.setFrameSize_((tw, self.dict_progress_text.frame().size.height))
+                progress = self.ctl.dictation_download_progress()
+                self.dict_progress_text.setStringValue_(f"{int((progress or 0) * 100)}%")
+                self.dict_progress_text.setAlignment_(AppKit.NSTextAlignmentRight)
+                y += centre_row([(self.dict_progress, sub_x), (self.dict_progress_text, sub_x + sub_w - tw)], y + 4) + 4
+            elif ready:
+                y += centre_row([(self.dict_ready, sub_x)], y + 2) + 2
+            elif can_run:
+                y += centre_row([(self.dict_download, sub_x)], y)
+            if error:
+                y += 4 + put(self.dict_error, sub_x, y + 4, sub_w)
+            y += 4
+        if online_off:
+            return y + 8 + put(self.dict_local_only_note, TEXT_X, y + 8, TEXT_W)
+        y += 8
+        _fit(self.dict_online)
+        y += put(self.dict_online, TEXT_X, y) + 2
+        if local_chosen:
+            return y
+        y += put(self.dict_online_note, sub_x, y, sub_w) + 8
+        for i, row in enumerate(self.key_rows):
+            if i:
+                y += 16
+            _fit(row.head)
+            y += centre_row([(row.head, sub_x), (row.get_key, sub_x + sub_w - row.get_key.frame().size.width)], y) + 8
+            save_w = row.save.frame().size.width
+            self._size_key_box(row.box, row.field, sub_w - save_w - 8)  # the Save pill's edge ends the row
+            y += centre_row([(row.box, sub_x), (row.save, sub_x + sub_w - save_w)], y)
+            if row.status.stringValue():
+                shift = 24.0 if row.saving else 0.0
+                h = put(row.status, sub_x + shift, y + 8, sub_w - shift)
+                if row.saving:
+                    row.spinner.setFrameOrigin_((sub_x, y + 8 + (h - 16) / 2))
+                    visible.add(row.spinner)
+                y += 8 + h
+        return y
 
     @objc.python_method
     def _refresh_progress_text(self) -> None:
@@ -726,6 +1063,99 @@ class SetupWindow(NSObject):
 
     def sample_(self, sender):
         self.ctl.speak_text(SAMPLE)
+
+    # -- step 4 actions -------------------------------------------------------------
+
+    def allowMicrophone_(self, sender):
+        self.ctl.request_microphone()  # macOS shows its prompt; the next tick shows the answer
+
+    def openMicrophoneSettings_(self, sender):
+        NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(MIC_SETTINGS_URL))
+
+    def openKeyboardSettings_(self, sender):
+        NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(KEYBOARD_SETTINGS_URL))
+        self._globe_read_at = 0.0  # read the setting again soon after the user changes it
+
+    def chooseDictation_(self, sender):
+        """Both dictation radios share this action (their own group, apart from the voice's).
+        An option switches the engines only when it can run now: the models are here, or a
+        key is saved. Otherwise Download or Save does it."""
+        local = sender is self.dict_local
+        self.dict_local.setState_(1 if local else 0)
+        self.dict_online.setState_(0 if local else 1)
+        for row in self.key_rows:
+            row.message = ("", "secondary")
+        try:
+            if local:
+                if all(m.present() for m in self.ctl.local_dictation_models()):
+                    self.ctl.use_local_dictation()
+            else:
+                for row in self.key_rows:
+                    if self.ctl.dictation_key_state(row.name) is True:
+                        self._use_dictation(row.name)
+        except ValueError as e:
+            log.info("dictation engine not switched: %s", e)
+        self.on_change()
+        self._refresh(force=True)
+        if not local:
+            self.window.makeFirstResponder_(self.key_rows[0].field)
+
+    def downloadModels_(self, sender):
+        try:
+            self.ctl.use_local_dictation()  # starts the downloads; the progress bar follows them
+        except ValueError as e:
+            log.info("dictation engine not switched: %s", e)
+        self.on_change()
+        self._refresh(force=True)
+
+    @objc.python_method
+    def _use_dictation(self, name: str) -> None:
+        if name in transcribers.REGISTRY:
+            self.ctl.set_transcriber(name)
+        else:
+            self.ctl.set_cleaner(name)
+
+    @objc.python_method
+    def _row_for(self, sender) -> _KeyRow | None:
+        return next((r for r in self.key_rows if sender in (r.get_key, r.field, r.save)), None)
+
+    def getDictationKey_(self, sender):
+        row = self._row_for(sender)
+        url = _engine_class(row.name).key_url if row else ""
+        if url:
+            NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(url))
+
+    def saveDictationKey_(self, sender):
+        row = self._row_for(sender)
+        if row is None or row.saving:
+            return
+        key = row.field.stringValue()
+        if not key.strip():
+            row.message = ("Paste your API key first.", "bad")
+            self._refresh(force=True)
+            return
+        row.saving = True
+        row.message = ("Checking the key\u2026", "secondary")
+        row.spinner.startAnimation_(None)
+        self._refresh(force=True)
+
+        def check():
+            error = self.ctl.add_dictation_key(row.name, key)  # one free request, then save
+            on_main(self._dictation_saved, row, error)
+
+        threading.Thread(target=check, daemon=True, name="lyssna-key-check").start()
+
+    @objc.python_method
+    def _dictation_saved(self, row: _KeyRow, error: str) -> None:
+        row.saving = False
+        row.spinner.stopAnimation_(None)
+        if error:
+            row.message = (error[:300], "bad")
+        else:
+            row.field.setStringValue_("")
+            row.message = (f"Saved. Dictation now uses {_engine_class(row.name).vendor} for {row.job}.", "good")
+            self.on_change()
+        self._refresh(force=True)
 
     def done_(self, sender):
         self.window.performClose_(None)

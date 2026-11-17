@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from ... import usage
 from ...providers.base import ProviderError
 from ...providers.openai import DEFAULT_BASE_URL, check_base_url
-from .base import Transcriber, TranscriberError, audio_seconds, check_samples, wav_bytes
+from .base import Transcriber, TranscriberError, audio_seconds, check_key_request, check_samples, wav_bytes
 
 MAX_KEYWORDS = 100
 
@@ -45,6 +45,14 @@ class OpenAITranscriber(Transcriber):
             return urlsplit(raw).hostname or raw
         except ValueError:
             return raw
+
+    def check_key(self) -> str:
+        """List the models: authenticated and free, so a wrong key fails without any cost."""
+        try:
+            url = f"{self.base_url}/models"
+        except TranscriberError as e:
+            return str(e)
+        return check_key_request(self.name, self.vendor, url, {"Authorization": f"Bearer {self.api_key}"})
 
     def transcribe(self, samples, language: str = "", hints: Sequence[str] = ()) -> str:
         check_samples(samples)

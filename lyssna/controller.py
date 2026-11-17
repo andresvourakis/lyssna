@@ -378,6 +378,69 @@ class Controller:
         self.set_provider(name)
         return ""
 
+    def _dictation_engine(self, name: str):
+        """(cls, set_engine, allowed, refusal) for a speech or cleanup engine by name."""
+        if name in transcribers.REGISTRY:
+            return transcribers.REGISTRY[name], self.set_transcriber, transcribers.allowed, transcribers.refusal
+        if name in cleaners.REGISTRY:
+            return cleaners.REGISTRY[name], self.set_cleaner, cleaners.allowed, cleaners.refusal
+        raise ValueError(f"unknown dictation engine {name}")
+
+    def dictation_key_state(self, name: str) -> bool | None:
+        """Does this dictation engine have its key? None while the Keychain has not answered."""
+        cls = self._dictation_engine(name)[0]
+        return cls(self.cfg.get(cls.section(), {})).configured(wait=False)
+
+    def add_dictation_key(self, name: str, key: str) -> str:
+        """The dictation counterpart of add_api_key: prove the key works with one request that
+        costs nothing, save it where voice keys go, and use that engine for dictation (as the
+        speech engine or the cleanup). The voice provider is left as it is. Returns "" on
+        success, else a short message for the user. Blocks for the request: call it off the
+        main thread."""
+        cls, use, is_allowed, refusal = self._dictation_engine(name)
+        if not is_allowed(name, self.cfg):
+            return refusal(cls.label)
+        key = key.strip()
+        if not key:
+            return "Paste your API key first."
+        if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in key):
+            return "That doesn't look like an API key. Keys have no spaces or line breaks, so copy it again."
+        section = cls.section()
+        error = cls(self.cfg.get(section, {}), api_key=key).check_key()
+        if error:
+            log.warning("new %s key for dictation rejected (%d chars of detail, not logged)", section, len(error))
+            return error
+        where = "the Keychain" if config.save_api_key(section, key) else "the config file"
+        log.info("saved a new %s API key in %s", section, where)
+        use(name)
+        return ""
+
+    def local_dictation_models(self) -> list:
+        """The model files dictation on this Mac uses that can run in this install: the speech
+        model for the configured language, and the cleanup model where it runs (unless cleanup
+        is off)."""
+        found = []
+        if transcribers.REGISTRY[transcribers.LOCAL].can_run():
+            found.append(transcribers.get_transcriber(transcribers.LOCAL, self.cfg).model())
+        if cleaners.cleanup_on(self.cfg) and cleaners.REGISTRY[cleaners.LOCAL].can_run():
+            found.append(dictation_models.S1_MINI)
+        return found
+
+    def use_local_dictation(self) -> None:
+        """Dictate with the engines on this Mac; picking each starts its model's download if
+        it is missing. Cleanup stays off when it was turned off."""
+        self.set_transcriber(transcribers.LOCAL)
+        if cleaners.cleanup_on(self.cfg) and cleaners.REGISTRY[cleaners.LOCAL].can_run():
+            self.set_cleaner(cleaners.LOCAL)
+
+    def microphone_status(self) -> str:
+        """"granted", "denied" or "undetermined"."""
+        return self.dictation.mic_status()
+
+    def request_microphone(self) -> None:
+        """Ask macOS for microphone access (it shows its prompt only the first time)."""
+        self.dictation.request_mic(self._mic_answered)
+
     def has_stored_key(self, name: str) -> bool:
         """Is there a key for this engine in the Keychain or the config file (the places the
         app can remove it from; a key in the environment is out of its reach)? Never waits for

@@ -40,7 +40,7 @@ from .server import ControlServer
 from .ui.mainthread import later, on_main
 from .ui.mini_player import MiniPlayer
 from .ui.selection_button import SelectionButton
-from .ui.setup_window import SetupWindow
+from .ui.setup_window import DICTATION_KEY_ENGINES, SetupWindow
 from .ui.toast import Toast
 
 log = logging.getLogger("lyssna.app")
@@ -148,6 +148,7 @@ class MenuBar(rumps.App):
         self.hk = ctl.cfg["hotkeys"]
         self.on_quit = None
         self.on_setup: Callable[[str | None], None] = lambda engine: None  # opens the setup window; set by LyssnaApp
+        self.on_setup_dictation: Callable[[str], None] = lambda engine: None  # ...at its dictation keys
         self.on_history: Callable[[], None] = lambda: None  # opens the dictation history; set by LyssnaApp
         self._downloading = False
         self.menu = [
@@ -314,7 +315,7 @@ class MenuBar(rumps.App):
             self.ctl.notify(f"{cls.label} is not available in this build")
             return
         if cls.needs_key and not self.ctl.transcriber_configured(name):
-            self._ask_for_dictation_key(cls.section(), cls.vendor)
+            self._ask_for_dictation_key(name)
             return
         self.ctl.set_transcriber(name)  # the model on this Mac starts downloading here if it has to
         self._refresh_checks()
@@ -329,18 +330,22 @@ class MenuBar(rumps.App):
                 self.ctl.notify(f"{cls.label} is not available in this build")
                 return
             if cls.needs_key and not self.ctl.cleaner_configured(name):
-                self._ask_for_dictation_key(cls.section(), cls.vendor)
+                self._ask_for_dictation_key(name)
                 return
         self.ctl.set_cleaner(name)
         self._refresh_checks()
 
-    def _ask_for_dictation_key(self, section: str, vendor: str) -> None:
-        """A dictation engine needs a key: the setup window takes it when a voice provider uses
-        the same one (OpenAI, Inworld); for the others it says where to add it."""
-        if section in self.key_engines:
-            self.on_setup(self.key_engines[section])
+    def _ask_for_dictation_key(self, name: str) -> None:
+        """A dictation engine needs a key: the setup window's dictation step takes it for the
+        engines it lists (OpenAI, Anthropic); for another one that shares its key with a voice
+        (Inworld), the voice step does; otherwise a notice says where to add it."""
+        cls = transcribers.REGISTRY.get(name) or cleaners.REGISTRY[name]
+        if name in DICTATION_KEY_ENGINES:
+            self.on_setup_dictation(name)
+        elif cls.section() in self.key_engines:
+            self.on_setup(self.key_engines[cls.section()])
         else:
-            self.ctl.toast(Notice(f"Add your {vendor} key in Setup"))
+            self.ctl.toast(Notice(f"Add your {cls.vendor} key in Setup"))
 
     def _prompt_for_key(self, name: str) -> None:
         """Adding a key happens in the setup window, with that provider picked under "Use my own API key"."""
@@ -625,6 +630,7 @@ class LyssnaApp:
             self.menubar.show_permission_warning()
         self.setup_window = None
         self.menubar.on_setup = self.show_setup
+        self.menubar.on_setup_dictation = lambda engine: self.show_setup(dictation=engine)
         self.history_window = None
         self.menubar.on_history = self.show_history
         self.ctl.warm_dictation()  # gets the microphone ready if access was already granted
@@ -689,14 +695,14 @@ class LyssnaApp:
                 self.history_window.ctl = self.ctl
         self.history_window.show()
 
-    def show_setup(self, engine: str | None = None) -> None:
+    def show_setup(self, engine: str | None = None, dictation: str | None = None) -> None:
         if self.setup_window is None:
             self.setup_window = SetupWindow.alloc().init()
             self.setup_window.ctl = self.ctl
             self.setup_window.taps_ok = lambda: self.taps_ok
             self.setup_window.relaunch = self.menubar._relaunch
             self.setup_window.on_change = self.menubar._refresh_checks
-        self.setup_window.show(engine)
+        self.setup_window.show(engine, dictation)
 
     def _log_screens(self) -> None:
         names = []

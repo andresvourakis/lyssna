@@ -220,13 +220,16 @@ def test_cleanup_off_is_checked(menubar):
 
 
 def test_choosing_an_engine_without_its_key(menubar, monkeypatch):
-    opened, toasts = [], []
+    opened, dictation, toasts = [], [], []
     menubar.on_setup = opened.append
+    menubar.on_setup_dictation = dictation.append
     menubar.ctl.subscribe_toast(toasts.append)
     menubar._set_transcriber("openai")
-    assert opened == ["openai"]  # the setup window, with the OpenAI key step
     menubar._set_cleaner("haiku")
-    assert [t.text for t in toasts] == ["Add your Anthropic key in Setup"]
+    assert dictation == ["openai", "haiku"]  # the setup window's dictation step, at that key
+    menubar._set_transcriber("inworld")
+    assert opened == ["inworld"]  # shares its key with the Inworld voices: the voice step takes it
+    assert toasts == []
     assert config.load()["dictation"]["transcriber"] == "parakeet"  # nothing switched
 
 

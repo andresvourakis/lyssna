@@ -100,6 +100,11 @@ class Transcriber:
         """Who receives the audio when this engine transcribes it, for the privacy line."""
         return self.vendor or self.label
 
+    def check_key(self) -> str:
+        """Prove the key works with one request that costs nothing. "" when it works, else a
+        short message for the user. Engines without such a request say so."""
+        return f"Lyssna can't check a {self.vendor or self.label} key here yet."
+
     def transcribe(self, samples, language: str = "en", hints: Sequence[str] = ()) -> str:
         raise NotImplementedError
 
@@ -132,6 +137,27 @@ class Transcriber:
             raise TranscriberError(f"{self.vendor} error {r.status_code}: {r.text[:300]}", status=r.status_code)
         log.info("transcribed %.1fs of audio via %s in %.2fs (HTTP 200)", audio_seconds, self.name, elapsed)
         return r
+
+
+KEY_CHECK_TIMEOUT = 15.0  # seconds for the free request that proves a key works; no retries
+
+
+def check_key_request(name: str, vendor: str, url: str, headers: dict) -> str:
+    """One authenticated GET that costs nothing (a list of models) to prove a key works.
+    "" on HTTP 200, else a short message for the user. No retries, a timeout, and one log line
+    with the status only: never the key or the response body."""
+    start = time.monotonic()
+    try:
+        r = httpx.get(url, headers=headers, timeout=KEY_CHECK_TIMEOUT)
+    except httpx.HTTPError as e:
+        log.warning("key check for %s failed after %.2fs: %s", name, time.monotonic() - start, error_summary(e))
+        return f"{vendor} could not be reached. Check your internet connection."
+    log.info("key check for %s: HTTP %s in %.2fs", name, r.status_code, time.monotonic() - start)
+    if r.status_code == 200:
+        return ""
+    if r.status_code in (401, 403):
+        return f"{vendor} did not accept that key. Copy it again."
+    return f"{vendor} answered with error {r.status_code}. Try again in a moment."
 
 
 def audio_seconds(samples, sample_rate: int = SAMPLE_RATE) -> float:
