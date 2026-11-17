@@ -570,7 +570,8 @@ class LyssnaApp:
         self.selection_button = SelectionButton.alloc().init()
         if self.selection_button:
             self.selection_button.timeout = float(ui_cfg.get("button_timeout", 4.0))
-            self.selection_button.on_play = self.ctl.speak_selection
+            self.selection_button.on_play = self._play_from_button
+        self._button_source = "selection"  # what the play button on screen reads: "selection" or "clipboard"
 
         # Plugging or unplugging a display is the suspected trigger for the window server
         # dropping our floating windows from every Space. Only a breadcrumb: FloatingPanel
@@ -595,7 +596,7 @@ class LyssnaApp:
         self.mouse = None
         if self.selection_button:
             # The detector spots selection-like gestures; the watcher confirms text was really
-            # selected (cursor, window owner, Accessibility) before the button shows.
+            # selected (cursor, window owner, Accessibility, a copy on select) before the button shows.
             self.selection_watcher = SelectionWatcher(
                 probe_cursor=capture.cursor_is_standard_non_text,
                 probe_selection=capture.ax_selection,
@@ -604,6 +605,8 @@ class LyssnaApp:
                 present=self._on_selection_gesture,
                 enabled=lambda: self.ctl.selection_button_enabled,
                 probe_bounds=capture.ax_selection_bounds,
+                probe_clipboard=capture.clipboard_change_count,
+                probe_copied=capture.copied_since,
             )
             detector = SelectionGestureDetector(
                 on_select=self.selection_watcher.gesture,
@@ -707,15 +710,26 @@ class LyssnaApp:
         self._dismiss_button()
         self.ctl.toggle_selection_button()
 
-    def _on_selection_gesture(self, p: Point, bounds: tuple[float, float, float, float] | None) -> None:
-        """Called by the selection watcher from a worker thread once text is confirmed selected."""
-        on_main(self._present_button, p, bounds)
+    def _on_selection_gesture(self, p: Point, bounds: tuple[float, float, float, float] | None, source: str) -> None:
+        """Called by the selection watcher from a worker thread once text is confirmed selected.
+        `source` says where the evidence came from: "selection" (Accessibility) or "clipboard"
+        (the app copied the selection itself)."""
+        on_main(self._present_button, p, bounds, source)
 
-    def _present_button(self, p: Point, bounds: tuple[float, float, float, float] | None) -> None:
+    def _present_button(self, p: Point, bounds: tuple[float, float, float, float] | None, source: str) -> None:
         if not self.ctl.selection_button_enabled:
             return
+        self._button_source = source
         avoid = self.mini_player.panel.frame() if self.mini_player and self.mini_player.visible() else None
         self.selection_button.present(p.x, p.y, avoid, bounds)
+
+    def _play_from_button(self) -> None:
+        """The play button reads what it was offered for: a selection the app copied itself is
+        on the clipboard already, so no Cmd+C goes to that app."""
+        if self._button_source == "clipboard":
+            self.ctl.speak_clipboard()
+        else:
+            self.ctl.speak_selection()
 
     def _dismiss_button(self) -> None:
         if self.selection_button:

@@ -26,12 +26,17 @@ class FakePasteboard:
     def __init__(self, items=()):
         self.items = list(items)
         self.cleared = 0
+        self.count = 0
 
     def pasteboardItems(self):
         return list(self.items)
 
+    def changeCount(self):
+        return self.count
+
     def clearContents(self):
         self.cleared += 1
+        self.count += 1
         self.items = []
 
     def writeObjects_(self, items):

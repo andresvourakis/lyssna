@@ -119,3 +119,19 @@ def test_a_bad_dictation_key_is_reported_not_fatal(monkeypatch, lyssna):
     lyssna._attach_push_to_talk()
     assert lyssna.keyboard.push_to_talk is None
     assert len(lyssna.queued) == 1  # the toast saying so
+
+
+def test_play_button_reads_what_it_was_offered_for(lyssna, monkeypatch):
+    """A button offered on a copy-on-select reads the clipboard, with no Cmd+C sent; one
+    offered on an Accessibility selection reads the selection."""
+    from lyssna.events import Point
+
+    calls = []
+    monkeypatch.setattr(lyssna.ctl, "speak_clipboard", lambda: calls.append("clipboard"))
+    monkeypatch.setattr(lyssna.ctl, "speak_selection", lambda: calls.append("selection"))
+    lyssna.selection_button.present = lambda *args: None  # nothing on screen
+    lyssna._present_button(Point(1, 1), None, "clipboard")
+    lyssna.selection_button.on_play()
+    lyssna._present_button(Point(1, 1), (0.0, 0.0, 1.0, 1.0), "selection")
+    lyssna.selection_button.on_play()
+    assert calls == ["clipboard", "selection"]

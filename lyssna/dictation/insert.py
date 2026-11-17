@@ -67,10 +67,14 @@ def _text_item(text: str, transient: bool):
 
 
 def put_text(pb, text: str, transient: bool) -> int:
-    """Replace the clipboard with `text`; returns the pasteboard's change count afterwards."""
+    """Replace the clipboard with `text`; returns the pasteboard's change count afterwards.
+    The change is noted as Lyssna's own, so it never passes for a selection the user copied."""
+    before = int(pb.changeCount())
     pb.clearContents()
     pb.writeObjects_([_text_item(text, transient)])
-    return int(pb.changeCount())
+    count = int(pb.changeCount())
+    capture.note_own_changes(before, count)
+    return count
 
 
 def restore_unless_changed(pb, previous: list[dict[str, bytes]], our_count: int) -> bool:

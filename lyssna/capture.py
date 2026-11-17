@@ -6,8 +6,12 @@ expose it do we send Cmd+C, watch the pasteboard change counter, read the new st
 quietly put the previous clipboard back: every item with every type (rich text, images,
 files), or an empty clipboard if it was empty. Last resort is whatever is on the clipboard.
 
+Every clipboard change Lyssna itself causes (the Cmd+C here and the restore after it, the
+paste of a dictation) is noted by its pasteboard change count, so the selection watcher can
+tell a change the user's app made (a terminal that copies on select) from one of ours.
+
 Also here: the probes the selection watcher uses (cursor shape, window owner under the
-mouse, frontmost app, selection bounds)."""
+mouse, frontmost app, selection bounds, clipboard changes)."""
 
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 
 import Quartz
 from AppKit import NSApp, NSCursor, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSWorkspace
@@ -335,6 +340,51 @@ def clipboard_text() -> str:
     return pb.stringForType_(NSPasteboardTypeString) or ""
 
 
+# Change counts of the general pasteboard that Lyssna produced. A deque, not a set, so it
+# stays small; a few dozen covers every write still inside any selection check's window.
+_own_counts: deque[int] = deque(maxlen=64)
+_own_lock = threading.Lock()
+
+
+def note_own_changes(before: int, after: int) -> None:
+    """Every pasteboard change count after `before` up to `after` is ours. Called around each
+    clipboard write Lyssna makes, and around the Cmd+C it sends (the copy the app makes then
+    is ours too). A change the user makes in between is counted as ours: a rare miss."""
+    with _own_lock:
+        _own_counts.extend(range(int(before) + 1, int(after) + 1))
+
+
+def own_change(count: int) -> bool:
+    """Did Lyssna produce this pasteboard change count?"""
+    with _own_lock:
+        return int(count) in _own_counts
+
+
+def clipboard_change_count() -> int | None:
+    """The general pasteboard's change count (cheap, any thread), or None if it can't be read."""
+    try:
+        return int(NSPasteboard.generalPasteboard().changeCount())
+    except Exception:
+        log.debug("pasteboard change count unavailable", exc_info=True)
+        return None
+
+
+def copied_since(count: int | None) -> str:
+    """The clipboard's text when someone other than Lyssna changed the clipboard after change
+    count `count`; "" when it did not change, Lyssna changed it, or it holds no text."""
+    if count is None:
+        return ""
+    try:
+        pb = NSPasteboard.generalPasteboard()
+        now = int(pb.changeCount())
+        if now == count or own_change(now):
+            return ""
+        return pb.stringForType_(NSPasteboardTypeString) or ""
+    except Exception:
+        log.debug("pasteboard read failed", exc_info=True)
+        return ""
+
+
 def _wait_for_modifiers_release(timeout: float = 1.5) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -379,6 +429,7 @@ def _new_item():
 
 def restore_pasteboard(pb, items: list[dict[str, bytes]], new_item=_new_item) -> None:
     """Put back what snapshot_pasteboard() saw. An empty snapshot leaves the clipboard empty."""
+    before = pb.changeCount()
     pb.clearContents()
     restored = []
     for data in items:
@@ -390,6 +441,7 @@ def restore_pasteboard(pb, items: list[dict[str, bytes]], new_item=_new_item) ->
         restored.append(item)
     if restored:
         pb.writeObjects_(restored)
+    note_own_changes(before, pb.changeCount())
 
 
 def _restore_later(previous: list[dict[str, bytes]], delay: float = 0.4) -> None:
@@ -411,6 +463,7 @@ def selected_text(timeout: float = 0.8, restore_clipboard: bool = True) -> str |
     while time.time() < deadline:
         if pb.changeCount() != before_count:
             time.sleep(0.05)  # give the source app a moment to finish writing all types
+            note_own_changes(before_count, pb.changeCount())  # the app copied because we pressed Cmd+C
             text = pb.stringForType_(NSPasteboardTypeString) or ""
             if restore_clipboard:
                 _restore_later(before)

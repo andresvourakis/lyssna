@@ -9,18 +9,27 @@ OLD = AXSelection(True, "old words")
 NEW = AXSelection(True, "hello world")
 
 
-def make(selections, non_text=True, owner=100, front=100, enabled=True, delays=(0, 0)):
-    """`selections` are the AX answers in order: the before-snapshot first, then each after-probe."""
+def make(selections, non_text=True, owner=100, front=100, enabled=True, delays=(0, 0), copied=None, sources=None):
+    """`selections` are the AX answers in order: the before-snapshot first, then each after-probe.
+    `copied` is the text someone else put on the clipboard since the press ("" or None: nothing);
+    the source each shown button was offered for is appended to `sources`."""
     answers = list(selections)
     shown = []
     done = threading.Event()
+    seen_counts = []
 
     def probe_selection():
         return answers.pop(0) if len(answers) > 1 else answers[0]
 
-    def present(p, bounds):
+    def present(p, bounds, source):
         shown.append((p, bounds))
+        if sources is not None:
+            sources.append(source)
         done.set()
+
+    def probe_copied(count):
+        seen_counts.append(count)
+        return copied or ""
 
     w = SelectionWatcher(
         probe_cursor=lambda: non_text,
@@ -31,7 +40,10 @@ def make(selections, non_text=True, owner=100, front=100, enabled=True, delays=(
         enabled=lambda: enabled,
         probe_bounds=lambda: (1.0, 2.0, 3.0, 4.0),
         delays=delays,
+        probe_clipboard=lambda: 7,
+        probe_copied=probe_copied,
     )
+    w.seen_counts = seen_counts
     return w, shown, done
 
 
@@ -142,3 +154,119 @@ def test_press_on_our_own_ui_does_not_show():
         w.own_pid = 100
         run(w)
         assert shown == []
+
+
+# -- clipboard evidence: programs that copy their own selection -------------------------
+
+
+def test_copy_on_select_shows_when_ax_says_nothing_selected():
+    # A terminal program draws its own selection and copies it; the terminal reports no selection.
+    sources = []
+    w, shown, _ = make([NONE, NONE], non_text=False, copied="ls -la is a word", sources=sources)
+    run(w)
+    assert len(shown) == 1 and sources == ["clipboard"]
+    assert shown[0][1] is None  # Accessibility has no rectangle for it: the button sits by the cursor
+    assert set(w.seen_counts) == {7}  # compared against the change count read at the press
+
+
+def test_copy_on_select_shows_when_ax_cannot_answer_even_on_arrow():
+    sources = []
+    w, _, _ = make([UNSUPPORTED, UNSUPPORTED], non_text=True, copied="hello there", sources=sources)
+    run(w)
+    assert sources == ["clipboard"]
+
+
+def test_copied_text_without_a_word_does_not_show():
+    w, shown, _ = make([NONE, NONE], non_text=False, copied=" . ")
+    run(w)
+    assert shown == []
+
+
+def test_nothing_copied_still_needs_a_selection():
+    w, shown, _ = make([NONE, NONE], non_text=False, copied="")
+    run(w)
+    assert shown == []
+
+
+def test_copy_on_select_never_beats_a_press_on_another_apps_window():
+    w, shown, _ = make([NONE, NONE], non_text=False, owner=200, front=100, copied="hello world")
+    run(w)
+    assert shown == []
+    assert not offers_button(NONE, NONE, non_text_cursor=False, pressed_in_front_app=False, copied=True)
+
+
+def test_an_accessibility_selection_is_read_as_a_selection():
+    sources = []
+    w, _, _ = make([NONE, NEW], copied="hello world", sources=sources)
+    run(w)
+    assert sources == ["selection"]
+
+
+def test_offers_button_takes_the_copy_as_evidence():
+    assert offers_button(NONE, NONE, **CUSTOM, copied=True)
+    assert offers_button(UNSUPPORTED, UNSUPPORTED, **ARROW, copied=True)
+    assert offers_button(NEW, NEW, **ARROW, copied=True)  # an old selection, but a fresh copy
+
+
+# -- capture: which clipboard changes count -----------------------------------------
+
+
+class Pasteboard:
+    def __init__(self, count, text):
+        self.count, self.text = count, text
+
+    def changeCount(self):
+        return self.count
+
+    def stringForType_(self, kind):
+        return self.text
+
+
+def test_copied_since_ignores_our_own_writes(monkeypatch):
+    from lyssna import capture
+
+    pb = Pasteboard(10, "hello world")
+    class General:
+        @staticmethod
+        def generalPasteboard():
+            return pb
+
+    monkeypatch.setattr(capture, "NSPasteboard", General)
+    monkeypatch.setattr(capture, "_own_counts", capture.deque(maxlen=64))
+    assert capture.copied_since(10) == ""  # unchanged
+    assert capture.copied_since(None) == ""  # count unknown at the press
+    assert capture.copied_since(9) == "hello world"  # someone else copied
+    capture.note_own_changes(9, 10)  # ...unless it was us
+    assert capture.copied_since(9) == ""
+    assert capture.own_change(10) and not capture.own_change(9)
+
+
+def test_our_paste_and_restore_are_noted_as_ours(monkeypatch):
+    from lyssna import capture
+    from lyssna.dictation import insert
+
+    class Board:
+        def __init__(self):
+            self.count, self.items = 3, []
+
+        def changeCount(self):
+            return self.count
+
+        def clearContents(self):
+            self.count += 1
+            self.items = []
+
+        def writeObjects_(self, items):
+            self.count += 1
+            self.items.extend(items)
+            return True
+
+        def pasteboardItems(self):
+            return list(self.items)
+
+    monkeypatch.setattr(capture, "_own_counts", capture.deque(maxlen=64))
+    board = Board()
+    count = insert.put_text(board, "dictated words", transient=True)
+    assert count == 5 and capture.own_change(4) and capture.own_change(5)
+    capture.restore_pasteboard(board, [{"public.utf8-plain-text": b"before"}])
+    assert capture.own_change(board.changeCount())
