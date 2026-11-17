@@ -1050,7 +1050,8 @@ class MiniPlayer(FloatingPanel):
     @objc.python_method
     def drag_moved(self, mx: float, my: float) -> None:
         if self.form in ("rest", "menu"):
-            return  # it follows the mouse; on release it snaps to the nearer edge
+            self._hint_rest(mx, my)  # it follows the mouse; on release it snaps to the nearer edge
+            return
         edge, screen = self._edge_near(mx, my)
         if not edge:
             self._hide_zones()
@@ -1074,6 +1075,7 @@ class MiniPlayer(FloatingPanel):
         log.debug("drag_ended at (%.0f, %.0f) form=%s dock=%s", mx, my, self.form, self.dock)
         self._dragging = False
         if self.form in ("rest", "menu"):
+            self._hide_zones()
             self._drop_rest(mx, my)
             return
         self._hide_zones()
@@ -1316,16 +1318,37 @@ class MiniPlayer(FloatingPanel):
             self.show_idle()
 
     @objc.python_method
-    def _drop_rest(self, mx: float, my: float) -> None:
-        """The idle pill was dragged: snap it to the nearest edge of the screen it was dropped
-        on (left, right or bottom), at that spot along it, as the resting sliver, and remember
-        the spot (shared with the docked player)."""
+    def _rest_landing(self, mx: float, my: float):
+        """Where the dragged idle pill lands if released now: (screen, vf, edge, fraction along
+        it), the nearest edge of the screen under the mouse to the panel's centre. The drop and
+        the hint while dragging both ask here, so they always agree."""
         screen = screen_at(mx, my)
         vf = _vf(screen)
         f = self.panel.frame()
         cx, cy = f.origin.x + f.size.width / 2, f.origin.y + f.size.height / 2
         edge = nearest_edge(vf, cx, cy)
-        fy = along_fraction(vf, edge, cx if is_flat(edge) else cy)
+        return screen, vf, edge, along_fraction(vf, edge, cx if is_flat(edge) else cy)
+
+    @objc.python_method
+    def _hint_rest(self, mx: float, my: float) -> None:
+        """While the idle pill is dragged, the faint hint around the spot it would land on: the
+        same edge and place along it as the resting sliver's capsule, kept on screen the same way."""
+        screen, vf, edge, fy = self._rest_landing(mx, my)
+        zone, other = (self.flat_zone, self.zone) if is_flat(edge) else (self.zone, self.flat_zone)
+        other.hide()
+        coord, centre = anchor_of(edge_frame(vf, edge, fy, SLIVER_H, SLIVER_W, inset=0.0), edge)
+        (x, y), _ = docked_frame(edge, coord, centre,
+                                 *((zone.width, zone.height) if is_flat(edge) else (zone.height, zone.width)),
+                                 CAPSULE_INSET - 4)
+        zone.show_at(x, y, screen=screen)
+        self.order_front()
+
+    @objc.python_method
+    def _drop_rest(self, mx: float, my: float) -> None:
+        """The idle pill was dragged: snap it to the nearest edge of the screen it was dropped
+        on (left, right or bottom), at that spot along it, as the resting sliver, and remember
+        the spot (shared with the docked player)."""
+        _screen, vf, edge, fy = self._rest_landing(mx, my)
         self._place_rest(vf, edge, fy)
         if self.layout.get("dock") in DOCKS:
             self.layout = {"dock": edge, "x": 0.0, "y": fy}

@@ -10,6 +10,7 @@ import threading
 
 import AppKit
 import pytest
+import Quartz
 from Foundation import NSDate, NSRunLoop
 
 from lyssna.controller import Notice
@@ -44,7 +45,18 @@ from lyssna.ui.mini_player import (
     snap_edge,
 )
 from lyssna.ui.toast import ACTION_PAD, ACTION_RIGHT, BOTTOM, PAD_L, TOAST_H, tip_origin, toast_width
-from lyssna.ui.widgets import CAPSULE_H, CAPSULE_INSET, CAPSULE_W, SLIVER_H, SLIVER_W, capsule_centre
+from lyssna.ui.widgets import (
+    CAPSULE_H,
+    CAPSULE_INSET,
+    CAPSULE_W,
+    SLIVER_H,
+    SLIVER_W,
+    SQUIGGLE_AMP,
+    SQUIGGLE_LEN,
+    SQUIGGLE_STROKE,
+    Sliver,
+    capsule_centre,
+)
 
 # -- the rules -------------------------------------------------------------------------------
 
@@ -271,6 +283,47 @@ def test_a_saved_right_edge_shows_the_resting_sliver_there(pill):
     assert (w, h) == (SLIVER_W, SLIVER_H) and x == 1440 - SLIVER_W
     assert pill.rest.rest and pill.rest.fraction == 0.0 and pill.rest.edge == "right"
     assert pill.draggable is True and pill.shown == ["rest"]
+
+
+def sliver(edge, rest):
+    s = Sliver.alloc().initWithFrame_(((0, 0), oriented(SLIVER_H, SLIVER_W, edge)))
+    s.set_rest(rest)
+    s.set_state(0.4, False, edge)
+    s.updateLayer()
+    return s
+
+
+@appkit
+@pytest.mark.parametrize("edge", EDGES)
+def test_at_rest_the_sliver_is_the_logo_wave_not_the_capsule(nsapp, edge):
+    s = sliver(edge, True)
+    assert s.capsule.isHidden() and not s.squiggle.isHidden()
+    s.set_rest(False)
+    s.updateLayer()
+    assert not s.capsule.isHidden() and s.squiggle.isHidden()  # reading: the capsule is back
+
+
+@appkit
+@pytest.mark.parametrize("edge", EDGES)
+def test_the_idle_wave_is_centred_where_the_capsule_is(nsapp, edge):
+    s = sliver(edge, True)
+    f = s.squiggle.frame()
+    centre = (f.origin.x + f.size.width / 2, f.origin.y + f.size.height / 2)
+    assert centre == pytest.approx(capsule_centre(edge))
+    assert tuple(s.squiggle.position()) == pytest.approx(tuple(s.capsule.position()))
+
+
+@appkit
+def test_the_idle_wave_is_one_slim_wave_turned_on_the_bottom(nsapp):
+    s = sliver("right", True)
+    box = Quartz.CGPathGetPathBoundingBox(s.line.path())
+    assert box.size.height == pytest.approx(SQUIGGLE_LEN)                  # along the edge
+    assert box.size.width == pytest.approx(2 * SQUIGGLE_AMP, abs=0.05)    # across it
+    side = s.squiggle.frame().size
+    assert side.height > side.width
+    flat = sliver("bottom", True).squiggle.frame().size
+    assert (flat.width, flat.height) == pytest.approx((side.height, side.width))
+    assert s.line.lineWidth() == SQUIGGLE_STROKE and s.halo.lineWidth() > SQUIGGLE_STROKE
 
 
 @appkit
@@ -604,6 +657,56 @@ def test_dragging_the_card_onto_the_bottom_docks_it(pill):
     pill.drag_ended(600, 80)
     assert pill.dock == "bottom" and pill.form == "sliver"
     assert pill.fired[-1][:2] == ("layout", "bottom")
+
+
+def zone_centre(zone):
+    x, y, w, h = frame(zone)
+    return (x + w / 2, y + h / 2)
+
+
+@appkit
+@pytest.mark.parametrize(("origin", "edge", "kind"), [
+    ((60, 500), "left", "side"), ((1350, 300), "right", "side"), ((700, 60), "bottom", "flat"),
+    ((5, 880), "left", "side"),  # near a corner: the hint is kept on screen, like the sliver
+])
+@pytest.mark.parametrize("open_menu", [False, True])
+def test_dragging_the_idle_pill_shows_where_it_lands(pill, open_menu, origin, edge, kind):
+    pill.show_idle()
+    if open_menu:
+        pill.mouseEntered_(None)
+    hidden = []
+    pill.zone.hide = lambda: hidden.append("side")
+    pill.flat_zone.hide = lambda: hidden.append("flat")
+    pill.panel.setFrameOrigin_(origin)
+    pill.drag_began()
+    pill.drag_moved(*origin)
+    assert pill.zones == [kind] and pill.shown[-1] in ("rest", "menu")  # the pill stays above the hint
+    zone = pill.flat_zone if kind == "flat" else pill.zone
+    hint = zone_centre(zone)
+    hidden.clear()
+    pill.drag_ended(*origin)
+    assert pill.form == "rest" and pill._edge == edge
+    x, y, _w, _h = frame(pill)
+    cx, cy = capsule_centre(edge)
+    assert hint == pytest.approx((x + cx, y + cy))  # around the sliver's capsule, where it landed
+    assert sorted(hidden) == ["flat", "side"]
+
+
+@appkit
+def test_the_idle_pill_hint_follows_the_nearest_edge(pill):
+    pill.show_idle()
+    pill.drag_began()
+    pill.panel.setFrameOrigin_((60, 500))
+    pill.drag_moved(70, 510)
+    left = zone_centre(pill.zone)
+    pill.panel.setFrameOrigin_((60, 300))
+    pill.drag_moved(70, 310)
+    assert zone_centre(pill.zone)[0] == left[0] and zone_centre(pill.zone)[1] < left[1]  # along the edge
+    pill.panel.setFrameOrigin_((700, 60))
+    pill.drag_moved(710, 70)
+    assert pill.zones == ["side", "side", "flat"]
+    pill.drag_ended(710, 70)
+    assert pill._edge == "bottom"
 
 
 @appkit

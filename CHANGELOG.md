@@ -35,6 +35,14 @@
   cloud voice and online dictation engine. Organizations can enforce it with a
   managed preference.
 - The menu shows where your text goes with the current voice.
+- The menu has two sections, Listen and Dictate, and each engine picker lists
+  what runs on this Mac apart from the online engines. Pause, Stop and the
+  sentence controls show only while Lyssna reads.
+- The setup window matches the menu: a Listen / Dictate switch, the same three
+  steps on each (permission, voice or engine, try it), and a Done button that
+  stays in view at the bottom.
+- When nothing plays, the pill rests at the screen edge as the wave from the
+  Lyssna logo instead of a plain capsule.
 - The OpenAI voice provider accepts a custom `base_url`, for company gateways.
 - License changed to GPL-3.0-or-later, because the local voice bundles GPL
   components.

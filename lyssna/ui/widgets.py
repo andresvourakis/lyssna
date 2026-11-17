@@ -25,6 +25,11 @@ KNOB = 14.0       # playhead knob shown while hovering / scrubbing the bar
 SLIVER_W, SLIVER_H = 26.0, 64.0
 CAPSULE_W, CAPSULE_H = 8.0, 56.0
 CAPSULE_INSET = 10.0  # from the screen edge
+# Idle mark: one wave of the logo, slimmed, centred where the capsule is (about 10 x 38 drawn).
+SQUIGGLE_LEN = 34.0     # one full wave, along the edge
+SQUIGGLE_AMP = 3.2      # peak height either side of the centre line
+SQUIGGLE_STROKE = 3.6
+SQUIGGLE_HALO = 2.0     # the halo under it is this much wider than the line
 
 
 def capsule_centre(edge: str) -> tuple[float, float]:
@@ -34,6 +39,26 @@ def capsule_centre(edge: str) -> tuple[float, float]:
     if edge == "bottom":
         return (SLIVER_H / 2, near)
     return (near if edge == "left" else SLIVER_W - near, SLIVER_H / 2)
+
+
+def squiggle_size() -> tuple[float, float]:
+    """The idle wave's layer, across x along, with room for the halo's round caps."""
+    pad = SQUIGGLE_STROKE + SQUIGGLE_HALO
+    return (2 * SQUIGGLE_AMP + pad, SQUIGGLE_LEN + pad)
+
+
+def _squiggle_path():
+    """The logo's wave (mark.py) standing up in the squiggle layer: one sine period from bottom
+    to top, first out to the left, so turned a quarter clockwise it rises first, then dips."""
+    w, h = squiggle_size()
+    x0, y0 = w / 2, (h - SQUIGGLE_LEN) / 2
+    path = Quartz.CGPathCreateMutable()
+    Quartz.CGPathMoveToPoint(path, None, x0, y0)
+    steps = 64
+    for i in range(1, steps + 1):
+        t = i / steps
+        Quartz.CGPathAddLineToPoint(path, None, x0 - SQUIGGLE_AMP * math.sin(2 * math.pi * t), y0 + SQUIGGLE_LEN * t)
+    return path
 
 
 def clear_glow():
@@ -278,12 +303,14 @@ class Sliver(AppKit.NSView):
     time a sentence lands. Paused, the sparks stop being born, the drift freezes and
     the whole fill dims. Transparent around the capsule.
 
-At rest (set_rest(True), the idle pill when nothing plays) it is the same capsule with no fill
-at all: the same track colour as while reading, and nothing animating.
+At rest (set_rest(True), the idle pill when nothing plays) there is no capsule: only the wave
+from the Lyssna logo, slim, centred where the capsule would be. A content-coloured line over a
+slightly wider halo in the surface tone, so it reads on any background. Nothing animates.
 
 On the bottom edge (edge "bottom") the view is SLIVER_H wide and SLIVER_W tall and the whole
 capsule layer is turned a quarter clockwise, so the fill grows from the left and the sparks
-drift right: the same layers, lying flat."""
+drift right: the same layers, lying flat. The idle wave turns the same way and then reads
+left to right like the logo's."""
 
     CAP = 7.0      # height of the waterline glow
     BLOOM = 22.0   # diameter of the sentence bloom
@@ -358,6 +385,22 @@ drift right: the same layers, lying flat."""
         self.bloom.setOpacity_(0.0)
         self.top.addSublayer_(self.bloom)
 
+        # squiggle: the idle mark, a halo and a line on the same path, shown only at rest
+        self.squiggle = AppKit.CALayer.layer()
+        self.squiggle.setHidden_(True)
+        self.layer().addSublayer_(self.squiggle)
+        path = _squiggle_path()
+        self.halo = Quartz.CAShapeLayer.layer()
+        self.line = Quartz.CAShapeLayer.layer()
+        for shape, width in ((self.halo, SQUIGGLE_STROKE + SQUIGGLE_HALO), (self.line, SQUIGGLE_STROKE)):
+            shape.setFrame_(((0, 0), squiggle_size()))
+            shape.setPath_(path)
+            shape.setFillColor_(None)
+            shape.setLineWidth_(width)
+            shape.setLineCap_(Quartz.kCALineCapRound)
+            shape.setLineJoin_(Quartz.kCALineJoinRound)
+            self.squiggle.addSublayer_(shape)
+
         self.fraction = 0.0
         self.dim = False
         self.playing = False
@@ -410,8 +453,18 @@ drift right: the same layers, lying flat."""
                                    else Quartz.CATransform3DIdentity)
         self.capsule.setBorderColor_(theme.HAIRLINE.CGColor())
         self.clip.setHidden_(self.rest)
+        self.capsule.setHidden_(self.rest)
+        self.squiggle.setHidden_(not self.rest)
         if self.rest:
-            self.capsule.setBackgroundColor_(theme.surface(0.97).CGColor())
+            self.squiggle.setBounds_(((0, 0), squiggle_size()))
+            self.squiggle.setPosition_(capsule_centre(self.edge))
+            self.squiggle.setTransform_(self.capsule.transform())
+            w = self.window()
+            scale = w.backingScaleFactor() if w is not None else 2.0
+            self.halo.setStrokeColor_(theme.surface(0.45).CGColor())
+            self.line.setStrokeColor_(theme.content(0.88).CGColor())
+            for shape in (self.halo, self.line):
+                shape.setContentsScale_(scale)
             Quartz.CATransaction.commit()
             _freeze(self.body)
             _freeze(self.cap)
