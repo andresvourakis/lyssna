@@ -20,7 +20,6 @@ from lyssna.ui.mini_player import (
     BUTTON_HIT,
     CAP_W,
     COMPACT_H,
-    DISC,
     DOCK_GAP,
     DOCK_GAP_V,
     DOCK_H,
@@ -148,7 +147,8 @@ def test_nearest_and_snap_edges():
 
 def test_sizes():
     assert (CAP_W, COMPACT_H, FREE_H) == (34.0, 60.0, 118.0)
-    assert (MENU_MIC_W, MENU_MIC_H, MENU_H) == (40.0, 56.0, 56.0 + 2 * (DOCK_GAP_V + MENU_DISC))
+    assert (MENU_MIC_W, MENU_MIC_H, MENU_DISC) == (CAP_W, 52.0, 28.0)  # the dictate item as slim as the capsule
+    assert MENU_H == 52.0 + 2 * (DOCK_GAP_V + 28.0) and MENU_W == CAP_W
     assert BUTTON_HIT >= 28.0
     assert pill_len(False) == DOCK_H
 
@@ -292,8 +292,10 @@ def test_hover_opens_the_menu_beside_the_sliver(pill):
     # bottom to top: the dictate capsule, read selection, history, DOCK_GAP_V apart
     d, r, hi = (v.frame() for v in (pill.menu_dictate, pill.menu_read, pill.menu_history))
     assert (d.origin.y, d.size.width, d.size.height) == (0.0, MENU_MIC_W, MENU_MIC_H)
-    assert r.origin.y == MENU_MIC_H + DOCK_GAP_V and r.size.width == DISC
-    assert hi.origin.y == r.origin.y + DISC + DOCK_GAP_V and hi.size.width == DISC
+    assert r.origin.y == MENU_MIC_H + DOCK_GAP_V and r.size.width == MENU_DISC
+    assert hi.origin.y == r.origin.y + MENU_DISC + DOCK_GAP_V and hi.size.width == MENU_DISC
+    for item in (d, r, hi):  # centred on one axis
+        assert item.origin.x + item.size.width / 2 == pytest.approx(MENU_W / 2)
     assert pill._watch is not None  # the hover watcher closes it when the mouse leaves
 
 

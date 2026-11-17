@@ -117,14 +117,15 @@ HOVER_SECS = 0.18
 HOVER_OUT_DELAY = 0.08  # seconds the cursor must be away before the open pill shrinks back
 HOVER_POLL = 0.03
 
+CAP_W = 34.0      # the dictation capsule's thickness, and the dictate item's in the hover menu
+
 # Idle: at rest the slim sliver (flush with the edge); hovered, a stack of a dictate capsule
 # and two discs, DOCK_GAP in from the edge. MENU_W is across, MENU_H along.
-MENU_MIC_W, MENU_MIC_H = 40.0, 56.0
-MENU_DISC = DISC
+MENU_MIC_W, MENU_MIC_H = CAP_W, 52.0  # as thick as the dictation capsule
+MENU_DISC = 28.0
 MENU_W = MENU_MIC_W
-MENU_H = MENU_MIC_H + (DOCK_GAP_V + MENU_DISC) * 2  # 128
-# Dictating: a capsule CAP_W thick, CAPSULE_INSET from the screen edge.
-CAP_W = 34.0
+MENU_H = MENU_MIC_H + (DOCK_GAP_V + MENU_DISC) * 2  # 120
+# Dictating: a capsule CAP_W thick (set above), CAPSULE_INSET from the screen edge.
 COMPACT_H = 60.0            # the dictate capsule while holding the key, and while working
 FREE_H = 118.0              # hands-free: with cancel at the top (left) and finish at the bottom (right)
 CANCEL_D, CANCEL_TOP = 22.0, 6.0
@@ -586,13 +587,13 @@ class MiniPlayer(FloatingPanel):
             return bg
 
         a = 0.0
-        self.menu_dictate = item(a, MENU_MIC_H, MENU_MIC_W, "mic.fill", 15.0, theme.CONTENT, "menuDictate:", "Dictate",
+        self.menu_dictate = item(a, MENU_MIC_H, MENU_MIC_W, "mic.fill", 14.0, theme.CONTENT, "menuDictate:", "Dictate",
                                  lambda: self.key_name)
         a += MENU_MIC_H + DOCK_GAP_V
-        self.menu_read = item(a, MENU_DISC, MENU_DISC, "play.fill", 11.0, theme.CONTENT_DIM, "menuRead:",
+        self.menu_read = item(a, MENU_DISC, MENU_DISC, "play.fill", 10.0, theme.CONTENT_DIM, "menuRead:",
                               "Read selection", lambda: self.read_key)
         a += MENU_DISC + DOCK_GAP_V
-        self.menu_history = item(a, MENU_DISC, MENU_DISC, "clock.arrow.circlepath", 12.0, theme.CONTENT_DIM,
+        self.menu_history = item(a, MENU_DISC, MENU_DISC, "clock.arrow.circlepath", 11.0, theme.CONTENT_DIM,
                                  "menuHistory:", "History", lambda: "")
         self._track(content)
 
