@@ -5,7 +5,12 @@ Reading and dictation exclude each other: starting a dictation pauses a reading 
 paused afterwards), and while a dictation records or works the read actions only say so.
 
 Observers get a fresh Status (or DictationStatus, or Notice) on every change, on whatever
-thread produced it; UI observers must hop to the main thread themselves."""
+thread produced it; UI observers must hop to the main thread themselves.
+
+The saved API keys are read once at launch on a background thread (see keychain.py: that read
+can wait on a macOS password prompt). Until it lands, every question the menu and the windows
+ask here answers as if the key were there, and nothing is decided from it: the launch check
+that moves an engine without a key to the voice on this Mac waits for the real answer."""
 
 from __future__ import annotations
 
@@ -60,6 +65,12 @@ class Notice:
     key: str = ""  # a notice with the same key as the one on screen replaces it in place (progress)
 
 
+def key_sections() -> list[str]:
+    """Every config section an engine keeps an API key under (voices and dictation)."""
+    engines = [*REGISTRY.values(), *transcribers.REGISTRY.values(), *cleaners.REGISTRY.values()]
+    return sorted({cls.section() for cls in engines if cls.needs_key})
+
+
 def open_url(url: str) -> None:
     """Open a System Settings pane (or any URL) without touching our stdio."""
     subprocess.run(["open", url], check=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -69,14 +80,10 @@ def open_url(url: str) -> None:
 class Controller:
     def __init__(self):
         self.cfg = config.load()
-        if migrate.keys_to_keychain():
-            self.cfg = config.load()
         self.fell_back_to = ""  # the engine we switched to at launch because the chosen one could not run
-        fallback = effective_provider(self.cfg)
-        if fallback != self.cfg.get("provider"):
-            log.info("provider %s cannot run as set up; falling back to %s", self.cfg.get("provider"), fallback)
-            self.cfg = config.update(provider=fallback)
-            self.fell_back_to = fallback
+        self._provider_checked = False
+        self._check_lock = threading.Lock()
+        self._key_observers: list[Callable[[], None]] = []
         self._observers: list[Callable[[Status], None]] = []
         cache = AudioCache.from_config(self.cfg)
         cache.trim_in_background()  # once per launch; puts trim again every so often
@@ -92,6 +99,47 @@ class Controller:
         self._globe_checked = False
         self.push_to_talk = None  # the app's PushToTalk, kept in step with the session (see _dictation_changed)
         self.dictation = self._make_dictation()
+        keychain.subscribe(self._keys_read)
+        keychain.load(key_sections(), first=self._move_keys_to_keychain)
+        self._check_provider()  # at once when the answer is known already (no key needed, or cached)
+
+    # -- API keys at launch ------------------------------------------------------------
+
+    def _move_keys_to_keychain(self) -> None:
+        """On the background key thread: the one-time move of keys out of the config file."""
+        if migrate.keys_to_keychain():
+            self.cfg = config.load()
+
+    def _keys_read(self) -> None:
+        """A background Keychain read has landed: make the launch check, then tell the menu."""
+        self._check_provider()
+        for fn in list(self._key_observers):
+            try:
+                fn()
+            except Exception:
+                log.exception("key observer failed")
+
+    def subscribe_keys(self, fn: Callable[[], None]) -> None:
+        """fn() is called (on a background thread) whenever saved keys have been read."""
+        self._key_observers.append(fn)
+
+    def _check_provider(self) -> None:
+        """Once per launch: if the chosen voice cannot run as set up (an online one with no
+        key, say), switch to the one on this Mac. Waits for the Keychain's real answer, so a
+        slow password prompt never rewrites the provider in the config file."""
+        with self._check_lock:
+            if self._provider_checked:
+                return
+            name = self.cfg.get("provider", "")
+            if (name in REGISTRY and allowed(name, self.cfg)
+                    and get_provider(name, self.cfg).configured(wait=False) is None):
+                return  # not known yet: _keys_read calls again when it is
+            self._provider_checked = True
+            fallback = effective_provider(self.cfg, wait=False)  # the key's answer is known by now
+            if fallback != self.cfg.get("provider"):
+                log.info("provider %s cannot run as set up; falling back to %s", self.cfg.get("provider"), fallback)
+                self.cfg = config.update(provider=fallback)
+                self.fell_back_to = fallback
 
     # -- observation -------------------------------------------------------------
 
@@ -157,12 +205,14 @@ class Controller:
         get_provider(name, self.cfg).prepare(on_error=lambda message: self.notify(message, ttl=6.0))
 
     def current_transcriber(self) -> str:
-        """The speech engine dictation will really use ("" when none can run)."""
-        return transcribers.effective_transcriber(self.cfg)
+        """The speech engine dictation will really use ("" when none can run). Never waits
+        for the Keychain: a key not read yet counts as there."""
+        return transcribers.effective_transcriber(self.cfg, wait=False)
 
     def current_cleaner(self) -> str:
-        """The cleanup engine dictation will really use; "" when cleanup is off or none can run."""
-        return cleaners.effective_cleaner(self.cfg)
+        """The cleanup engine dictation will really use; "" when cleanup is off or none can
+        run. Never waits for the Keychain: a key not read yet counts as there."""
+        return cleaners.effective_cleaner(self.cfg, wait=False)
 
     def set_transcriber(self, name: str) -> None:
         """Use this speech engine for dictation, and let it start any one-time setup (the
@@ -194,10 +244,12 @@ class Controller:
         cleaners.get_cleaner(name, self.cfg).prepare(on_error=lambda message: self.toast(Notice(message)))
 
     def transcriber_configured(self, name: str) -> bool:
-        return transcribers.get_transcriber(name, self.cfg).configured()
+        """Set up to run, without waiting for the Keychain (a key not read yet counts as there)."""
+        return transcribers.get_transcriber(name, self.cfg).configured(wait=False) is not False
 
     def cleaner_configured(self, name: str) -> bool:
-        return cleaners.get_cleaner(name, self.cfg).configured()
+        """Set up to run, without waiting for the Keychain (a key not read yet counts as there)."""
+        return cleaners.get_cleaner(name, self.cfg).configured(wait=False) is not False
 
     def local_only(self) -> bool:
         return policy.local_only(self.cfg)
@@ -261,11 +313,11 @@ class Controller:
     def dictation_privacy_note(self) -> str:
         """One line for the menu saying where speech (and the text, when an online cleaner
         tidies it) goes with the dictation engines that will really run."""
-        name = transcribers.effective_transcriber(self.cfg)
+        name = transcribers.effective_transcriber(self.cfg, wait=False)
         speech_to = ""
         if name and transcribers.REGISTRY[name].sends_audio_off_device:
             speech_to = transcribers.get_transcriber(name, self.cfg).recipient()
-        name = cleaners.effective_cleaner(self.cfg)
+        name = cleaners.effective_cleaner(self.cfg, wait=False)
         text_to = ""
         if name and cleaners.REGISTRY[name].sends_text_off_device:
             text_to = cleaners.get_cleaner(name, self.cfg).recipient()
@@ -300,7 +352,8 @@ class Controller:
             self.reader.restart_from_current()
 
     def provider_configured(self, name: str) -> bool:
-        return get_provider(name, self.cfg).configured()
+        """Set up to read, without waiting for the Keychain (a key not read yet counts as there)."""
+        return get_provider(name, self.cfg).configured(wait=False) is not False
 
     def add_api_key(self, name: str, key: str) -> str:
         """Prove a key works with one real synthesis, then save it and switch to that engine.
@@ -327,9 +380,10 @@ class Controller:
 
     def has_stored_key(self, name: str) -> bool:
         """Is there a key for this engine in the Keychain or the config file (the places the
-        app can remove it from; a key in the environment is out of its reach)?"""
+        app can remove it from; a key in the environment is out of its reach)? Never waits for
+        the Keychain: False until it has been read."""
         section = REGISTRY[name].section()
-        return bool(keychain.get(section) or config.file_api_key(section))
+        return bool(config.file_api_key(section) or keychain.has_key(section))
 
     def remove_api_key(self, name: str) -> None:
         """Forget the saved key for this engine (and any engine sharing its config section).
@@ -562,7 +616,7 @@ class Controller:
             self.toast(Notice(NO_MIC, OPEN_SETTINGS, lambda: open_url(MIC_SETTINGS_URL), seconds=8.0))
             return False
         cfg = self.cfg
-        name = transcribers.effective_transcriber(cfg)
+        name = transcribers.effective_transcriber(cfg, wait=False)  # on the key tap: never wait for the Keychain
         if not name:
             self.toast(Notice(NO_ENGINE))
             return False
@@ -571,7 +625,7 @@ class Controller:
         if not engine.sends_audio_off_device and hasattr(engine, "model") and not engine.model().present():
             needed.append(engine.model())
         extra = []  # the cleanup model: dictation works without it (rules only), so it does not block
-        if cleaners.effective_cleaner(cfg) == cleaners.LOCAL and not dictation_models.S1_MINI.present():
+        if cleaners.effective_cleaner(cfg, wait=False) == cleaners.LOCAL and not dictation_models.S1_MINI.present():
             extra.append(dictation_models.S1_MINI)
         if needed:
             self._get_models(needed, extra)

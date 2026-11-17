@@ -32,15 +32,16 @@ def allowed(name: str, config: dict) -> bool:
     return cls is not None and not (cls.sends_audio_off_device and policy.local_only(config))
 
 
-def _usable(t: Transcriber) -> bool:
-    return t.can_run() and (t.configured() or not t.needs_key)
+def _usable(t: Transcriber, wait: bool = True) -> bool:
+    return t.can_run() and (not t.needs_key or t.configured(wait) is not False)
 
 
-def effective_transcriber(config: dict) -> str:
+def effective_transcriber(config: dict, wait: bool = True) -> str:
     """The configured engine if local-only mode allows it and it can run as set up; else the
-    engine on this Mac; "" when not even that can run in this install."""
+    engine on this Mac; "" when not even that can run in this install. wait=False never waits
+    for the Keychain: a key it has not answered for yet counts as there (menus, the key tap)."""
     name = str(dictation_cfg(config).get("transcriber") or LOCAL)
-    if name in REGISTRY and allowed(name, config) and _usable(get_transcriber(name, config)):
+    if name in REGISTRY and allowed(name, config) and _usable(get_transcriber(name, config), wait):
         return name
     return LOCAL if ParakeetTranscriber.can_run() else ""
 

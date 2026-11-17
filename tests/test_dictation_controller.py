@@ -9,7 +9,7 @@ import time
 import numpy as np
 import pytest
 
-from lyssna import config, controller
+from lyssna import config, controller, keychain
 from lyssna.controller import ASK_MIC, BUSY, GLOBE_HINT, MODEL_READY, NO_MIC, Controller, Notice
 from lyssna.dictation import models
 from lyssna.dictation.types import DictationResult
@@ -363,7 +363,7 @@ def test_model_watch_reports_a_failed_download(ctl, monkeypatch):
 def test_missing_cleanup_model_does_not_block(ctl, monkeypatch):
     monkeypatch.setattr(models.ModelSet, "present", lambda self: self.name != models.S1_MINI.name)
     s1 = models.DOWNLOADS[models.S1_MINI.name] = FakeDownload(models.S1_MINI)
-    monkeypatch.setattr(controller.cleaners, "effective_cleaner", lambda cfg: "s1-mini")
+    monkeypatch.setattr(controller.cleaners, "effective_cleaner", lambda cfg, wait=True: "s1-mini")
     assert ctl.dictation_start() is True
     assert s1.starts == 1  # fetched in the background; this dictation uses the rules
 
@@ -404,6 +404,7 @@ def test_no_globe_hint_when_set_right_or_not_fn(ctl, monkeypatch):
 
 def test_local_only_moves_dictation_to_this_mac(ctl, fake_keychain):
     fake_keychain.items.update({"openai": "k", "anthropic": "k"})
+    keychain.clear_cache()  # the launch read found none
     ctl.set_transcriber("openai")
     ctl.set_cleaner("haiku")
     assert ctl.dictation_privacy_note() == "Speech is sent to OpenAI, text is sent to Anthropic"

@@ -91,7 +91,7 @@ class ParakeetTranscriber(Transcriber):
     def model(self, language: str = "") -> ModelSet:
         return model_for(self.cfg, language or self.language)
 
-    def configured(self) -> bool:
+    def configured(self, wait: bool = True) -> bool:
         return self.model().present()
 
     def recipient(self) -> str:

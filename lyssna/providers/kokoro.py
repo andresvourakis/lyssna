@@ -277,7 +277,7 @@ class KokoroProvider(Provider):
     def model(self) -> str:
         return self.default_model  # older configs name an MLX model here; there is only one now
 
-    def configured(self) -> bool:
+    def configured(self, wait: bool = True) -> bool:
         return files_present()
 
     def prepare(self, on_error: Callable[[str], None] | None = None) -> None:

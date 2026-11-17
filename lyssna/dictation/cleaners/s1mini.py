@@ -255,7 +255,7 @@ class S1MiniCleaner(Cleaner):
     def can_run(cls) -> bool:
         return apple_silicon() and packages_installed()
 
-    def configured(self) -> bool:
+    def configured(self, wait: bool = True) -> bool:
         return S1_MINI.present()
 
     def recipient(self) -> str:

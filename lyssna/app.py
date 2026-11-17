@@ -159,6 +159,9 @@ class MenuBar(rumps.App):
             with_shortcut(rumps.MenuItem("Quit Lyssna", callback=self.quit), "cmd+q"),
         ]
         self._refresh_checks()
+        # The saved keys are read in the background at launch; until then the menu shows
+        # engines as set up. When they land, the menu catches up with the real state.
+        ctl.subscribe_keys(lambda: on_main(self._refresh_checks))
         rumps.Timer(self._tick, 0.4).start()
 
     # -- building --------------------------------------------------------------------

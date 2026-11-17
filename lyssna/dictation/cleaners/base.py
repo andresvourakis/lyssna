@@ -48,8 +48,15 @@ class Cleaner:
     def can_run(cls) -> bool:
         return True
 
-    def configured(self) -> bool:
-        return (not self.needs_key) or bool(self.api_key)
+    def configured(self, wait: bool = True) -> bool | None:
+        """Set up to clean. With wait=False it never waits for the Keychain and answers None
+        while the Keychain is not read yet (as for the voices)."""
+        if not self.needs_key:
+            return True
+        if not wait:
+            return keychain.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
+                                    os.environ.get(f"{self.section().upper()}_API_KEY", ""))
+        return bool(self.api_key)
 
     def prepare(self, on_error: Callable[[str], None] | None = None) -> None:
         """Called when the user picks this cleaner: start any one-time setup in the background."""

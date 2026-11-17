@@ -84,8 +84,15 @@ class Provider:
         Must be cheap: the menu asks often."""
         return True
 
-    def configured(self) -> bool:
-        return (not self.needs_key) or bool(self.api_key)
+    def configured(self, wait: bool = True) -> bool | None:
+        """Set up to read. With wait=False it never waits for the Keychain (the main thread
+        asks this way: menus, windows) and answers None while the Keychain is not read yet."""
+        if not self.needs_key:
+            return True
+        if not wait:
+            return keychain.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
+                                    os.environ.get(f"{self.section().upper()}_API_KEY", ""))
+        return bool(self.api_key)
 
     def prepare(self, on_error=None) -> None:
         """Called when the user picks this engine: start any one-time setup in the background.

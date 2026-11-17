@@ -30,10 +30,11 @@ def get_provider(name: str, config: dict) -> Provider:
     return cls(config.get(cls.section(), {}))
 
 
-def _usable(p: Provider) -> bool:
+def _usable(p: Provider, wait: bool = True) -> bool:
     """Can this engine read right now, or after a one-time setup it does by itself? Engines
-    that need a key need the key; Kokoro only needs its packages (it downloads its voice)."""
-    return p.can_run() and (p.configured() or not p.needs_key)
+    that need a key need the key; Kokoro only needs its packages (it downloads its voice).
+    With wait=False a key the Keychain has not answered for yet counts as there."""
+    return p.can_run() and (not p.needs_key or p.configured(wait) is not False)
 
 
 def allowed(name: str, config: dict) -> bool:
@@ -48,11 +49,12 @@ def local_fallback() -> str:
     return KokoroProvider.name if KokoroProvider.can_run() else MacOSSayProvider.name
 
 
-def effective_provider(config: dict) -> str:
+def effective_provider(config: dict, wait: bool = True) -> str:
     """The configured provider if it can run as set up and local-only mode allows it.
-    Otherwise local_fallback()."""
+    Otherwise local_fallback(). wait=False never waits for the Keychain (for display only:
+    an unknown key counts as there, so never act on that answer)."""
     name = config.get("provider", "")
-    if name in REGISTRY and allowed(name, config) and _usable(get_provider(name, config)):
+    if name in REGISTRY and allowed(name, config) and _usable(get_provider(name, config), wait):
         return name
     return local_fallback()
 

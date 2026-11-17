@@ -32,21 +32,22 @@ def allowed(name: str, config: dict) -> bool:
     return cls is not None and not (cls.sends_text_off_device and policy.local_only(config))
 
 
-def _usable(c: Cleaner) -> bool:
-    return c.can_run() and (c.configured() or not c.needs_key)
+def _usable(c: Cleaner, wait: bool = True) -> bool:
+    return c.can_run() and (not c.needs_key or c.configured(wait) is not False)
 
 
 def cleanup_on(config: dict) -> bool:
     return bool(_dictation(config).get("cleanup", True))
 
 
-def effective_cleaner(config: dict) -> str:
+def effective_cleaner(config: dict, wait: bool = True) -> str:
     """The configured cleaner if cleanup is on, local-only mode allows it and it can run as set
-    up; else the one on this Mac; "" (rules only) when cleanup is off or nothing can run."""
+    up; else the one on this Mac; "" (rules only) when cleanup is off or nothing can run.
+    wait=False never waits for the Keychain: a key it has not answered for yet counts as there."""
     if not cleanup_on(config):
         return ""
     name = str(_dictation(config).get("cleaner") or LOCAL)
-    if name in REGISTRY and allowed(name, config) and _usable(get_cleaner(name, config)):
+    if name in REGISTRY and allowed(name, config) and _usable(get_cleaner(name, config), wait):
         return name
     return LOCAL if S1MiniCleaner.can_run() else ""
 

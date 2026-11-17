@@ -1,9 +1,10 @@
 """Keep every test off the real machine state: config, cache, logs, usage, the control
 socket, the LaunchAgent and the old Speechy locations all point into a per-test temp dir.
 The Keychain is an in-memory fake in every test, so nothing can read or write the real login
-Keychain, and the managed preferences (defaults domain) read as unset unless a test fakes
-them. The Kokoro voice files live under the temp dir too, and nothing may download them
-or load onnxruntime: the HTTP client and the model loader refuse unless a test fakes them.
+Keychain (its launch read runs inline unless a test says otherwise), and the managed
+preferences (defaults domain) read as unset unless a test fakes them. The Kokoro voice files
+live under the temp dir too, and nothing may download them or load onnxruntime: the HTTP
+client and the model loader refuse unless a test fakes them.
 Dictation is kept off the machine the same way: its vocabulary and model files live under the
 temp dir, the speech and cleanup models cannot load, and httpx.post (every online engine)
 refuses unless a test fakes it. Tests that need a config file write their own on top of this."""
@@ -61,6 +62,9 @@ def fake_keychain(monkeypatch):
 
     for name in ("get", "set", "delete"):  # in case a test builds a SecurityBackend itself
         monkeypatch.setattr(keychain.SecurityBackend, name, refuse)
+    monkeypatch.setattr(keychain, "_spawn", lambda fn: fn())  # the launch read, inline: tests stay in order
+    monkeypatch.setattr(keychain, "_listeners", [])  # no controller from an earlier test hears about keys
+    monkeypatch.setattr(keychain, "_pending", set())
     keychain.clear_cache()
     yield fake
     keychain.clear_cache()
