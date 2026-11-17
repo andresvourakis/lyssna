@@ -1,0 +1,14 @@
+# Lint only; the code is not run through `ruff format`.
+line-length = 140
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = [
+    # The UI deliberately uses typographic characters (×, …, ·, ’, arrows) in labels,
+    # docstrings and comments.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[lint.isort]
+known-first-party = ["lyssna"]

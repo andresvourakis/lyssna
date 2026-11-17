@@ -1,0 +1,11 @@
+.venv/
+.venv-x86_64/
+__pycache__/
+*.pyc
+dist/
+*.egg-info/
+.env
+.pytest_cache/
+build/
+scripts/Lyssna.icns
+scripts/Lyssna.png
