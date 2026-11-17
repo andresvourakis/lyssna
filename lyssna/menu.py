@@ -11,6 +11,12 @@ LOCAL_ONLY_MANAGED_TITLE = f"{LOCAL_ONLY_TITLE} (Set by Your Organization)"
 KEY_MENU_LABELS = {"inworld": "Inworld"}  # providers sharing a config section get one key entry
 REPO_URL = "https://github.com/andresvourakis/lyssna"
 CLEANUP_OFF = "Off"
+# Section headers: the menu's two features, and the two kinds of engine inside each picker.
+LISTEN_HEADER = "Listen"
+DICTATE_HEADER = "Dictate"
+LOCAL_HEADER = "On this Mac"
+ONLINE_HEADER = "Online, with your API key"
+_LOCAL_PREFIX = f"{LOCAL_HEADER} ("
 # How each dictation key is written in menus, tooltips and the pill.
 KEY_NAMES = {"fn": "fn", "right_option": "right ⌥", "right_command": "right ⌘", "right_control": "right ⌃"}
 
@@ -33,6 +39,7 @@ def visibility(s: MenuState) -> dict[str, bool]:
     """Which optional items show. Everything not listed here always shows."""
     return {
         "now_playing": s.downloading or bool(s.message) or s.player != "idle",
+        "transport": s.player != "idle",  # Pause / Resume, Stop, Previous and Next Sentence
         "voice": s.has_voices,
         "usage": bool(s.usage_line),
         "api_keys": not s.local_only,
@@ -93,6 +100,20 @@ def download_line(what: str, fraction: float) -> str:
 def provider_title(label: str, ready: bool, hint: str) -> str:
     """A Voice Provider entry: its name, plus what is missing when it cannot read yet."""
     return label if ready else f"{label} · {hint}"
+
+
+def engine_row_label(label: str) -> str:
+    """An engine's row inside its picker, under a header that already says where it runs:
+    "On this Mac (Kokoro)" becomes "Kokoro"; other labels stay as they are."""
+    if label.startswith(_LOCAL_PREFIX) and label.endswith(")"):
+        return label[len(_LOCAL_PREFIX):-1]
+    return label
+
+
+def privacy_symbol(stays_local: bool) -> str:
+    """The SF Symbol next to a privacy line: a lock when everything stays on this Mac, an arrow
+    out when anything is sent."""
+    return "lock" if stays_local else "arrow.up.right"
 
 
 def local_only_title(managed: bool) -> str:

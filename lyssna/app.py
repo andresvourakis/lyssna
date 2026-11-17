@@ -19,16 +19,22 @@ from .dictation import cleaners, transcribers
 from .events import KeyboardTap, MouseTap, Point, SelectionGestureDetector, accessibility_trusted
 from .hotkeys import pretty, tokens
 from .menu import (
+    DICTATE_HEADER,
     KEY_MENU_LABELS,
+    LISTEN_HEADER,
+    LOCAL_HEADER,
+    ONLINE_HEADER,
     REPO_URL,
     MenuState,
     cleanup_title,
     dictation_title,
     download_line,
+    engine_row_label,
     key_name,
     local_only_title,
     menubar_text_allowed,
     now_playing,
+    privacy_symbol,
     provider_title,
     separators_shown,
     visibility,
@@ -84,6 +90,22 @@ def info_item(title: str) -> rumps.MenuItem:
     return rumps.MenuItem(title)
 
 
+def section_header(title: str) -> rumps.MenuItem:
+    """A titled section of a menu: the native header on macOS 14 and later, else a greyed-out line."""
+    item = rumps.MenuItem(title)
+    if AppKit.NSMenuItem.respondsToSelector_("sectionHeaderWithTitle:"):
+        item._menuitem = AppKit.NSMenuItem.sectionHeaderWithTitle_(title)
+    return item
+
+
+def set_symbol(item: rumps.MenuItem, symbol: str) -> None:
+    """Show an SF Symbol, as a template image, in front of a menu item's title."""
+    image = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, None)
+    if image is not None:
+        image.setTemplate_(True)
+    item._menuitem.setImage_(image)
+
+
 def tidy_separators(nsmenu) -> None:
     """Hide the separators of an NSMenu that would double up or dangle around hidden items."""
     items = list(nsmenu.itemArray())
@@ -133,14 +155,18 @@ class MenuBar(rumps.App):
     The menu, top to bottom (optional rows in brackets; lyssna.menu has the rules):
 
         [Allow Accessibility Access…]
-        Read Selection, Read Clipboard
-        Start Dictation, History…, Transcription ▸, Cleanup ▸, where speech goes
-        Pause / Resume, Stop, Previous Sentence, Next Sentence
-        [now playing], Speed ▸, [Voice ▸], Voice Provider ▸, where the text goes
+        Listen (a section header)
+          Read Selection, Read Clipboard, [now playing],
+          [Pause / Resume, Stop, Previous Sentence, Next Sentence] (only while reading),
+          Speed ▸, [Voice ▸], Voice Provider ▸, where the text goes
+        Dictate (a section header)
+          Start Dictation, History…, Transcription ▸, Cleanup ▸, where speech goes
         [usage this month], Settings ▸, Setup…, About Lyssna
         Quit Lyssna
 
-    with a separator between groups. Separators hide themselves when the rows around them do."""
+    with a separator after each section and before Quit. Separators hide themselves when the
+    rows around them do. The three engine pickers group their engines under "On this Mac" and
+    "Online, with your API key"; a lock or an arrow out marks each "where it goes" line."""
 
     def __init__(self, ctl: Controller):
         super().__init__("Lyssna", title=None, icon=MENUBAR_ICON, template=True, quit_button=None)
@@ -151,11 +177,12 @@ class MenuBar(rumps.App):
         self.on_setup_dictation: Callable[[str], None] = lambda engine: None  # ...at its dictation keys
         self.on_history: Callable[[], None] = lambda: None  # opens the dictation history; set by LyssnaApp
         self._downloading = False
+        self._engine_groups: list[tuple[rumps.MenuItem, list[rumps.MenuItem]]] = []  # header, its rows
+        self._privacy_symbols: dict[str, str] = {}  # "reading" / "dictation": the symbol shown now
+        self.header_listen = section_header(LISTEN_HEADER)
         self.menu = [
-            *self._build_reading(), None,
-            *self._build_dictation(), None,
-            *self._build_transport(), None,
-            *self._build_voice(), None,
+            self.header_listen, *self._build_reading(), *self._build_transport(), *self._build_voice(), None,
+            section_header(DICTATE_HEADER), *self._build_dictation(), None,
             *self._build_app(), None,
             with_shortcut(rumps.MenuItem("Quit Lyssna", callback=self.quit), "cmd+q"),
         ]
@@ -174,35 +201,49 @@ class MenuBar(rumps.App):
 
     def _build_reading(self) -> list:
         self.item_read = self._item("Read Selection", self.ctl.speak_selection, "speak")
-        return [self.item_read, self._item("Read Clipboard", self.ctl.speak_clipboard)]
+        self.item_now = info_item("Nothing playing")
+        return [self.item_read, self._item("Read Clipboard", self.ctl.speak_clipboard), self.item_now]
 
     def _build_dictation(self) -> list:
         self.item_dictate = rumps.MenuItem(self._dictate_title(), callback=lambda _: self._dictate())
         self.transcription_menu = rumps.MenuItem("Transcription")
-        self.transcriber_items = {}
-        for name, cls in transcribers.REGISTRY.items():
-            self.transcriber_items[name] = rumps.MenuItem(cls.label, callback=lambda _, n=name: self._set_transcriber(n))
-            self.transcription_menu.add(self.transcriber_items[name])
+        self.transcriber_items = self._add_engines(self.transcription_menu, transcribers.REGISTRY,
+                                                   lambda cls: not cls.sends_audio_off_device, self._set_transcriber)
         self.cleanup_menu = rumps.MenuItem("Cleanup")
         self.cleanup_items = {"": rumps.MenuItem("Off", callback=lambda _: self._set_cleaner(""))}
         self.cleanup_menu.add(self.cleanup_items[""])
-        for name, cls in cleaners.REGISTRY.items():
-            self.cleanup_items[name] = rumps.MenuItem(cls.label, callback=lambda _, n=name: self._set_cleaner(n))
-            self.cleanup_menu.add(self.cleanup_items[name])
+        self.cleanup_items.update(self._add_engines(self.cleanup_menu, cleaners.REGISTRY,
+                                                    lambda cls: not cls.sends_text_off_device, self._set_cleaner))
         self.item_dictation_privacy = info_item(self.ctl.dictation_privacy_note())
         return [self.item_dictate, rumps.MenuItem("History…", callback=lambda _: self.on_history()),
                 self.transcription_menu, self.cleanup_menu, self.item_dictation_privacy]
 
+    def _add_engines(self, menu: rumps.MenuItem, registry: dict, runs_here: Callable[[type], bool],
+                     choose: Callable[[str], None]) -> dict[str, rumps.MenuItem]:
+        """Fill an engine picker: the engines on this Mac under one header, the online ones under
+        another, each group in registry order. Returns the rows by engine name."""
+        items = {}
+        for header, local in ((LOCAL_HEADER, True), (ONLINE_HEADER, False)):
+            names = [name for name, cls in registry.items() if runs_here(cls) == local]
+            if not names:
+                continue
+            menu.add(section_header(header))
+            for name in names:
+                items[name] = rumps.MenuItem(engine_row_label(registry[name].label), callback=lambda _, n=name: choose(n))
+                menu.add(items[name])
+            self._engine_groups.append((menu[header], [items[name] for name in names]))
+        return items
+
     def _build_transport(self) -> list:
-        return [
+        self.transport_items = [
             self._item("Pause / Resume", self.ctl.toggle_pause, "pause"),
             self._item("Stop", self.ctl.stop, "stop"),
             self._item("Previous Sentence", self.ctl.prev, "prev"),
             self._item("Next Sentence", self.ctl.next, "next"),
         ]
+        return self.transport_items
 
     def _build_voice(self) -> list:
-        self.item_now = info_item("Nothing playing")
         self.speed_menu = rumps.MenuItem("Speed")
         self.speed_menu.add(self._item("Faster", lambda: self._step_speed(self.ctl.faster), "faster"))
         self.speed_menu.add(self._item("Slower", lambda: self._step_speed(self.ctl.slower), "slower"))
@@ -216,12 +257,10 @@ class MenuBar(rumps.App):
             self.voice_menu.add(rumps.MenuItem(text, callback=lambda _, v=voice: self._set_voice(v)))
 
         self.provider_menu = rumps.MenuItem("Voice Provider")
-        self.provider_items = {}
-        for name, cls in REGISTRY.items():
-            self.provider_items[name] = rumps.MenuItem(cls.label, callback=lambda _, n=name: self._set_provider(n))
-            self.provider_menu.add(self.provider_items[name])
+        self.provider_items = self._add_engines(self.provider_menu, REGISTRY,
+                                                lambda cls: not cls.sends_text_off_device, self._set_provider)
         self.item_privacy = info_item(self.ctl.privacy_note())
-        return [self.item_now, self.speed_menu, self.voice_menu, self.provider_menu, self.item_privacy]
+        return [self.speed_menu, self.voice_menu, self.provider_menu, self.item_privacy]
 
     def _build_app(self) -> list:
         self.item_usage = info_item("No usage this month")
@@ -375,7 +414,7 @@ class MenuBar(rumps.App):
         if image is not None:
             image.setTemplate_(True)
             item._menuitem.setImage_(image)
-        self.menu.insert_before(self.item_read.title, item)
+        self.menu.insert_before(self.header_listen.title, item)
         self.title = "⚠︎"
 
     def _relaunch(self) -> None:
@@ -397,6 +436,7 @@ class MenuBar(rumps.App):
         self._refresh_speed()
         self._refresh_dictation()
         self._refresh_providers()
+        self._refresh_engine_headers()
         self._refresh_voices()
         self._refresh_settings()
         self._apply_visibility()
@@ -415,9 +455,11 @@ class MenuBar(rumps.App):
             item.state = 1 if name == current else 0
             item.hidden = not allowed(name, self.ctl.cfg)  # online providers while local-only mode is on
             hint = cls.setup_hint if cls.can_run() else "not available"
-            item.title = provider_title(cls.label, self.ctl.provider_configured(name), hint)
+            item.title = provider_title(engine_row_label(cls.label), self.ctl.provider_configured(name), hint)
         self.provider_menu.title = self._provider_title()
         self.item_privacy.title = self.ctl.privacy_note()
+        cls = REGISTRY.get(current)
+        self._show_privacy_symbol("reading", self.item_privacy, cls is None or not cls.sends_text_off_device)
 
     def _refresh_dictation(self) -> None:
         cfg = self.ctl.cfg
@@ -427,7 +469,7 @@ class MenuBar(rumps.App):
             item.state = 1 if name == current else 0
             item.hidden = not transcribers.allowed(name, cfg)  # online engines while local-only mode is on
             hint = cls.setup_hint if cls.can_run() else "not available"
-            item.title = provider_title(cls.label, self.ctl.transcriber_configured(name), hint)
+            item.title = provider_title(engine_row_label(cls.label), self.ctl.transcriber_configured(name), hint)
         self.transcription_menu.title = self._transcription_title()
         current = self.ctl.current_cleaner()
         self.cleanup_items[""].state = 1 if not current else 0
@@ -436,9 +478,22 @@ class MenuBar(rumps.App):
             item.state = 1 if name == current else 0
             item.hidden = not cleaners.allowed(name, cfg)
             hint = cls.setup_hint if cls.can_run() else "not available"
-            item.title = provider_title(cls.label, self.ctl.cleaner_configured(name), hint)
+            item.title = provider_title(engine_row_label(cls.label), self.ctl.cleaner_configured(name), hint)
         self.cleanup_menu.title = self._cleanup_title()
         self.item_dictation_privacy.title = self.ctl.dictation_privacy_note()
+        self._show_privacy_symbol("dictation", self.item_dictation_privacy, self.ctl.dictation_stays_local())
+
+    def _refresh_engine_headers(self) -> None:
+        """A picker's header hides when every engine under it does (online ones in local-only mode)."""
+        for header, rows in self._engine_groups:
+            header.hidden = all(row.hidden for row in rows)
+
+    def _show_privacy_symbol(self, which: str, item: rumps.MenuItem, stays_local: bool) -> None:
+        """Put the lock or the arrow out in front of a privacy line, only when it changes."""
+        symbol = privacy_symbol(stays_local)
+        if self._privacy_symbols.get(which) != symbol:
+            self._privacy_symbols[which] = symbol
+            set_symbol(item, symbol)
 
     def _transcription_title(self) -> str:
         cls = transcribers.REGISTRY.get(self.ctl.current_transcriber())
@@ -479,8 +534,8 @@ class MenuBar(rumps.App):
                           has_voices=bool(self.ctl.voices()), usage_line=usage_line, local_only=self.ctl.local_only(),
                           dictation=self.ctl.dictation.state)
         shown = visibility(state)
-        for item, key in ((self.item_now, "now_playing"), (self.voice_menu, "voice"), (self.item_usage, "usage"),
-                          (self.key_menu, "api_keys")):
+        for item, key in ((self.item_now, "now_playing"), *((t, "transport") for t in self.transport_items),
+                          (self.voice_menu, "voice"), (self.item_usage, "usage"), (self.key_menu, "api_keys")):
             if item.hidden == shown[key]:
                 item.hidden = not shown[key]
         for menu in (self._menu._menu, self.settings_menu._menu, self.key_menu._menu):

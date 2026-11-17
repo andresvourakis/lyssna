@@ -33,6 +33,13 @@ def test_no_voice_list_hides_voice():
     assert visibility(MenuState(has_voices=False))["voice"] is False
 
 
+def test_transport_shows_only_while_reading():
+    assert visibility(MenuState(player="idle"))["transport"] is False
+    assert visibility(MenuState(player="idle", message="Nothing selected", downloading=True))["transport"] is False
+    for player in ("loading", "playing", "paused"):
+        assert visibility(MenuState(player=player))["transport"] is True
+
+
 @pytest.mark.parametrize(("rows", "expected"), [
     ([True, None, True], [True]),
     ([True, None, False, None, True], [True, False]),   # an empty group: one separator, not two
@@ -52,6 +59,18 @@ def test_wording():
     assert menu.provider_title("Cartesia Sonic", False, "no API key") == "Cartesia Sonic · no API key"
     assert menu.now_playing("paused", 2, 5, "Hello") == "Paused 2 of 5: Hello"
     assert menu.now_playing("idle", 0, 0, "") == ""
+
+
+def test_engine_row_label_drops_the_on_this_mac_wrapper():
+    assert menu.engine_row_label("On this Mac (Kokoro)") == "Kokoro"
+    assert menu.engine_row_label("On this Mac (S1-mini by Superwhisper)") == "S1-mini by Superwhisper"
+    assert menu.engine_row_label("Inworld TTS-2") == "Inworld TTS-2"
+    assert menu.engine_row_label("OpenAI (gpt-transcribe)") == "OpenAI (gpt-transcribe)"
+
+
+def test_privacy_symbol():
+    assert menu.privacy_symbol(True) == "lock"
+    assert menu.privacy_symbol(False) == "arrow.up.right"
 
 
 def test_tidy_separators_on_a_real_nsmenu():
@@ -93,14 +112,56 @@ def visible_rows(nsmenu) -> list[str]:
 
 def test_top_level_menu_when_idle(menubar):
     assert visible_rows(menubar._menu._menu) == [
-        "Read Selection", "Read Clipboard", "---",
-        "Start Dictation · hold fn", "History…", "Transcription: On this Mac (Parakeet)",
-        "Cleanup: On this Mac (S1-mini by Superwhisper)", "Speech stays on this Mac", "---",
-        "Pause / Resume", "Stop", "Previous Sentence", "Next Sentence", "---",
+        "Listen", "Read Selection", "Read Clipboard",
         "Speed: 1.2×", "Voice: Heart", "Voice Provider: On this Mac (Kokoro)", "Text stays on this Mac", "---",
+        "Dictate", "Start Dictation · hold fn", "History…", "Transcription: On this Mac (Parakeet)",
+        "Cleanup: On this Mac (S1-mini by Superwhisper)", "Speech stays on this Mac", "---",
         "Settings", "Setup…", "About Lyssna", "---",
         "Quit Lyssna",
     ]
+
+
+def test_sections_have_native_headers(menubar):
+    items = {i.title(): i for i in menubar._menu._menu.itemArray()}
+    for title in ("Listen", "Dictate"):
+        assert items[title].isSectionHeader() and items[title].action() is None
+
+
+def test_menu_while_reading_shows_the_transport(menubar, monkeypatch):
+    from lyssna.controller import Controller
+    from lyssna.player import Status
+
+    monkeypatch.setattr(Controller, "status", property(lambda self: Status(state="playing", index=1, total=3, text="Hello")))
+    menubar._tick(None)
+    rows = visible_rows(menubar._menu._menu)
+    assert rows[:9] == ["Listen", "Read Selection", "Read Clipboard", "Reading 1 of 3: Hello",
+                        "Pause / Resume", "Stop", "Previous Sentence", "Next Sentence", "Speed: 1.2×"]
+
+
+def test_permission_warning_sits_above_listen(menubar):
+    menubar.show_permission_warning()
+    assert visible_rows(menubar._menu._menu)[:2] == ["Allow Accessibility Access…", "Listen"]
+
+
+def test_privacy_lines_show_where_things_go(menubar, fake_keychain):
+    from lyssna import keychain
+
+    assert menubar._privacy_symbols == {"reading": "lock", "dictation": "lock"}
+    assert menubar.item_privacy._menuitem.image() is not None
+    fake_keychain.items["openai"] = "k"
+    keychain.clear_cache()
+    menubar._set_transcriber("openai")
+    assert menubar._privacy_symbols["dictation"] == "arrow.up.right"
+
+
+def test_provider_menu_groups_local_and_online(menubar):
+    assert visible_rows(menubar.provider_menu._menu) == [
+        "On this Mac", "Kokoro · 140 MB download", "System Voice",
+        "Online, with your API key", "Inworld TTS-2 · no API key", "Inworld TTS-2 Flash · no API key",
+        "Cartesia Sonic · no API key", "ElevenLabs · no API key", "OpenAI TTS · no API key",
+    ]
+    headers = [i.title() for i in menubar.provider_menu._menu.itemArray() if i.isSectionHeader()]
+    assert headers == ["On this Mac", "Online, with your API key"]
 
 
 def test_settings_menu(menubar):
@@ -125,8 +186,10 @@ def test_local_only_hides_api_keys_and_online_providers(menubar):
     menubar.ctl.set_local_only(True)
     menubar._refresh_checks()
     assert "API Keys" not in visible_rows(menubar.settings_menu._menu)
-    assert visible_rows(menubar.provider_menu._menu) == ["On this Mac (Kokoro) · 140 MB download",
-                                                         "On this Mac (System Voice)"]
+    assert visible_rows(menubar.provider_menu._menu) == ["On this Mac", "Kokoro · 140 MB download", "System Voice"]
+    menubar.ctl.set_local_only(False)
+    menubar._refresh_checks()
+    assert "Online, with your API key" in visible_rows(menubar.provider_menu._menu)
 
 
 def test_managed_local_only_is_greyed_out(menubar, managed_prefs):
@@ -147,7 +210,7 @@ def test_usage_line_shows_only_with_a_cost(menubar):
     menubar._apply_visibility()
     assert not menubar.item_usage.hidden and menubar.item_usage.title == "This month: 2k characters, about $0.10"
     rows = visible_rows(menubar._menu._menu)
-    assert rows[rows.index("Text stays on this Mac") + 1:][:3] == ["---", "This month: 2k characters, about $0.10", "Settings"]
+    assert rows[rows.index("Speech stays on this Mac") + 1:][:3] == ["---", "This month: 2k characters, about $0.10", "Settings"]
 
 
 def test_no_submenu_title_ends_with_an_ellipsis(menubar):
@@ -199,18 +262,20 @@ def test_dictation_engines_show_their_hints(menubar, monkeypatch):
     monkeypatch.setattr(models.ModelSet, "present", lambda self: False)
     menubar._refresh_checks()
     assert visible_rows(menubar.transcription_menu._menu) == [
-        "On this Mac (Parakeet) · 630 MB download", "OpenAI (gpt-transcribe) · no API key", "Inworld STT · no API key"]
+        "On this Mac", "Parakeet · 630 MB download",
+        "Online, with your API key", "OpenAI (gpt-transcribe) · no API key", "Inworld STT · no API key"]
     rows = visible_rows(menubar.cleanup_menu._menu)
-    assert rows[0] == "Off" and rows[-1] == "Claude Haiku 5.5 · no API key"
+    assert rows[:2] == ["Off", "On this Mac"] and rows[-2:] == ["Online, with your API key", "Claude Haiku 5.5 · no API key"]
     checked = [i.title() for i in menubar.transcription_menu._menu.itemArray() if i.state() == 1]
-    assert checked == ["On this Mac (Parakeet) · 630 MB download"]
+    assert checked == ["Parakeet · 630 MB download"]
 
 
 def test_local_only_hides_online_dictation_engines(menubar):
     menubar.ctl.set_local_only(True)
     menubar._refresh_checks()
-    assert [r.split(" · ")[0] for r in visible_rows(menubar.transcription_menu._menu)] == ["On this Mac (Parakeet)"]
-    assert "Claude Haiku 5.5" not in " ".join(visible_rows(menubar.cleanup_menu._menu))
+    assert [r.split(" · ")[0] for r in visible_rows(menubar.transcription_menu._menu)] == ["On this Mac", "Parakeet"]
+    assert [r.split(" · ")[0] for r in visible_rows(menubar.cleanup_menu._menu)] == [
+        "Off", "On this Mac", "S1-mini by Superwhisper"]
 
 
 def test_cleanup_off_is_checked(menubar):

@@ -313,6 +313,14 @@ class Controller:
     def dictation_privacy_note(self) -> str:
         """One line for the menu saying where speech (and the text, when an online cleaner
         tidies it) goes with the dictation engines that will really run."""
+        return dictation_privacy(*self._dictation_recipients())
+
+    def dictation_stays_local(self) -> bool:
+        """Whether dictation, with the engines that will really run, sends nothing anywhere."""
+        return not any(self._dictation_recipients())
+
+    def _dictation_recipients(self) -> tuple[str, str]:
+        """Who receives the speech and who the text, "" for this Mac."""
         name = transcribers.effective_transcriber(self.cfg, wait=False)
         speech_to = ""
         if name and transcribers.REGISTRY[name].sends_audio_off_device:
@@ -321,7 +329,7 @@ class Controller:
         text_to = ""
         if name and cleaners.REGISTRY[name].sends_text_off_device:
             text_to = cleaners.get_cleaner(name, self.cfg).recipient()
-        return dictation_privacy(speech_to, text_to)
+        return speech_to, text_to
 
     def provider_label(self) -> str:
         cls = REGISTRY.get(self.cfg.get("provider"))
