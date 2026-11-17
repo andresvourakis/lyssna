@@ -87,14 +87,17 @@ button = "ctrl+alt+b"      # toggle the play button that appears after selecting
 selection_button = true    # show a play button next to the cursor after you select text
 mini_player = true         # floating transport bar while reading
 button_timeout = 4.0       # seconds before the play button fades away
-# Where you last left the mini player (drag it; drop it on the left/right screen edge to
-# collapse it into a pill). Managed by the app.
+# Where you last left the mini player (drag it; drop it on the left, right or bottom screen
+# edge to collapse it into a pill: player_dock = "left" | "right" | "bottom", and then
+# player_y is the position along that edge, 0..1). Managed by the app.
 player_dock = ""
 player_x = -1.0
 player_y = -1.0
 idle_pill = true           # a slim pill on the screen edge when nothing plays; hover it to dictate,
                            # read the selection or open the history. false = nothing at rest
-# Where you last left the idle pill while the player is not docked. Managed by the app.
+# Where you last left the idle pill while the player is not docked: dictation_dock = "left" |
+# "right" | "bottom" and dictation_y, the position along that edge (0..1). Empty = the bottom
+# centre of the screen. Managed by the app.
 dictation_dock = ""
 dictation_y = -1.0
 

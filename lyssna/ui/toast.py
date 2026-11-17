@@ -53,8 +53,11 @@ def toast_width(text_w: float, action_w: float) -> float:
 
 def tip_origin(anchor: tuple[float, float, float, float], edge: str, width: float) -> tuple[float, float]:
     """Where a tip `width` wide goes beside `anchor` (x, y, w, h in screen points): on the
-    inner side of the screen edge the pill is on, vertically centred on the anchor."""
+    inner side of the screen edge the pill is on, centred on the anchor; above it on the
+    bottom edge."""
     x, y, w, h = anchor
+    if edge == "bottom":
+        return x + (w - width) / 2, y + h + TIP_GAP
     left = x - TIP_GAP - width if edge == "right" else x + w + TIP_GAP
     return left, y + (h - TIP_H) / 2
 
@@ -120,14 +123,16 @@ class Toast(FloatingPanel):
         return width
 
     @objc.python_method
-    def present(self, notice, screen=None) -> None:
-        """Show a notice (lyssna.controller.Notice) on `screen` (default: under the mouse)."""
+    def present(self, notice, screen=None, floor: float | None = None) -> None:
+        """Show a notice (lyssna.controller.Notice) on `screen` (default: under the mouse).
+        `floor` is the lowest y it may start at (above the pill when that sits on the bottom edge)."""
         screen = screen or screen_under_mouse()
         vf = visible_frame(screen)
         same = bool(notice.key) and notice.key == self._key and self.visible() and self._token is not None
         width = self.layout(notice.text, notice.action, min(MAX_W, vf.size.width - 40))
         x = round(vf.origin.x + (vf.size.width - width) / 2)
-        self.panel.setFrame_display_(((x, vf.origin.y + BOTTOM), (width, TOAST_H)), True)
+        y = max(vf.origin.y + BOTTOM, floor) if floor is not None else vf.origin.y + BOTTOM
+        self.panel.setFrame_display_(((x, y), (width, TOAST_H)), True)
         self._notice, self._key, self._on_action = notice, notice.key, notice.on_action
         self.action_bg.set_hover(False)
         token = object()

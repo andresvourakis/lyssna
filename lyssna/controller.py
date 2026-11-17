@@ -471,7 +471,8 @@ class Controller:
         self.set_selection_button(not self.selection_button_enabled)
 
     def player_layout(self) -> dict:
-        """Where the mini player was last left: dock ("left"/"right"/"") and position fractions."""
+        """Where the mini player was last left: dock ("left"/"right"/"bottom"/"") and position
+        fractions (docked, y is the position along that edge)."""
         ui = self.cfg.get("ui", {})
         return {"dock": str(ui.get("player_dock", "")), "x": float(ui.get("player_x", -1)), "y": float(ui.get("player_y", -1))}
 
@@ -479,7 +480,8 @@ class Controller:
         self.cfg = config.update(**{"ui.player_dock": dock, "ui.player_x": round(x, 4), "ui.player_y": round(y, 4)})
 
     def dictation_layout(self) -> dict:
-        """Where the idle pill was last left while the player was not docked: edge and height fraction."""
+        """Where the idle pill was last left while the player was not docked: edge ("left",
+        "right", "bottom", or "" for the default bottom centre) and the position along it."""
         ui = self.cfg.get("ui", {})
         return {"dock": str(ui.get("dictation_dock", "")), "y": float(ui.get("dictation_y", -1))}
 

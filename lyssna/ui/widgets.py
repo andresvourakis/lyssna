@@ -6,6 +6,7 @@ here follows light/dark mode on its own."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 import AppKit
@@ -24,6 +25,15 @@ KNOB = 14.0       # playhead knob shown while hovering / scrubbing the bar
 SLIVER_W, SLIVER_H = 26.0, 64.0
 CAPSULE_W, CAPSULE_H = 8.0, 56.0
 CAPSULE_INSET = 10.0  # from the screen edge
+
+
+def capsule_centre(edge: str) -> tuple[float, float]:
+    """Centre of the drawn capsule inside a sliver view on `edge`, CAPSULE_INSET from the
+    side that touches the screen edge (the view is SLIVER_H x SLIVER_W lying flat on the bottom)."""
+    near = CAPSULE_INSET + CAPSULE_W / 2
+    if edge == "bottom":
+        return (SLIVER_H / 2, near)
+    return (near if edge == "left" else SLIVER_W - near, SLIVER_H / 2)
 
 
 def clear_glow():
@@ -269,7 +279,11 @@ class Sliver(AppKit.NSView):
     the whole fill dims. Transparent around the capsule.
 
 At rest (set_rest(True), the idle pill when nothing plays) it is the same capsule with no fill
-at all: the content colour at a low, calm alpha, and nothing animating."""
+at all: the content colour at a low, calm alpha, and nothing animating.
+
+On the bottom edge (edge "bottom") the view is SLIVER_H wide and SLIVER_W tall and the whole
+capsule layer is turned a quarter clockwise, so the fill grows from the left and the sparks
+drift right: the same layers, lying flat."""
 
     REST_ALPHA = 0.22  # the resting capsule's tint
 
@@ -388,11 +402,14 @@ at all: the content colour at a low, calm alpha, and nothing animating."""
         self.body.addAnimation_forKey_(_loop("endPoint", (1.0, 1.0), (0.0, 0.85), 8.1), "swing2")
 
     def updateLayer(self):
-        x = CAPSULE_INSET if self.edge == "left" else SLIVER_W - CAPSULE_INSET - CAPSULE_W
         h = self._fill_h()
         Quartz.CATransaction.begin()
         Quartz.CATransaction.setDisableActions_(True)
-        self.capsule.setFrame_(((x, (SLIVER_H - CAPSULE_H) / 2), (CAPSULE_W, CAPSULE_H)))
+        # bounds + position + transform (never frame, which is undefined under a transform)
+        self.capsule.setBounds_(((0, 0), (CAPSULE_W, CAPSULE_H)))
+        self.capsule.setPosition_(capsule_centre(self.edge))
+        self.capsule.setTransform_(Quartz.CATransform3DMakeRotation(-math.pi / 2, 0, 0, 1) if self.edge == "bottom"
+                                   else Quartz.CATransform3DIdentity)
         self.capsule.setBorderColor_(theme.HAIRLINE.CGColor())
         self.clip.setHidden_(self.rest)
         if self.rest:

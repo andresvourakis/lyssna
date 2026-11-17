@@ -52,17 +52,24 @@ def ease(current: float, target: float, dt: float) -> float:
 
 
 def wave_points(amplitude: float, phase: float, width: float = WAVE_W, height: float = WAVE_H,
-                cycles: float = CYCLES, steps: int = STEPS) -> list[tuple[float, float]]:
-    """Points of the wave, top to bottom of a width x height area, centred sideways. The
-    ends sit half a stroke in from the edges so the round caps stay inside."""
-    top, span = STROKE / 2, height - STROKE
-    cx = width / 2
-    return [(cx + amplitude * math.sin(2 * math.pi * (cycles * i / steps + phase)), top + span * i / steps)
-            for i in range(steps + 1)]
+                cycles: float = CYCLES, steps: int = STEPS, horizontal: bool = False) -> list[tuple[float, float]]:
+    """Points of the wave along a width x height area: up its height, or with `horizontal`
+    left to right across its width, swinging about the middle of the other side. The ends
+    sit half a stroke in so the round caps stay inside."""
+    length, depth = (width, height) if horizontal else (height, width)
+    start, span = STROKE / 2, length - STROKE
+    mid = depth / 2
+    points = []
+    for i in range(steps + 1):
+        along = start + span * i / steps
+        swing = mid + amplitude * math.sin(2 * math.pi * (cycles * i / steps + phase))
+        points.append((along, swing) if horizontal else (swing, along))
+    return points
 
 
 class WaveView(NSView):
-    """The meter. set_mode("recording" | "working"), start() / stop() its display timer."""
+    """The meter. set_mode("recording" | "working"), start() / stop() its display timer.
+    `horizontal` lays it along a flat capsule (a WAVE_H x WAVE_W frame)."""
 
     def initWithFrame_(self, frame):
         self = objc.super(WaveView, self).initWithFrame_(frame)
@@ -76,6 +83,7 @@ class WaveView(NSView):
         self.shape.setFillColor_(None)
         self.layer().addSublayer_(self.shape)
         self.level_fn: Callable[[], float] = lambda: 0.0
+        self.horizontal = False
         self.mode = "recording"
         self.amplitude = AMP_MIN
         self.phase = 0.0
@@ -150,7 +158,9 @@ class WaveView(NSView):
     def _draw(self) -> None:
         w, h = self.bounds().size
         path = Quartz.CGPathCreateMutable()
-        for i, (x, y) in enumerate(wave_points(self.amplitude, self.phase, w or WAVE_W, h or WAVE_H)):
+        default = (WAVE_H, WAVE_W) if self.horizontal else (WAVE_W, WAVE_H)
+        points = wave_points(self.amplitude, self.phase, w or default[0], h or default[1], horizontal=self.horizontal)
+        for i, (x, y) in enumerate(points):
             if i == 0:
                 Quartz.CGPathMoveToPoint(path, None, x, y)
             else:

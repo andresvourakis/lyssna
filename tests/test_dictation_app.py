@@ -73,7 +73,7 @@ def test_the_pill_is_wired_to_dictation(lyssna):
 
 def test_toasts_are_queued_not_shown_inline(lyssna):
     shown = []
-    lyssna.toast.present = lambda notice, screen=None: shown.append(notice.text)
+    lyssna.toast.present = lambda notice, screen=None, floor=None: shown.append(notice.text)
     lyssna.ctl.toast(Notice("Hello"))
     assert shown == [] and len(lyssna.queued) == 1
     lyssna.queued[0]()

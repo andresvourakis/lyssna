@@ -24,18 +24,28 @@ from lyssna.ui.mini_player import (
     DOCK_GAP,
     DOCK_GAP_V,
     DOCK_H,
+    DOCK_W,
     FREE_H,
+    MENU_DISC,
     MENU_H,
     MENU_MIC_H,
     MENU_MIC_W,
     MENU_W,
+    along_centre,
+    along_fraction,
+    anchor_of,
     dictation_spot,
+    docked_frame,
     edge_frame,
+    lay,
+    nearest_edge,
+    oriented,
     pick_form,
-    spot_fraction,
+    pill_len,
+    snap_edge,
 )
 from lyssna.ui.toast import ACTION_PAD, ACTION_RIGHT, BOTTOM, PAD_L, TOAST_H, tip_origin, toast_width
-from lyssna.ui.widgets import CAPSULE_INSET, SLIVER_H, SLIVER_W
+from lyssna.ui.widgets import CAPSULE_H, CAPSULE_INSET, CAPSULE_W, SLIVER_H, SLIVER_W, capsule_centre
 
 # -- the rules -------------------------------------------------------------------------------
 
@@ -54,46 +64,103 @@ def test_pick_form(reading, dictation, docked, idle_pill, form):
     assert pick_form(reading, dictation, docked, idle_pill) == form
 
 
-def test_dictation_spot_follows_the_docked_player_then_the_idle_pill_then_the_right_edge():
+def test_dictation_spot_follows_the_docked_player_then_the_idle_pill_then_the_bottom_centre():
     assert dictation_spot({"dock": "left", "y": 0.3}, {"dock": "right", "y": 0.9}) == ("left", 0.3)
+    assert dictation_spot({"dock": "bottom", "y": 0.2}, {"dock": "right", "y": 0.9}) == ("bottom", 0.2)
     assert dictation_spot({"dock": "", "y": 0.5}, {"dock": "left", "y": 0.9}) == ("left", 0.9)
-    assert dictation_spot({"dock": "", "y": 0.5}, {"dock": "", "y": -1.0}) == ("right", -1.0)
+    assert dictation_spot({"dock": "", "y": 0.5}, {"dock": "bottom", "y": 0.7}) == ("bottom", 0.7)
+    assert dictation_spot({"dock": "", "y": 0.5}, {"dock": "", "y": 0.4}) == ("bottom", -1.0)  # fresh config
 
 
 VF = (0.0, 25.0, 1440.0, 875.0)
+EDGES = ("left", "right", "bottom")
 
 
-def test_edge_frame_sits_on_the_edge_and_lines_up_with_the_dock():
-    (x, y), (w, h) = edge_frame(VF, "right", -1.0, CAP_W, COMPACT_H)
-    assert x == 1440 - CAPSULE_INSET - CAP_W and (w, h) == (CAP_W, COMPACT_H)
-    assert y + h / 2 == pytest.approx(25 + 875 / 2)  # centred without a saved spot
-    (x, _), _ = edge_frame(VF, "left", 0.5, CAP_W, COMPACT_H)
-    assert x == CAPSULE_INSET
-    (x, _), _ = edge_frame(VF, "right", 0.5, SLIVER_W, SLIVER_H, inset=0.0)
-    assert x == 1440 - SLIVER_W  # the resting sliver's window is flush with the edge
-    # the same fraction puts its centre where the docked player's centre goes
-    (_, y), (_, h) = edge_frame(VF, "left", 0.25, CAP_W, FREE_H)
-    assert y + h / 2 == pytest.approx(25 + 0.25 * (875 - DOCK_H) + DOCK_H / 2)
+def test_oriented_and_lay():
+    assert oriented(60, 34, "left") == oriented(60, 34, "right") == (34, 60)
+    assert oriented(60, 34, "bottom") == (60, 34)
+    assert lay(10, 20, 3, 8, 100, flat=False) == ((3, 10), (8, 20))           # upright: along is y
+    assert lay(10, 20, 3, 8, 100, flat=True) == ((10, 3), (20, 8))            # flat: along is x
+    assert lay(10, 20, 3, 8, 100, flat=True, flip=True) == ((70, 3), (20, 8))  # read from the right
 
 
-def test_edge_frame_stays_on_screen():
-    (_, y), (_, h) = edge_frame(VF, "right", 1.0, CAP_W, FREE_H)
-    assert y + h <= 25 + 875
-    (_, y), _ = edge_frame((0, 0, 800, 600), "right", 0.0, CAP_W, FREE_H)
-    assert y >= 0
+@pytest.mark.parametrize("edge", EDGES)
+def test_edge_frame_hugs_each_edge(edge):
+    (x, y), (w, h) = edge_frame(VF, edge, -1.0, COMPACT_H, CAP_W)
+    assert (w, h) == oriented(COMPACT_H, CAP_W, edge)
+    if edge == "left":
+        assert x == CAPSULE_INSET and y + h / 2 == pytest.approx(25 + 875 / 2)
+    elif edge == "right":
+        assert x + w == 1440 - CAPSULE_INSET and y + h / 2 == pytest.approx(25 + 875 / 2)
+    else:  # above the Dock, by the same gap, in the middle
+        assert y == 25 + CAPSULE_INSET and x + w / 2 == pytest.approx(720)
+    (x, y), (w, h) = edge_frame(VF, edge, 0.5, SLIVER_H, SLIVER_W, inset=0.0)
+    assert {"left": x, "right": 1440 - (x + w), "bottom": y - 25}[edge] == 0  # the sliver is flush
 
 
-def test_spot_fraction_inverts_edge_frame():
-    for fy in (0.0, 0.3, 1.0):
-        (_, y), (_, h) = edge_frame(VF, "left", fy, SLIVER_W, SLIVER_H, inset=0.0)
-        assert spot_fraction(VF, y + h / 2) == pytest.approx(fy)
-    assert spot_fraction(VF, -500) == 0.0 and spot_fraction(VF, 5000) == 1.0
+@pytest.mark.parametrize("edge", EDGES)
+def test_a_saved_fraction_means_the_same_spot_for_every_form(edge):
+    """The fraction is measured on the room an open pill has, so every form on the edge
+    centres on the same point: a dictation lines up with the docked player."""
+    for frac in (0.0, 0.25, 1.0):
+        centres = set()
+        for length, across in ((COMPACT_H, CAP_W), (FREE_H, CAP_W), (SLIVER_H, SLIVER_W), (DOCK_H, DOCK_W)):
+            (x, y), (w, h) = edge_frame(VF, edge, frac, length, across)
+            centres.add(round(x + w / 2 if edge == "bottom" else y + h / 2, 6))
+        assert centres == {round(along_centre(VF, edge, frac), 6)}
+
+
+@pytest.mark.parametrize("edge", EDGES)
+def test_edge_frame_stays_on_screen(edge):
+    for frac in (0.0, 1.0):
+        (x, y), (w, h) = edge_frame((0, 0, 800, 600), edge, frac, FREE_H, CAP_W)
+        assert 0 <= x and x + w <= 800 and 0 <= y and y + h <= 600
+
+
+@pytest.mark.parametrize("edge", EDGES)
+def test_along_fraction_inverts_along_centre(edge):
+    for frac in (0.0, 0.3, 1.0):
+        assert along_fraction(VF, edge, along_centre(VF, edge, frac)) == pytest.approx(frac)
+    assert along_fraction(VF, edge, -500) == 0.0 and along_fraction(VF, edge, 5000) == 1.0
+
+
+@pytest.mark.parametrize("edge", EDGES)
+def test_docked_frame_and_anchor_of_round_trip(edge):
+    coord = {"left": 0.0, "right": 1440.0, "bottom": 25.0}[edge]
+    frame = docked_frame(edge, coord, 400.0, MENU_H, MENU_W, DOCK_GAP)
+    assert frame[1] == oriented(MENU_H, MENU_W, edge)
+    assert anchor_of(frame, edge, DOCK_GAP) == (coord, 400.0)
+
+
+def test_nearest_and_snap_edges():
+    assert nearest_edge(VF, 100, 500) == "left"
+    assert nearest_edge(VF, 1400, 500) == "right"
+    assert nearest_edge(VF, 700, 60) == "bottom"
+    assert nearest_edge(VF, 30, 50) == "bottom" and nearest_edge(VF, 20, 50) == "left"  # nearer wins
+    assert snap_edge(VF, ((10, 400), (46, 100))) == "left"
+    assert snap_edge(VF, ((1400, 400), (30, 100))) == "right"
+    assert snap_edge(VF, ((600, 40), (200, 50))) == "bottom"
+    assert snap_edge(VF, ((600, 300), (200, 50))) == ""
+    assert snap_edge(VF, ((5, 40), (100, 50))) == "left"     # in the corner, the nearer edge
+    assert snap_edge(VF, ((20, 30), (100, 50))) == "bottom"
+    assert snap_edge(VF, ((5, 30), (100, 50))) == "left"     # a tie goes to the side, as nearest_edge
 
 
 def test_sizes():
     assert (CAP_W, COMPACT_H, FREE_H) == (34.0, 60.0, 118.0)
-    assert (MENU_MIC_W, MENU_MIC_H, MENU_H) == (40.0, 56.0, 56.0 + 2 * (DOCK_GAP_V + DISC))
+    assert (MENU_MIC_W, MENU_MIC_H, MENU_H) == (40.0, 56.0, 56.0 + 2 * (DOCK_GAP_V + MENU_DISC))
     assert BUTTON_HIT >= 28.0
+    assert pill_len(False) == DOCK_H
+
+
+@pytest.mark.parametrize("edge", EDGES)
+def test_the_capsule_sits_on_the_inner_side_of_the_sliver(edge):
+    x, y = capsule_centre(edge)
+    w, h = oriented(SLIVER_H, SLIVER_W, edge)
+    near = CAPSULE_INSET + CAPSULE_W / 2
+    assert {"left": x, "right": w - x, "bottom": y}[edge] == near
+    assert (y if edge != "bottom" else x) == (h if edge != "bottom" else w) / 2
+    assert CAPSULE_H < SLIVER_H
 
 
 # -- the wave ---------------------------------------------------------------------------------
@@ -112,6 +179,12 @@ def test_ease_attacks_fast_and_releases_slowly():
     assert up == pytest.approx(1.0 + 4.5 * 0.632, abs=0.01)
     assert 5.5 - down < up - 1.0  # falling is slower than rising
     assert wave.ease(3.0, 3.0, 1.0) == 3.0 and wave.ease(2.0, 5.0, 0.0) == 2.0
+
+
+def test_wave_lies_flat_from_the_same_routine():
+    upright = wave.wave_points(4.0, 0.1)
+    flat = wave.wave_points(4.0, 0.1, wave.WAVE_H, wave.WAVE_W, horizontal=True)
+    assert flat == [(a, b) for b, a in upright]  # the same wave, axes swapped: left to right
 
 
 def test_wave_points_run_down_the_meter_with_one_and_a_half_cycles():
@@ -138,6 +211,7 @@ def test_toast_width():
 def test_tip_goes_on_the_inner_side():
     assert tip_origin((1000, 400, 34, 34), "right", 80) == (1000 - 8 - 80, 400 + (34 - 30) / 2)
     assert tip_origin((10, 400, 34, 34), "left", 80) == (10 + 34 + 8, 402)
+    assert tip_origin((600, 40, 34, 34), "bottom", 80) == (600 + (34 - 80) / 2, 40 + 34 + 8)  # above it
 
 
 # -- the pill on AppKit ----------------------------------------------------------------------
@@ -161,7 +235,11 @@ def pill(nsapp, monkeypatch):
     p.shown = []
     p.order_front = lambda: p.shown.append(p.form)
     p.tip.order_front = lambda: None
+    p.zones = []
+    p.zone.order_front = lambda: p.zones.append("side")
+    p.flat_zone.order_front = lambda: p.zones.append("flat")
     p.visible = lambda: bool(p.shown)  # as if each order_front had put it on screen
+    p.dictation_layout = {"dock": "right", "y": -1.0}  # the side tests below; bottom ones set their own
     p.fired = []
     p.actions = {name: (lambda *a, n=name: p.fired.append((n, *a)))
                  for name in ("dictate", "dictate_stop", "dictate_cancel", "layout", "dictation_layout", "toggle",
@@ -186,7 +264,7 @@ def pump(seconds):
 
 
 @appkit
-def test_idle_shows_the_resting_sliver_on_the_right_edge(pill):
+def test_a_saved_right_edge_shows_the_resting_sliver_there(pill):
     pill.show_idle()
     assert pill.form == "rest" and pill.panel.contentView() is pill.rest
     x, _y, w, h = frame(pill)
@@ -371,7 +449,7 @@ def test_dropping_the_idle_pill_snaps_to_the_nearer_edge_and_is_remembered(pill,
     x, y, w, h = frame(pill)
     assert pill.form == "rest" and (x, w, h) == (0.0, SLIVER_W, SLIVER_H)
     name, edge, fy = pill.fired[-1]
-    assert (name, edge) == ("dictation_layout", "left") and fy == pytest.approx(spot_fraction(VF, y + h / 2))
+    assert (name, edge) == ("dictation_layout", "left") and fy == pytest.approx(along_fraction(VF, "left", y + h / 2))
     assert pill.dictation_layout == {"dock": "left", "y": fy}
 
 
@@ -433,6 +511,132 @@ def test_wave_reads_the_stored_level(pill):
     assert pill.wave.amplitude == pytest.approx(wave.WORK_AMP, abs=0.1)
 
 
+# -- the bottom dock ---------------------------------------------------------------------------
+
+
+def box(view, ancestor):
+    r = view.convertRect_toView_(view.bounds(), ancestor)
+    return (r.origin.x, r.origin.y, r.size.width, r.size.height)
+
+
+@appkit
+def test_a_fresh_config_rests_at_the_bottom_centre(pill):
+    pill.dictation_layout = {"dock": "", "y": -1.0}
+    pill.show_idle()
+    x, y, w, h = frame(pill)
+    assert (w, h) == (SLIVER_H, SLIVER_W) and y == 25 and x + w / 2 == pytest.approx(720)
+    assert pill.panel.contentView() is pill._kits[True]["rest"] and pill.rest.edge == "bottom"
+
+
+@appkit
+def test_the_bottom_menu_is_a_row_growing_up_from_the_sliver(pill):
+    pill.dictation_layout = {"dock": "bottom", "y": 0.3}
+    pill.show_idle()
+    rest_cx = frame(pill)[0] + SLIVER_H / 2
+    pill.mouseEntered_(None)
+    x, y, w, h = frame(pill)
+    assert pill.form == "menu" and pill.panel.contentView() is pill._kits[True]["menu_host"]
+    assert (w, h) == (MENU_H, MENU_W) and y == 25 + DOCK_GAP and x + w / 2 == pytest.approx(rest_cx)
+    d, r, hi = (box(v, pill.menu) for v in (pill.menu_dictate, pill.menu_read, pill.menu_history))
+    assert d[0] == 0 and r[0] == d[2] + DOCK_GAP_V and hi[0] == r[0] + r[2] + DOCK_GAP_V  # left to right
+    assert (d[2], d[3]) == (MENU_MIC_H, MENU_MIC_W)
+    for item in (d, r, hi):
+        assert item[1] + item[3] / 2 == pytest.approx(MENU_W / 2)  # one axis
+
+
+@appkit
+def test_dictation_on_the_bottom_edge_runs_left_to_right(pill):
+    pill.dictation_layout = {"dock": "bottom", "y": -1.0}
+    pill.show_idle()
+    pill._set_dictation("recording")
+    x, y, w, h = frame(pill)
+    assert (w, h) == (FREE_H, CAP_W) and y == 25 + CAPSULE_INSET and x + w / 2 == pytest.approx(720)
+    assert pill.dictate_capsule.frame().size == (COMPACT_H, CAP_W)
+    assert pill.wave.horizontal and pill.wave.frame().size == (wave.WAVE_H, wave.WAVE_W)
+    pill._set_dictation("locked")
+    c = pill.dictate_capsule.frame()
+    assert c.size == (FREE_H, CAP_W) and c.origin.x == 0
+    cancel, finish = box(pill.cancel_disc, pill.dictate_capsule), box(pill.finish_disc, pill.dictate_capsule)
+    assert cancel[0] == pytest.approx(6.0) and cancel[2] == 22.0                 # cancel at the left
+    assert FREE_H - (finish[0] + finish[2]) == pytest.approx(5.0)               # finish at the right
+    for strip in (pill.cancel_bg, pill.finish_bg):
+        assert strip.frame().size == (BUTTON_HIT, CAP_W)
+    pill._set_dictation("working")
+    assert pill.dictate_capsule.frame().size == (COMPACT_H, CAP_W)
+    pill._set_dictation("idle")
+    assert pill.form == "rest" and pill.rest.edge == "bottom"
+
+
+@appkit
+def test_a_reading_docked_at_the_bottom(pill):
+    pill.layout = {"dock": "bottom", "x": 0.0, "y": 0.5}
+    pill._update(Status(state="playing", session=1, total=3, index=1))
+    x, y, w, h = frame(pill)
+    assert pill.form == "sliver" and pill.dock == "bottom"
+    assert (w, h) == (SLIVER_H, SLIVER_W) and y == 25
+    assert pill.panel.contentView() is pill._kits[True]["sliver"] and pill.sliver.edge == "bottom"
+    cx = x + w / 2
+    pill.mouseEntered_(None)
+    x, y, w, h = frame(pill)
+    assert pill.form == "pill" and (w, h) == (pill_len(True), DOCK_W)
+    assert y == 25 + DOCK_GAP and x + w / 2 == pytest.approx(cx)
+    # left to right: close, expand, previous, play, next, progress
+    stop = next(b for b in pill.buttons["stop"] if b.window() is pill.panel)
+    order = [box(stop.superview(), pill.pill)[0], box(pill.chevron.superview(), pill.pill)[0]]
+    for name in ("back", "toggle", "forward"):
+        btn = next(b for b in pill.buttons[name] if b.window() is pill.panel)
+        order.append(box(btn.superview(), pill.pill)[0])
+    order.append(box(pill.dock_scrub, pill.pill)[0])
+    assert order == sorted(order)
+
+
+@appkit
+def test_dragging_the_card_onto_the_bottom_docks_it(pill):
+    pill._update(Status(state="playing", session=1, total=3, index=1))
+    pill.panel.setFrameOrigin_((500, 40))
+    pill.drag_began()
+    pill.drag_moved(600, 80)
+    assert pill.zones == ["flat"]  # the hint lies flat along the bottom edge
+    _zx, zy, zw, zh = frame(pill.flat_zone)
+    assert (zw, zh) == (CAPSULE_H + 8, CAPSULE_W + 8) and zy == 25 + CAPSULE_INSET - 4
+    pill.drag_ended(600, 80)
+    assert pill.dock == "bottom" and pill.form == "sliver"
+    assert pill.fired[-1][:2] == ("layout", "bottom")
+
+
+@appkit
+def test_the_idle_pill_moves_between_all_three_docks(pill):
+    pill.show_idle()
+    for origin, edge in (((700, 30), "bottom"), ((15, 500), "left"), ((1420, 500), "right"), ((700, 26), "bottom")):
+        pill.panel.setFrameOrigin_(origin)
+        pill.drag_began()
+        pill.drag_ended(*origin)
+        assert pill.form == "rest" and pill._edge == edge and pill.fired[-1][:2] == ("dictation_layout", edge)
+        assert pill.panel.contentView() is pill._kits[edge == "bottom"]["rest"]
+
+
+@appkit
+def test_one_form_at_a_time_across_orientations(pill):
+    pill.dictation_layout = {"dock": "bottom", "y": -1.0}
+    pill.show_idle()
+    assert pill.panel.contentView() is pill._kits[True]["rest"]
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill._update(Status(state="playing", session=1, total=3, index=1))
+    assert pill.panel.contentView() is pill._kits[False]["sliver"]
+    pill._update(Status())
+    assert pill.form == "rest" and pill._edge == "left"  # the docked player's edge is shared
+
+
+@appkit
+def test_toast_floor_only_on_the_bottom(pill):
+    pill.show_idle()  # right edge
+    assert pill.toast_floor() is None
+    pill.dictation_layout = {"dock": "bottom", "y": -1.0}
+    pill.show_idle()
+    _, y, _, h = frame(pill)
+    assert pill.toast_floor() == y + h + 12
+
+
 # -- the toast on AppKit ----------------------------------------------------------------------
 
 
@@ -479,6 +683,14 @@ def test_toast_with_the_same_key_updates_in_place(toast):
     assert faded == [1.0]  # faded in once, then updated in place
     toast.present(Notice("The speech model is ready. Dictate again."))
     assert faded == [1.0, 1.0]  # a different notice replaces it with a fresh fade
+
+
+@appkit
+def test_toast_sits_above_a_bottom_pill(toast):
+    toast.present(Notice("Transcript cancelled"), floor=25 + 70)
+    assert toast.panel.frame().origin.y == 95
+    toast.present(Notice("Transcript cancelled"), floor=10)  # below its own spot: no change
+    assert toast.panel.frame().origin.y == 25 + BOTTOM
 
 
 @appkit

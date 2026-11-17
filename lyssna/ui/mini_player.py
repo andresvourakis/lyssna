@@ -8,10 +8,10 @@
     │  (S)        ⏮      ( ▶ )      ⏭         1.2×  │  voice badge, prev/next sentence, speed
     └────────────────────────────────────────────────┘
 
-Drag it anywhere. Drop it on the left or right edge of a screen and it docks there as a
-slim capsule against the screen edge that shows only progress. Hover the capsule and
-it grows into a vertical pill of controls (close, chevron, prev, play/pause, next, progress);
-move away and it shrinks back. Dragging it out of the edge, clicking the chevron, or
+Drag it anywhere. Drop it on the left, right or bottom edge of a screen and it docks there as
+a slim capsule against the screen edge that shows only progress. Hover the capsule and
+it grows into a pill of controls (close, chevron, prev, play/pause, next, progress), upright
+on a side edge and lying flat along the bottom; move away and it shrinks back. Dragging it out of the edge, clicking the chevron, or
 clicking the pill's background restores the card. Dock and position persist across
 readings, and the player always shows up on the screen you selected text on.
 
@@ -27,8 +27,15 @@ window, one form in it at a time, every switch through _show_form:
 
 Dictation wins: when one starts during a reading the reading pauses and its form goes away,
 and when it ends the reading form comes back where it was, still paused. The dictation forms
-always sit on a screen edge: the edge the player is docked to, else the mic button's own spot,
-else the right edge (pick_form and dictation_spot hold these rules, without AppKit).
+always sit on a screen edge: the edge the player is docked to, else the idle pill's own spot,
+else the bottom centre (pick_form and dictation_spot hold these rules, without AppKit).
+
+The three docks are one system. Every docked form is laid out along its long axis (`along`,
+parallel to the screen edge) and across it (`across`, away from the edge): upright on the
+left and right edges, lying flat on the bottom. lay(), oriented(), docked_frame() and
+edge_frame() turn that into frames, so each form has one builder for both orientations.
+The window keeps one set of views per orientation (built once) and _show_form swaps in the
+set the form's edge needs. A position along an edge is saved as a fraction of that edge.
 
 Colors are the brand cream and ink from theme.py, dynamic, so the card follows
 light/dark mode automatically."""
@@ -91,38 +98,43 @@ CLOSE = 26.0      # close button hit area
 CLOSE_TOP = 10.0  # inset from the card's top edge; right edge aligns with the content column (PAD)
 CLOSE_GAP = 10.0  # room between the close disc and the progress bar
 
-# Open dock (a vertical stack hugging the screen edge): a close disc, an expand disc, then the
-# main capsule with prev / play / next and a sliver of progress.
+# Open dock (a stack hugging the screen edge): a close disc, an expand disc, then the main
+# capsule with prev / play / next and a sliver of progress. Sizes below are named as on a side
+# edge (W across, H along); on the bottom edge the same shapes lie flat.
 DOCK_W = 46.0
 DOCK_PLAY = 34.0
 DOCK_SKIP = 26.0
-DOCK_BAR = 24.0   # width of the little progress bar
+DOCK_BAR = 24.0   # length of the little progress bar
 DISC = 30.0       # the small stand-alone buttons
 DOCK_GAP_V = 6.0  # between the discs and the capsule
 CAPSULE_MAIN_H = 12 + BAR_H + 10 + DOCK_SKIP + 4 + DOCK_PLAY + 4 + DOCK_SKIP + 10  # 130
 DOCK_H = CAPSULE_MAIN_H + (DOCK_GAP_V + DISC) * 2  # 202
 DOCK_GAP = 10.0   # distance from the screen edge when the control pill is open
 SNAP = 48.0       # drop within this many points of a screen edge to dock
+DOCKS = ("left", "right", "bottom")
 
 HOVER_SECS = 0.18
 HOVER_OUT_DELAY = 0.08  # seconds the cursor must be away before the open pill shrinks back
 HOVER_POLL = 0.03
 
-# Idle: at rest the slim sliver (SLIVER_W x SLIVER_H, flush with the edge); hovered, a stack of
-# a dictate capsule and two discs, DOCK_GAP in from the edge.
+# Idle: at rest the slim sliver (flush with the edge); hovered, a stack of a dictate capsule
+# and two discs, DOCK_GAP in from the edge. MENU_W is across, MENU_H along.
 MENU_MIC_W, MENU_MIC_H = 40.0, 56.0
+MENU_DISC = DISC
 MENU_W = MENU_MIC_W
-MENU_H = MENU_MIC_H + (DOCK_GAP_V + DISC) * 2  # 128
-# Dictating: a capsule CAP_W wide, CAPSULE_INSET from the screen edge.
+MENU_H = MENU_MIC_H + (DOCK_GAP_V + MENU_DISC) * 2  # 128
+# Dictating: a capsule CAP_W thick, CAPSULE_INSET from the screen edge.
 CAP_W = 34.0
 COMPACT_H = 60.0            # the dictate capsule while holding the key, and while working
-FREE_H = 118.0              # hands-free: with cancel at the top and finish at the bottom
+FREE_H = 118.0              # hands-free: with cancel at the top (left) and finish at the bottom (right)
 CANCEL_D, CANCEL_TOP = 22.0, 6.0
 FINISH_D, FINISH_BOTTOM = 24.0, 5.0
-BUTTON_HIT = 28.0           # the click area of cancel and finish, taller than their discs
+BUTTON_HIT = 28.0           # the click area of cancel and finish, longer than their discs
 GROW_SECS = 0.18
 TIP_DELAY = 0.4             # hover this long before the tooltip pill shows
 DICTATING = ("recording", "locked", "working")
+CHEVRONS = {"left": "chevron.right", "right": "chevron.left", "bottom": "chevron.up"}
+ARROWS = {"left": "left", "right": "right", "bottom": "down"}  # arrow.<x>.to.line.compact
 
 
 def _fmt(seconds: float) -> str:
@@ -142,40 +154,130 @@ def pick_form(reading: str, dictation: str, docked: bool, idle_pill: bool) -> st
 
 
 def dictation_spot(layout: dict, own: dict) -> tuple[str, float]:
-    """Which edge and height (a fraction of the screen, -1 for the middle) the dictation
-    forms use: the docked player's, else the idle pill's own saved spot, else the right edge."""
-    if layout.get("dock") in ("left", "right"):
+    """Which edge and position along it (a fraction, -1 for the middle) the dictation forms
+    use: the docked player's, else the idle pill's own saved spot, else the bottom centre."""
+    if layout.get("dock") in DOCKS:
         return layout["dock"], float(layout.get("y", -1.0))
     edge = own.get("dock")
-    return (edge if edge in ("left", "right") else "right"), float(own.get("y", -1.0))
+    if edge in DOCKS:
+        return edge, float(own.get("y", -1.0))
+    return "bottom", -1.0
 
 
-def edge_frame(vf: tuple[float, float, float, float], edge: str, fy: float, w: float, h: float,
-               inset: float = CAPSULE_INSET):
-    """Frame ((x, y), (w, h)) of a w x h form on `edge` of the visible frame vf (x, y, w, h),
-    `inset` in from the edge (0 for the resting sliver, whose window is flush with the edge and
-    draws its capsule CAPSULE_INSET in). fy places its centre the way the dock's saved position
-    does (so it lines up with a docked player); below zero it is centred."""
+# -- geometry: one set of rules for the three docks -------------------------------------------
+
+def is_flat(edge: str) -> bool:
+    """Forms on the bottom edge lie flat; on the side edges they stand upright."""
+    return edge == "bottom"
+
+
+def oriented(along: float, across: float, edge: str) -> tuple[float, float]:
+    """(w, h) of a form `along` long beside the edge and `across` deep away from it."""
+    return (along, across) if is_flat(edge) else (across, along)
+
+
+def lay(along: float, length: float, across: float, thickness: float, total: float, flat: bool,
+        flip: bool = False):
+    """A rect inside a form, from its place on the form's long axis (`along`, `length`, the
+    form being `total` long) and across it (`across`, `thickness`). Upright, along runs up
+    from the bottom (y) and across is x. Flat, along runs along x from the left, or from the
+    right with `flip` (for forms whose upright top-to-bottom order should read left to right),
+    and across is y."""
+    if flat:
+        x = total - along - length if flip else along
+        return ((x, across), (length, thickness))
+    return ((across, along), (thickness, length))
+
+
+def _axis(vf: tuple[float, float, float, float], edge: str) -> tuple[float, float]:
+    """Start and length of the visible frame along `edge`."""
     vx, vy, vw, vh = vf
-    cy = vy + fy * (vh - DOCK_H) + DOCK_H / 2 if fy >= 0 else vy + vh / 2
-    y = min(max(cy - h / 2, vy), vy + vh - h)
-    x = vx + inset if edge == "left" else vx + vw - inset - w
-    return ((x, y), (w, h))
+    return (vx, vw) if is_flat(edge) else (vy, vh)
 
 
-def spot_fraction(vf: tuple[float, float, float, float], cy: float) -> float:
-    """The inverse of edge_frame's height: a centre y as the saved fraction, 0..1."""
-    _, vy, _, vh = vf
-    return min(1.0, max(0.0, (cy - DOCK_H / 2 - vy) / max(1.0, vh - DOCK_H)))
+def edge_coord(vf: tuple[float, float, float, float], edge: str) -> float:
+    """Where the edge itself is: an x for the side edges, a y for the bottom."""
+    vx, vy, vw, _ = vf
+    return {"left": vx, "right": vx + vw, "bottom": vy}[edge]
 
 
-def _vf(screen) -> tuple[float, float, float, float]:
-    f = visible_frame(screen)
+def along_centre(vf, edge: str, frac: float, span: float = DOCK_H) -> float:
+    """The centre along `edge` that a saved fraction stands for (the middle when below zero).
+    The fraction spans the room an open DOCK_H pill has, so docked forms line up."""
+    lo, n = _axis(vf, edge)
+    return lo + frac * (n - span) + span / 2 if frac >= 0 else lo + n / 2
+
+
+def along_fraction(vf, edge: str, centre: float, span: float = DOCK_H) -> float:
+    """The inverse of along_centre: a centre along the edge as the saved fraction, 0..1."""
+    lo, n = _axis(vf, edge)
+    return min(1.0, max(0.0, (centre - span / 2 - lo) / max(1.0, n - span)))
+
+
+def docked_frame(edge: str, coord: float, along: float, length: float, across: float, gap: float):
+    """Frame ((x, y), (w, h)) of a form `length` long and `across` deep, centred at `along`,
+    `gap` points in from the edge at `coord`."""
+    if is_flat(edge):
+        return ((along - length / 2, coord + gap), (length, across))
+    x = coord + gap if edge == "left" else coord - gap - across
+    return ((x, along - length / 2), (across, length))
+
+
+def anchor_of(frame, edge: str, gap: float = 0.0) -> tuple[float, float]:
+    """The inverse of docked_frame: (edge coord, centre along) of a docked frame."""
+    (x, y), (w, h) = frame
+    if is_flat(edge):
+        return (y - gap, x + w / 2)
+    return ((x - gap) if edge == "left" else (x + w + gap), y + h / 2)
+
+
+def edge_frame(vf: tuple[float, float, float, float], edge: str, frac: float, length: float, across: float,
+               inset: float = CAPSULE_INSET):
+    """Frame of a form `length` long and `across` deep on `edge` of the visible frame vf
+    (x, y, w, h), `inset` in from the edge (0 for the resting sliver, whose window is flush
+    with the edge and draws its capsule CAPSULE_INSET in), at the saved fraction `frac`
+    along the edge, kept on screen."""
+    lo, n = _axis(vf, edge)
+    centre = min(max(along_centre(vf, edge, frac), lo + length / 2), lo + n - length / 2)
+    return docked_frame(edge, edge_coord(vf, edge), centre, length, across, inset)
+
+
+def nearest_edge(vf, cx: float, cy: float) -> str:
+    """The dock edge nearest a point (a side wins a tie with the bottom)."""
+    vx, vy, vw, _ = vf
+    d = {"left": cx - vx, "right": vx + vw - cx, "bottom": cy - vy}
+    side = "left" if d["left"] <= d["right"] else "right"
+    return "bottom" if d["bottom"] < d[side] else side
+
+
+def snap_edge(vf, frame, snap: float = SNAP) -> str:
+    """The dock edge a dragged frame is close enough to to dock on, "" for none."""
+    vx, vy, vw, _ = vf
+    (x, y), (w, _h) = frame
+    d = {"left": x - vx, "right": vx + vw - (x + w), "bottom": y - vy}
+    near = [e for e in DOCKS if d[e] < snap]
+    return min(near, key=lambda e: d[e]) if near else ""
+
+
+def pill_main_len(flat: bool) -> float:
+    """The open pill's main capsule length: flat, the progress bar lies along it."""
+    return CAPSULE_MAIN_H - BAR_H + DOCK_BAR if flat else CAPSULE_MAIN_H
+
+
+def pill_len(flat: bool) -> float:
+    return pill_main_len(flat) + (DOCK_GAP_V + DISC) * 2
+
+
+def _vf_of(f) -> tuple[float, float, float, float]:
     return (f.origin.x, f.origin.y, f.size.width, f.size.height)
 
 
+def _vf(screen) -> tuple[float, float, float, float]:
+    return _vf_of(visible_frame(screen))
+
+
 class DropZone(FloatingPanel):
-    """Faint content-coloured pill shown on a screen edge while a drag hovers near it."""
+    """Faint content-coloured pill shown on a side edge while a drag hovers near it."""
 
     width = CAPSULE_W + 8
     height = CAPSULE_H + 8
@@ -194,6 +296,19 @@ class DropZone(FloatingPanel):
         return self
 
 
+class FlatDropZone(DropZone):
+    """The same hint lying flat along the bottom edge."""
+
+    width = CAPSULE_H + 8
+    height = CAPSULE_W + 8
+
+
+# The views that exist once per orientation; _orient points these attributes at one set.
+ORIENTED = ("pill", "pill_host", "dock_scrub", "chevron", "sliver", "rest", "menu", "menu_host", "menu_dictate",
+            "menu_read", "menu_history", "menu_hovers", "dictate_host", "dictate_capsule", "wave",
+            "cancel_bg", "cancel_disc", "cancel_btn", "finish_bg", "finish_disc", "finish_btn")
+
+
 class MiniPlayer(FloatingPanel):
     width = 400.0
     height = CLOSE_TOP + CLOSE + CLOSE_GAP + BAR_H + 8 + 14 + 16 + PLAY + PAD  # 156
@@ -207,13 +322,13 @@ class MiniPlayer(FloatingPanel):
             return None
         self.actions: dict[str, Callable] = {}
         self.layout = {"dock": "", "x": -1.0, "y": -1.0}  # last resting place; see place()
-        self.dock = ""          # "" (card) | "left" | "right" (docked: sliver at rest, pill on hover)
+        self.dock = ""          # "" (card) | "left" | "right" | "bottom" (docked: sliver at rest, pill on hover)
         self.form = "card"      # card | sliver | pill: which content view is showing
         self._session = 0
         self._speed = 1.0
         self._status: Status | None = None
         self._scale = 1.0
-        self._anchor = (0.0, 0.0)  # (screen edge x, centre y) the docked forms hang off
+        self._anchor = (0.0, 0.0)  # (edge coord, centre along the edge) the docked forms hang off
         self._watch = None  # hover poll while the pill is open
         self._last_chunk = (None, -1)  # (session, index) last shown, to bloom the sliver per sentence
         self._tip = ""
@@ -225,18 +340,8 @@ class MiniPlayer(FloatingPanel):
         self._latest_lock = threading.Lock()
         self._drain_pending = False
         self.card = self.panel.contentView()
-        self.pill = AppKit.NSView.alloc().initWithFrame_(((0, 0), (DOCK_W, DOCK_H)))
-        self.pill.setWantsLayer_(True)
-        self.build_pill(self.pill)
-        # The pill sits inside a transparent host that is the window's content view, so
-        # the pill's own layer can be scaled with Core Animation (AppKit owns the content
-        # view's layer and would fight a transform on it).
-        self.pill_host = AppKit.NSView.alloc().initWithFrame_(((0, 0), (DOCK_W, DOCK_H)))
-        self.pill_host.setWantsLayer_(True)
-        self.pill_host.addSubview_(self.pill)
-        self.sliver = Sliver.alloc().initWithFrame_(((0, 0), (SLIVER_W, SLIVER_H)))
-        self._track(self.sliver)
         self.zone = DropZone.alloc().init()
+        self.flat_zone = FlatDropZone.alloc().init()
 
         # Dictation
         self.idle_pill = True                         # ui.idle_pill: the resting sliver when nothing else shows
@@ -249,22 +354,14 @@ class MiniPlayer(FloatingPanel):
         self._dlock = threading.Lock()
         self._dqueued = "idle"                        # newest state handed to the main thread
         self._dpending = False
-        self._edge = "right"                          # the edge the dictation forms are on
+        self._edge = "bottom"                         # the edge the idle and dictation forms are on
         self._reading_spot = None                     # where the reading form was when a dictation took over
         self._tip_token = None
         self.tip = Tip.alloc().init()
-        self._rest_anchor = (0.0, 0.0)                # (screen edge x, centre y) of the resting sliver
-        self.rest = Sliver.alloc().initWithFrame_(((0, 0), (SLIVER_W, SLIVER_H)))
-        self.rest.set_rest(True)
-        self._track(self.rest)
-        self.menu = AppKit.NSView.alloc().initWithFrame_(((0, 0), (MENU_W, MENU_H)))
-        self.menu.setWantsLayer_(True)
-        self.build_menu(self.menu)
-        self.menu_host = AppKit.NSView.alloc().initWithFrame_(((0, 0), (MENU_W, MENU_H)))  # see pill_host
-        self.menu_host.setWantsLayer_(True)
-        self.menu_host.addSubview_(self.menu)
-        self.dictate_host = AppKit.NSView.alloc().initWithFrame_(((0, 0), (CAP_W, FREE_H)))
-        self.build_dictate(self.dictate_host)
+        self._rest_anchor = (0.0, 0.0)                # (edge coord, centre along) of the resting sliver
+        self._kits = {flat: self._build_kit(flat) for flat in (False, True)}
+        self._flat = None
+        self._orient(False)
         return self
 
     # -- building --------------------------------------------------------------------
@@ -367,45 +464,92 @@ class MiniPlayer(FloatingPanel):
         self._button("speed", pill)
 
     @objc.python_method
-    def build_pill(self, content):
-        """The open docked layout: separate discs for close and expand, stacked above the
-        main capsule, all inside one transparent container so they scale together."""
-        W = DOCK_W
-        cx = W / 2
+    def _build_kit(self, flat: bool) -> dict:
+        """Every docked form for one orientation, then a snapshot of their attributes."""
+        edge = "bottom" if flat else "left"
+        self.pill = AppKit.NSView.alloc().initWithFrame_(((0, 0), oriented(pill_len(flat), DOCK_W, edge)))
+        self.pill.setWantsLayer_(True)
+        self.build_pill(self.pill, flat)
+        # The pill sits inside a transparent host that is the window's content view, so
+        # the pill's own layer can be scaled with Core Animation (AppKit owns the content
+        # view's layer and would fight a transform on it).
+        self.pill_host = AppKit.NSView.alloc().initWithFrame_(((0, 0), oriented(pill_len(flat), DOCK_W, edge)))
+        self.pill_host.setWantsLayer_(True)
+        self.pill_host.addSubview_(self.pill)
+        self.sliver = Sliver.alloc().initWithFrame_(((0, 0), oriented(SLIVER_H, SLIVER_W, edge)))
+        self._track(self.sliver)
+        self.rest = Sliver.alloc().initWithFrame_(((0, 0), oriented(SLIVER_H, SLIVER_W, edge)))
+        self.rest.set_rest(True)
+        self._track(self.rest)
+        self.menu = AppKit.NSView.alloc().initWithFrame_(((0, 0), oriented(MENU_H, MENU_W, edge)))
+        self.menu.setWantsLayer_(True)
+        self.build_menu(self.menu, flat)
+        self.menu_host = AppKit.NSView.alloc().initWithFrame_(((0, 0), oriented(MENU_H, MENU_W, edge)))  # see pill_host
+        self.menu_host.setWantsLayer_(True)
+        self.menu_host.addSubview_(self.menu)
+        self.dictate_host = AppKit.NSView.alloc().initWithFrame_(((0, 0), oriented(FREE_H, CAP_W, edge)))
+        self.dictate_host.setWantsLayer_(True)
+        self.build_dictate(self.dictate_host, flat)
+        return {name: getattr(self, name) for name in ORIENTED}
+
+    @objc.python_method
+    def _orient(self, flat: bool) -> None:
+        """Point the docked-form attributes at the upright or the flat set of views."""
+        if flat == self._flat:
+            return
+        self._flat = flat
+        for name, view in self._kits[flat].items():
+            setattr(self, name, view)
+
+    @objc.python_method
+    def build_pill(self, content, flat: bool):
+        """The open docked layout: separate discs for close and expand beside the main
+        capsule, all inside one transparent container so they scale together. Upright, top to
+        bottom: close, expand, prev, play, next, progress; flat, the same left to right."""
+        T = DOCK_W
+        c = T / 2
+        L = pill_main_len(flat)
+        total = pill_len(flat)
         primary = theme.CONTENT
         secondary = theme.CONTENT_DIM
 
-        main = self.make_surface(((0, 0), (W, CAPSULE_MAIN_H)), W / 2)
+        main = self.make_surface(lay(0, L, 0, T, total, flat, flip=True), T / 2)
         content.addSubview_(main)
 
-        y = 12.0
-        self.dock_scrub = ScrubBar.alloc().initWithFrame_(((cx - DOCK_BAR / 2, y - (SCRUB_H - BAR_H) / 2), (DOCK_BAR, SCRUB_H)))
+        a = 12.0
+        if flat:  # the progress bar lies along the capsule
+            frame = ((L - a - DOCK_BAR, (T - SCRUB_H) / 2), (DOCK_BAR, SCRUB_H))
+            a += DOCK_BAR + 10
+        else:
+            frame = ((c - DOCK_BAR / 2, a - (SCRUB_H - BAR_H) / 2), (DOCK_BAR, SCRUB_H))
+            a += BAR_H + 10
+        self.dock_scrub = ScrubBar.alloc().initWithFrame_(frame)
         self.dock_scrub.knob_size = 10.0
         self.dock_scrub.on_scrub = self._scrub_preview
         self.dock_scrub.on_seek = lambda f: self._fire("seek_to", f)
         main.addSubview_(self.dock_scrub)
-        y += BAR_H + 10
 
         fwd = symbol_button("forward.end.fill", self, "forward:", size=12.0, tint=primary)
-        self._hoverable(main, fwd, ((cx - DOCK_SKIP / 2, y), (DOCK_SKIP, DOCK_SKIP)))
+        self._hoverable(main, fwd, lay(a, DOCK_SKIP, c - DOCK_SKIP / 2, DOCK_SKIP, L, flat, flip=True))
         self._button("forward", fwd)
-        y += DOCK_SKIP + 4
+        a += DOCK_SKIP + 4
 
-        circle = HoverView.make(((cx - DOCK_PLAY / 2, y), (DOCK_PLAY, DOCK_PLAY)), theme.CONTENT, DOCK_PLAY / 2, glow=white_glow)
+        circle = HoverView.make(lay(a, DOCK_PLAY, c - DOCK_PLAY / 2, DOCK_PLAY, L, flat, flip=True), theme.CONTENT,
+                                DOCK_PLAY / 2, glow=white_glow)
         self.hovers.append(circle)
         main.addSubview_(circle)
         play = symbol_button("pause.fill", self, "toggle:", size=14.0, tint=theme.SURFACE)
         play.setFrame_(((0, 0), (DOCK_PLAY, DOCK_PLAY)))
         circle.addSubview_(play)
         self._button("toggle", play)
-        y += DOCK_PLAY + 4
+        a += DOCK_PLAY + 4
 
         back = symbol_button("backward.end.fill", self, "back:", size=12.0, tint=primary)
-        self._hoverable(main, back, ((cx - DOCK_SKIP / 2, y), (DOCK_SKIP, DOCK_SKIP)))
+        self._hoverable(main, back, lay(a, DOCK_SKIP, c - DOCK_SKIP / 2, DOCK_SKIP, L, flat, flip=True))
         self._button("back", back)
 
-        def disc(y, name, action, tip):
-            bg = self.make_surface(((cx - DISC / 2, y), (DISC, DISC)), DISC / 2, hover=True)
+        def disc(a, name, action, tip):
+            bg = self.make_surface(lay(a, DISC, c - DISC / 2, DISC, total, flat, flip=True), DISC / 2, hover=True)
             self.hovers.append(bg)
             content.addSubview_(bg)
             btn = symbol_button(name, self, action, size=11.0, tint=secondary, weight=AppKit.NSFontWeightBold)
@@ -414,23 +558,24 @@ class MiniPlayer(FloatingPanel):
             bg.addSubview_(btn)
             return btn
 
-        y = CAPSULE_MAIN_H + DOCK_GAP_V
-        self.chevron = disc(y, "chevron.right", "expand:", "Expand player")
-        y += DISC + DOCK_GAP_V
-        self._button("stop", disc(y, "xmark", "stop:", "Stop"))
+        a = L + DOCK_GAP_V
+        self.chevron = disc(a, "chevron.right", "expand:", "Expand player")
+        a += DISC + DOCK_GAP_V
+        self._button("stop", disc(a, "xmark", "stop:", "Stop"))
 
         self._track(content)
 
     @objc.python_method
-    def build_menu(self, content):
-        """Idle, hovered: the stack that grows out of the resting sliver, bottom to top a
-        dictate capsule, a read-selection disc and a history disc, in one transparent container
-        (scaled as a unit, like the docked reading pill)."""
-        cx = MENU_W / 2
+    def build_menu(self, content, flat: bool):
+        """Idle, hovered: what grows out of the resting sliver. Upright, bottom to top; flat,
+        left to right: a dictate capsule, a read-selection disc and a history disc, centred on
+        one axis, in one transparent container (scaled as a unit, like the docked reading pill)."""
+        c = MENU_W / 2
         self.menu_hovers = []
 
-        def item(frame, radius, symbol, size, tint, action, tip, key_fn, weight=AppKit.NSFontWeightSemibold):
-            bg = self.make_surface(frame, radius, hover=True)
+        def item(a, length, thick, symbol, size, tint, action, tip, key_fn, weight=AppKit.NSFontWeightSemibold):
+            frame = lay(a, length, c - thick / 2, thick, MENU_H, flat)
+            bg = self.make_surface(frame, thick / 2, hover=True)
             content.addSubview_(bg)
             btn = symbol_button(symbol, self, action, size=size, tint=tint, weight=weight)
             btn.setFrame_(((0, 0), frame[1]))
@@ -440,56 +585,61 @@ class MiniPlayer(FloatingPanel):
             self.menu_hovers.append(bg)
             return bg
 
-        y = 0.0
-        self.menu_dictate = item(((cx - MENU_MIC_W / 2, y), (MENU_MIC_W, MENU_MIC_H)), MENU_MIC_W / 2, "mic.fill", 15.0,
-                                 theme.CONTENT, "menuDictate:", "Dictate", lambda: self.key_name)
-        y += MENU_MIC_H + DOCK_GAP_V
-        self.menu_read = item(((cx - DISC / 2, y), (DISC, DISC)), DISC / 2, "play.fill", 11.0, theme.CONTENT_DIM,
-                              "menuRead:", "Read selection", lambda: self.read_key)
-        y += DISC + DOCK_GAP_V
-        self.menu_history = item(((cx - DISC / 2, y), (DISC, DISC)), DISC / 2, "clock.arrow.circlepath", 12.0,
-                                 theme.CONTENT_DIM, "menuHistory:", "History", lambda: "")
+        a = 0.0
+        self.menu_dictate = item(a, MENU_MIC_H, MENU_MIC_W, "mic.fill", 15.0, theme.CONTENT, "menuDictate:", "Dictate",
+                                 lambda: self.key_name)
+        a += MENU_MIC_H + DOCK_GAP_V
+        self.menu_read = item(a, MENU_DISC, MENU_DISC, "play.fill", 11.0, theme.CONTENT_DIM, "menuRead:",
+                              "Read selection", lambda: self.read_key)
+        a += MENU_DISC + DOCK_GAP_V
+        self.menu_history = item(a, MENU_DISC, MENU_DISC, "clock.arrow.circlepath", 12.0, theme.CONTENT_DIM,
+                                 "menuHistory:", "History", lambda: "")
         self._track(content)
 
     @objc.python_method
-    def build_dictate(self, host):
-        """Dictating: a capsule centred in a FREE_H tall transparent host. Compact it is
-        COMPACT_H tall with only the wave; hands-free it grows to FREE_H about its centre and
-        shows cancel (top) and finish (bottom). The buttons hang off the capsule's edges
-        (autoresizing), so they ride out with it as it grows and the capsule clips them. Each
-        button's click area is a full-width strip BUTTON_HIT tall around its smaller disc."""
-        W = CAP_W
-        capsule = self.make_surface(((0, (FREE_H - COMPACT_H) / 2), (W, COMPACT_H)), W / 2)
+    def build_dictate(self, host, flat: bool):
+        """Dictating: a capsule centred in a FREE_H long transparent host. Compact it is
+        COMPACT_H long with only the wave; hands-free it grows to FREE_H about its centre and
+        shows cancel (top, or left when flat) and finish (bottom, or right). The buttons hang
+        off the capsule's ends (autoresizing), so they ride out with it as it grows and the
+        capsule clips them. Each button's click area is a strip BUTTON_HIT long across the
+        whole capsule, around its smaller disc."""
+        T = CAP_W
+        capsule = self.make_surface(lay((FREE_H - COMPACT_H) / 2, COMPACT_H, 0, T, FREE_H, flat), T / 2)
         capsule.setAutoresizesSubviews_(True)
         host.addSubview_(capsule)
 
-        wave = WaveView.alloc().initWithFrame_((((W - WAVE_W) / 2, (COMPACT_H - WAVE_H) / 2), (WAVE_W, WAVE_H)))
-        wave.setAutoresizingMask_(AppKit.NSViewMinYMargin | AppKit.NSViewMaxYMargin)
+        wave = WaveView.alloc().initWithFrame_(
+            lay((COMPACT_H - WAVE_H) / 2, WAVE_H, (T - WAVE_W) / 2, WAVE_W, COMPACT_H, flat))
+        wave.horizontal = flat
+        wave.setAutoresizingMask_(AppKit.NSViewMinXMargin | AppKit.NSViewMaxXMargin if flat
+                                  else AppKit.NSViewMinYMargin | AppKit.NSViewMaxYMargin)
         wave.level_fn = lambda: self._level
         capsule.addSubview_(wave)
 
-        def button(disc_y, d, fill, glow, symbol, size, tint, action, tip, key, mask):
-            """A BUTTON_HIT tall strip (the click area) with a d-point disc drawn in it at disc_y
-            (in capsule coordinates), and the button covering the whole strip."""
-            strip_y = disc_y - (BUTTON_HIT - d) / 2
-            strip = AppKit.NSView.alloc().initWithFrame_(((0, strip_y), (W, BUTTON_HIT)))
+        def button(disc_along, d, fill, glow, symbol, size, tint, action, tip, key, mask):
+            """A BUTTON_HIT long strip (the click area) with a d-point disc drawn in it, the disc
+            at `disc_along` on the capsule's upright axis, and the button covering the strip."""
+            strip_frame = lay(disc_along - (BUTTON_HIT - d) / 2, BUTTON_HIT, 0, T, COMPACT_H, flat, flip=True)
+            strip = AppKit.NSView.alloc().initWithFrame_(strip_frame)
             strip.setAutoresizingMask_(mask)
-            disc = HoverView.make((((W - d) / 2, (BUTTON_HIT - d) / 2), (d, d)), fill, d / 2, glow=glow)
+            disc = HoverView.make(lay((BUTTON_HIT - d) / 2, d, (T - d) / 2, d, BUTTON_HIT, flat), fill, d / 2, glow=glow)
             strip.addSubview_(disc)
             btn = symbol_button(symbol, self, action, size=size, tint=tint, weight=AppKit.NSFontWeightBold)
-            btn.setFrame_(((0, 0), (W, BUTTON_HIT)))
+            btn.setFrame_(((0, 0), strip_frame[1]))
             btn.setToolTip_(None)
             strip.addSubview_(btn)  # above the disc, so the whole strip takes the click
             disc.on_hover = lambda on: self._hover_tip(on, disc, tip, key)
             capsule.addSubview_(strip)
             return strip, disc, btn
 
+        # Each keeps its distance to its own end of the capsule as it grows.
         self.cancel_bg, self.cancel_disc, self.cancel_btn = button(
             COMPACT_H - CANCEL_TOP - CANCEL_D, CANCEL_D, theme.FILL_SOFT, None, "xmark", 9.0, theme.CONTENT_DIM,
-            "dictateCancel:", "Cancel", lambda: "esc", AppKit.NSViewMinYMargin)  # keeps its distance to the top
+            "dictateCancel:", "Cancel", lambda: "esc", AppKit.NSViewMaxXMargin if flat else AppKit.NSViewMinYMargin)
         self.finish_bg, self.finish_disc, self.finish_btn = button(
             FINISH_BOTTOM, FINISH_D, theme.CONTENT, white_glow, "checkmark", 11.0, theme.SURFACE,
-            "dictateFinish:", "Finish", lambda: self.key_name, AppKit.NSViewMaxYMargin)  # keeps its distance to the bottom
+            "dictateFinish:", "Finish", lambda: self.key_name, AppKit.NSViewMinXMargin if flat else AppKit.NSViewMaxYMargin)
         for b in (self.cancel_bg, self.finish_bg):
             b.setAlphaValue_(0.0)
             b.setHidden_(True)
@@ -575,8 +725,8 @@ class MiniPlayer(FloatingPanel):
         """Collapse the card onto the nearest edge of the screen it's on."""
         if self.dock:
             return
-        edge, screen, cy = self._nearest_edge()
-        self._collapse(edge, screen, cy)
+        edge, screen, along = self._nearest_edge()
+        self._collapse(edge, screen, along)
         self._remember()
 
     @objc.python_method
@@ -584,14 +734,13 @@ class MiniPlayer(FloatingPanel):
         f = self.panel.frame()
         cx, cy = f.origin.x + f.size.width / 2, f.origin.y + f.size.height / 2
         screen = screen_at(cx, cy)
-        vf = visible_frame(screen)
-        edge = "left" if cx - vf.origin.x < vf.origin.x + vf.size.width - cx else "right"
-        return edge, screen, cy
+        edge = nearest_edge(_vf(screen), cx, cy)
+        return edge, screen, cx if is_flat(edge) else cy
 
     @objc.python_method
     def _refresh_dock_arrow(self) -> None:
         edge, _, _ = self._nearest_edge()
-        set_symbol(self.dock_btn, f"arrow.{edge}.to.line.compact", 11.0, AppKit.NSFontWeightBold)
+        set_symbol(self.dock_btn, f"arrow.{ARROWS[edge]}.to.line.compact", 11.0, AppKit.NSFontWeightBold)
 
     def speedMenu_(self, sender):
         menu = NSMenu.alloc().initWithTitle_("Speed")
@@ -702,15 +851,32 @@ class MiniPlayer(FloatingPanel):
             self._watch = None
 
     @objc.python_method
+    def form_edge(self, name: str | None = None) -> str:
+        """The edge a form sits on: the dock for the reading's docked forms, the idle and
+        dictation edge for those; "" for the card."""
+        name = name or self.form
+        if name in ("sliver", "pill"):
+            return self.dock
+        if name in ("rest", "menu", "dictate"):
+            return self._edge
+        return ""
+
+    @objc.python_method
     def _show_form(self, name: str) -> None:
-        """The one way the window changes form: put that form's view in and nothing else."""
+        """The one way the window changes form: put that form's view in and nothing else.
+        A docked form comes from the view set for its edge's orientation."""
+        if name != "dictate":
+            for kit in self._kits.values():
+                kit["wave"].stop()
+        if name != "menu":
+            for kit in self._kits.values():
+                for hv in kit["menu_hovers"]:
+                    hv.set_hover(False)
+        edge = self.form_edge(name)
+        if edge:
+            self._orient(is_flat(edge))
         views = {"card": self.card, "pill": self.pill_host, "sliver": self.sliver,
                  "rest": self.rest, "menu": self.menu_host, "dictate": self.dictate_host}
-        if name != "dictate":
-            self.wave.stop()
-        if name != "menu":
-            for hv in self.menu_hovers:
-                hv.set_hover(False)
         self._hide_tip()
         self.form = name
         self.draggable = name != "dictate"  # a drag would fight push-to-talk
@@ -719,9 +885,10 @@ class MiniPlayer(FloatingPanel):
     @objc.python_method
     def _open_pill(self) -> None:
         self._show_form("pill")
-        self.panel.setFrame_display_(self._docked_frame(DOCK_W, DOCK_H, DOCK_GAP), True)
-        self.pill.setFrame_(((0, 0), (DOCK_W, DOCK_H)))
-        self._set_scale(SLIVER_H / DOCK_H, animate=False)
+        length = pill_len(is_flat(self.dock))
+        self.panel.setFrame_display_(self._docked_frame(length, DOCK_W, DOCK_GAP), True)
+        self.pill.setFrame_(((0, 0), oriented(length, DOCK_W, self.dock)))
+        self._set_scale(SLIVER_H / length, animate=False)
         self.order_front()
         self._set_scale(1.0, animate=True)
         self._watch_hover()
@@ -732,17 +899,16 @@ class MiniPlayer(FloatingPanel):
         if self.form != "pill" or self._dragging:
             return
         # A pill that closes after the reading ended goes back to the sliver, but hidden.
-        self._set_scale(SLIVER_H / DOCK_H, animate=True, done=lambda: self._show_sliver(show=self._status is not None))
+        self._set_scale(SLIVER_H / pill_len(is_flat(self.dock)), animate=True,
+                        done=lambda: self._show_sliver(show=self._status is not None))
 
     @objc.python_method
     def _open_menu(self) -> None:
         """The resting sliver grows into the idle menu, exactly as the docked reading sliver
         grows into its pill."""
         self._show_form("menu")
-        ex, cy = self._rest_anchor
-        x = ex + DOCK_GAP if self._edge == "left" else ex - DOCK_GAP - MENU_W
-        self.panel.setFrame_display_(((x, cy - MENU_H / 2), (MENU_W, MENU_H)), True)
-        self.menu.setFrame_(((0, 0), (MENU_W, MENU_H)))
+        self.panel.setFrame_display_(docked_frame(self._edge, *self._rest_anchor, MENU_H, MENU_W, DOCK_GAP), True)
+        self.menu.setFrame_(((0, 0), oriented(MENU_H, MENU_W, self._edge)))
         self._set_scale(SLIVER_H / MENU_H, animate=False)
         self.order_front()
         self._set_scale(1.0, animate=True)
@@ -771,8 +937,8 @@ class MiniPlayer(FloatingPanel):
         # Frame first, bounds second: AppKit keeps a view's bounds/frame ratio across frame
         # changes, so setting the bounds while the old (card-sized) frame is live would
         # leave the capsule drawn at a fraction of its size.
-        self.panel.setFrame_display_(self._docked_frame(SLIVER_W, SLIVER_H, 0.0), True)
-        self.sliver.setBoundsSize_((SLIVER_W, SLIVER_H))
+        self.panel.setFrame_display_(self._docked_frame(SLIVER_H, SLIVER_W, 0.0), True)
+        self.sliver.setBoundsSize_(oriented(SLIVER_H, SLIVER_W, self.dock))
         if show:
             self.order_front()
         self._refresh_sliver()
@@ -793,25 +959,28 @@ class MiniPlayer(FloatingPanel):
     def _cancel_anim(self) -> None:
         self._stop_watch()
         self._pending_done = None
-        self.pill.layer().removeAllAnimations()
-        self.menu.layer().removeAllAnimations()
+        for kit in self._kits.values():
+            kit["pill"].layer().removeAllAnimations()
+            kit["menu"].layer().removeAllAnimations()
 
     @objc.python_method
     def _scaled(self):
         """The view the hover animation scales, its size, and the edge it grows from: the idle
         menu while that form is up, else the docked reading pill."""
         if self.form == "menu":
-            return self.menu, MENU_W, MENU_H, self._edge
-        return self.pill, DOCK_W, DOCK_H, self.dock
+            return (self.menu, *oriented(MENU_H, MENU_W, self._edge), self._edge)
+        return (self.pill, *oriented(pill_len(is_flat(self.dock)), DOCK_W, self.dock or "left"), self.dock)
 
     @objc.python_method
     def _transform(self, s: float):
-        """Scale about the point where the pill meets the screen edge, vertically centred.
-        AppKit pins backing layers' anchorPoint at (0, 0), so fold the anchor into a
-        translation: T = translate(a - s·a) ∘ scale(s)."""
+        """Scale about the middle of the side that meets the screen edge. AppKit pins
+        backing layers' anchorPoint at (0, 0), so fold the anchor into a translation:
+        T = translate(a - s·a) ∘ scale(s)."""
         _, w, h, edge = self._scaled()
-        ax = 0.0 if edge == "left" else w
-        ay = h / 2
+        if is_flat(edge):
+            ax, ay = w / 2, 0.0
+        else:
+            ax, ay = (0.0 if edge == "left" else w), h / 2
         t = Quartz.CATransform3DMakeTranslation(ax * (1 - s), ay * (1 - s), 0)
         return Quartz.CATransform3DScale(t, s, s, 1)
 
@@ -856,12 +1025,10 @@ class MiniPlayer(FloatingPanel):
                 done()
 
     @objc.python_method
-    def _docked_frame(self, w: float, h: float, gap: float):
-        """Frame of a w×h window hanging off the dock anchor (screen edge x, centre y),
+    def _docked_frame(self, length: float, across: float, gap: float):
+        """Frame of a form `length` long and `across` deep hanging off the dock anchor,
         `gap` points in from the edge."""
-        ex, cy = self._anchor
-        x = ex + gap if self.dock == "left" else ex - gap - w
-        return ((x, cy - h / 2), (w, h))
+        return docked_frame(self.dock, *self._anchor, length, across, gap)
 
     # -- dragging / docking ---------------------------------------------------------
 
@@ -884,13 +1051,22 @@ class MiniPlayer(FloatingPanel):
         if self.form in ("rest", "menu"):
             return  # it follows the mouse; on release it snaps to the nearer edge
         edge, screen = self._edge_near(mx, my)
-        if edge:
-            vf = visible_frame(screen)
-            zx = vf.origin.x + CAPSULE_INSET - 4 if edge == "left" else vf.origin.x + vf.size.width - CAPSULE_INSET - CAPSULE_W - 4
-            self.zone.show_at(zx, self._center_y() - self.zone.height / 2, screen=screen)
-            self.order_front()
-        else:
-            self.zone.hide()
+        if not edge:
+            self._hide_zones()
+            return
+        zone, other = (self.flat_zone, self.zone) if is_flat(edge) else (self.zone, self.flat_zone)
+        other.hide()
+        vf = _vf(screen)
+        (x, y), _ = docked_frame(edge, edge_coord(vf, edge), self._centre_along(edge),
+                                 *((zone.width, zone.height) if is_flat(edge) else (zone.height, zone.width)),
+                                 CAPSULE_INSET - 4)
+        zone.show_at(x, y, screen=screen)
+        self.order_front()
+
+    @objc.python_method
+    def _hide_zones(self) -> None:
+        self.zone.hide()
+        self.flat_zone.hide()
 
     @objc.python_method
     def drag_ended(self, mx: float, my: float) -> None:
@@ -899,10 +1075,10 @@ class MiniPlayer(FloatingPanel):
         if self.form in ("rest", "menu"):
             self._drop_rest(mx, my)
             return
-        self.zone.hide()
+        self._hide_zones()
         edge, screen = self._edge_near(mx, my)
         if edge:
-            self._collapse(edge, screen, self._center_y())
+            self._collapse(edge, screen, self._centre_along(edge))
         elif self.dock:
             self._expand_at(mx, my)
         else:
@@ -926,40 +1102,38 @@ class MiniPlayer(FloatingPanel):
         """Chevron / click: open the card next to where the docked player sits."""
         if not self.dock:
             return
-        ex, cy = self._anchor
-        cx = ex + DOCK_GAP + self.width / 2 if self.dock == "left" else ex - DOCK_GAP - self.width / 2
-        self._expand_at(cx, cy)
+        (x, y), (w, h) = docked_frame(self.dock, *self._anchor, self.width if is_flat(self.dock) else self.height,
+                                      self.height if is_flat(self.dock) else self.width, DOCK_GAP)
+        self._expand_at(x + w / 2, y + h / 2)
         self._remember()
 
     @objc.python_method
-    def _center_y(self) -> float:
+    def _centre_along(self, edge: str) -> float:
+        """The window's centre along `edge`: x for the bottom, y for the sides."""
         f = self.panel.frame()
-        return f.origin.y + f.size.height / 2
+        return f.origin.x + f.size.width / 2 if is_flat(edge) else f.origin.y + f.size.height / 2
 
     @objc.python_method
     def _edge_near(self, mx: float, my: float):
         """Which screen edge (if any) the panel is close enough to for docking."""
         screen = screen_at(mx, my)
-        vf = visible_frame(screen)
         f = self.panel.frame()
-        left = f.origin.x - vf.origin.x
-        right = (vf.origin.x + vf.size.width) - (f.origin.x + f.size.width)
-        if left < SNAP and left <= right:
-            return "left", screen
-        if right < SNAP:
-            return "right", screen
-        return "", screen
+        frame = ((f.origin.x, f.origin.y), (f.size.width, f.size.height))
+        return snap_edge(_vf(screen), frame), screen
 
     @objc.python_method
-    def _collapse(self, edge: str, screen, cy: float) -> None:
-        """Dock on `edge` of `screen`, resting form, centred on cy."""
+    def _collapse(self, edge: str, screen, along: float) -> None:
+        """Dock on `edge` of `screen`, resting form, centred on `along`, with room for the open pill."""
         self._cancel_anim()
-        vf = visible_frame(screen)
-        cy = min(max(cy, vf.origin.y + DOCK_H / 2), vf.origin.y + vf.size.height - DOCK_H / 2)  # room for the open pill
+        vf = _vf(screen)
+        lo, n = _axis(vf, edge)
+        length = pill_len(is_flat(edge))
+        along = min(max(along, lo + length / 2), lo + n - length / 2)
         self.dock = edge
-        self._anchor = (vf.origin.x if edge == "left" else vf.origin.x + vf.size.width, cy)
-        self._scale = SLIVER_H / DOCK_H
-        set_symbol(self.chevron, "chevron.right" if edge == "left" else "chevron.left", 11.0, AppKit.NSFontWeightBold)
+        self._anchor = (edge_coord(vf, edge), along)
+        self._scale = SLIVER_H / length
+        for kit in self._kits.values():
+            set_symbol(kit["chevron"], CHEVRONS[edge], 11.0, AppKit.NSFontWeightBold)
         self._show_sliver()
 
     @objc.python_method
@@ -981,8 +1155,8 @@ class MiniPlayer(FloatingPanel):
         spot maps onto any screen size."""
         f = self.panel.frame()
         vf = visible_frame(screen_at(f.origin.x + f.size.width / 2, f.origin.y + f.size.height / 2))
-        if self.dock:
-            fx, fy = 0.0, (self._anchor[1] - DOCK_H / 2 - vf.origin.y) / max(1.0, vf.size.height - DOCK_H)
+        if self.dock:  # docked: y is the position along the edge, whichever edge
+            fx, fy = 0.0, along_fraction(_vf_of(vf), self.dock, self._anchor[1])
         else:
             fx = (f.origin.x - vf.origin.x) / max(1.0, vf.size.width - self.width)
             fy = (f.origin.y - vf.origin.y) / max(1.0, vf.size.height - self.height)
@@ -996,9 +1170,8 @@ class MiniPlayer(FloatingPanel):
         screen = screen or screen_under_mouse()
         vf = visible_frame(screen)
         lay = self.layout
-        if lay.get("dock") in ("left", "right"):
-            cy = vf.origin.y + lay["y"] * (vf.size.height - DOCK_H) + DOCK_H / 2 if lay["y"] >= 0 else vf.origin.y + vf.size.height / 2
-            self._collapse(lay["dock"], screen, cy)
+        if lay.get("dock") in DOCKS:
+            self._collapse(lay["dock"], screen, along_centre(_vf_of(vf), lay["dock"], float(lay.get("y", -1.0))))
             self._log_placed(screen)
             return
         if lay.get("x", -1) >= 0 and lay.get("y", -1) >= 0:
@@ -1054,7 +1227,7 @@ class MiniPlayer(FloatingPanel):
                 self._reading_spot = None  # nothing to bring back when the dictation ends
                 return
             self._cancel_anim()
-            self.zone.hide()
+            self._hide_zones()
             if self.dock:
                 self._show_sliver(show=False)  # so the next reading starts from the resting form
             log.info("player hidden (reading ended) dock=%s form=%s", self.dock, self.form)
@@ -1063,17 +1236,18 @@ class MiniPlayer(FloatingPanel):
             return
         self._status = st
         icon = "play.fill" if st.state == "paused" else "pause.fill"
-        for btn, size in zip(self.buttons["toggle"], (20.0, 14.0), strict=False):
-            set_symbol(btn, icon, size)
+        for i, btn in enumerate(self.buttons["toggle"]):  # the card's first, then each docked pill's
+            set_symbol(btn, icon, 20.0 if i == 0 else 14.0)
         self._speed = st.speed
         self.speed_btn.setTitle_(f"{st.speed:g}×")
         self.progress.setStringValue_("Loading…" if st.state == "loading" else f"{st.index} of {st.total}")
-        if not (self.scrub.scrubbing or self.dock_scrub.scrubbing):
+        if not (self.scrub.scrubbing or any(k["dock_scrub"].scrubbing for k in self._kits.values())):
             self.elapsed.setStringValue_(_fmt(st.position))
             self.remaining.setStringValue_("-" + _fmt(max(0.0, st.duration - st.position)))
         frac = st.position / st.duration if st.duration > 0 else 0.0
         self.scrub.set_fraction(frac)
-        self.dock_scrub.set_fraction(frac)
+        for kit in self._kits.values():
+            kit["dock_scrub"].set_fraction(frac)
         voice = st.provider.split("·")[-1].strip() if st.provider else ""
         self.badge_text.setStringValue_((voice[:1] or "S").upper())
         self.badge.setToolTip_(st.provider)
@@ -1087,8 +1261,9 @@ class MiniPlayer(FloatingPanel):
         tip = f"{st.index} of {st.total}  ·  -{_fmt(max(0.0, st.duration - st.position))}"
         if tip != self._tip:  # rewriting a tooltip churns tracking areas; only do it when the text changes
             self._tip = tip
-            self.pill.setToolTip_(tip)
-            self.sliver.setToolTip_(tip)
+            for kit in self._kits.values():
+                kit["pill"].setToolTip_(tip)
+                kit["sliver"].setToolTip_(tip)
         self._refresh_sliver()
         # A mouse-up that never arrived would leave the flag set and place() skipped forever.
         if self._dragging and not (NSEvent.pressedMouseButtons() & 1):
@@ -1124,15 +1299,14 @@ class MiniPlayer(FloatingPanel):
         self.order_front()
 
     @objc.python_method
-    def _place_rest(self, vf, edge: str, fy: float) -> None:
+    def _place_rest(self, vf, edge: str, frac: float) -> None:
         self._edge = edge
         self._show_form("rest")
-        frame = edge_frame(vf, edge, fy, SLIVER_W, SLIVER_H, inset=0.0)
+        frame = edge_frame(vf, edge, frac, SLIVER_H, SLIVER_W, inset=0.0)
         self.panel.setFrame_display_(frame, True)
-        self.rest.setBoundsSize_((SLIVER_W, SLIVER_H))  # after the frame: see _show_sliver
+        self.rest.setBoundsSize_(oriented(SLIVER_H, SLIVER_W, edge))  # after the frame: see _show_sliver
         self.rest.set_state(0.0, False, edge)
-        (x, y), (w, h) = frame
-        self._rest_anchor = (x if edge == "left" else x + w, y + h / 2)
+        self._rest_anchor = anchor_of(frame, edge)
 
     @objc.python_method
     def set_idle_pill(self, on: bool) -> None:
@@ -1142,17 +1316,17 @@ class MiniPlayer(FloatingPanel):
 
     @objc.python_method
     def _drop_rest(self, mx: float, my: float) -> None:
-        """The idle pill was dragged: snap it to the nearer edge of the screen it was dropped
-        on, at that height, as the resting sliver, and remember the spot (shared with the
-        docked player)."""
+        """The idle pill was dragged: snap it to the nearest edge of the screen it was dropped
+        on (left, right or bottom), at that spot along it, as the resting sliver, and remember
+        the spot (shared with the docked player)."""
         screen = screen_at(mx, my)
         vf = _vf(screen)
         f = self.panel.frame()
         cx, cy = f.origin.x + f.size.width / 2, f.origin.y + f.size.height / 2
-        edge = "left" if cx - vf[0] < vf[0] + vf[2] - cx else "right"
-        fy = spot_fraction(vf, cy)
+        edge = nearest_edge(vf, cx, cy)
+        fy = along_fraction(vf, edge, cx if is_flat(edge) else cy)
         self._place_rest(vf, edge, fy)
-        if self.layout.get("dock") in ("left", "right"):
+        if self.layout.get("dock") in DOCKS:
             self.layout = {"dock": edge, "x": 0.0, "y": fy}
             self._fire("layout", edge, 0.0, fy)
         else:
@@ -1200,7 +1374,7 @@ class MiniPlayer(FloatingPanel):
     def _enter_dictation(self) -> None:
         """Take the window for the dictate form, remembering where the reading form was."""
         self._cancel_anim()
-        self.zone.hide()
+        self._hide_zones()
         if self._dragging:
             self._dragging = False
             self.panel._press = None
@@ -1213,7 +1387,7 @@ class MiniPlayer(FloatingPanel):
         self._edge = edge
         self._show_form("dictate")
         self._set_hands_free(False, animate=False)
-        self.panel.setFrame_display_(edge_frame(_vf(screen_under_mouse()), edge, fy, CAP_W, FREE_H), True)
+        self.panel.setFrame_display_(edge_frame(_vf(screen_under_mouse()), edge, fy, FREE_H, CAP_W), True)
         self.wave.reset()
         self.wave.start()
         self.order_front()
@@ -1244,8 +1418,8 @@ class MiniPlayer(FloatingPanel):
         self.hands_free = on
         if not on:
             self._hide_tip()
-        h = FREE_H if on else COMPACT_H
-        frame = ((0, (FREE_H - h) / 2), (CAP_W, h))
+        length = FREE_H if on else COMPACT_H
+        frame = lay((FREE_H - length) / 2, length, 0, CAP_W, FREE_H, self._flat)
         buttons = (self.cancel_bg, self.finish_bg)
         if on:
             for b in buttons:
@@ -1271,6 +1445,15 @@ class MiniPlayer(FloatingPanel):
             for b in buttons:
                 b.animator().setAlphaValue_(1.0 if on else 0.0)
         NSAnimationContext.runAnimationGroup_completionHandler_(changes, settled)
+
+    @objc.python_method
+    def toast_floor(self, gap: float = 12.0) -> float | None:
+        """When the pill is on screen on the bottom edge, the lowest y a toast may start at so
+        it sits above the pill; else None."""
+        if not self.visible() or not is_flat(self.form_edge()):
+            return None
+        f = self.panel.frame()
+        return f.origin.y + f.size.height + gap
 
     # -- tooltip pill ------------------------------------------------------------------
 
