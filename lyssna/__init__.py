@@ -1,3 +1,3 @@
-"""Lyssna: read any text on your Mac aloud with a natural voice."""
+"""Lyssna: read any text on your Mac aloud with a natural voice, and dictate."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

@@ -31,6 +31,39 @@ They are not bundled: Lyssna downloads the ONNX export of them
 (`kokoro-v1.0.int8.onnx` and `voices-v1.0.bin` from the kokoro-onnx releases)
 the first time the voice is used.
 
+## Dictation on this Mac
+
+| Component | Version | License | Notes |
+|---|---|---|---|
+| onnx-asr | 0.12.0 | MIT | Runs the Parakeet speech model on the onnxruntime above |
+| llama-cpp-python | 0.3.37 | MIT | Runs the S1-mini cleanup model. Apple Silicon builds only |
+| llama.cpp and ggml (built into llama-cpp-python) | as vendored by llama-cpp-python 0.3.37 | MIT | Copyright (c) 2023-2026 The ggml authors; license from the llama.cpp source |
+| Jinja2 | 3.1.6 | BSD-3-Clause | Used by llama-cpp-python. Apple Silicon builds only |
+| MarkupSafe | 3.0.4 | BSD-3-Clause | Used by Jinja2. Apple Silicon builds only |
+| diskcache | 5.6.3 | Apache-2.0 | Used by llama-cpp-python. Apple Silicon builds only |
+| Common English words list (`lyssna/dictation/data/common_words.txt`) | generated 2026-11-17 | ESDB (SCOWL) permissive license | Made with https://app.aspell.net/create from the English Speller Database, Copyright 2000-2026 by Kevin Atkinson. The full notice is in `lyssna/dictation/data/common_words.LICENSE` |
+
+numpy (listed above) is also used directly: dictation records and processes
+audio as numpy arrays.
+
+The dictation models are not bundled. Lyssna downloads them from Hugging Face
+the first time dictation on this Mac is used:
+
+- **Parakeet TDT 0.6B v2** and **Parakeet TDT 0.6B v3** by NVIDIA, licensed
+  CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/). Model cards:
+  https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2 and
+  https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3. Lyssna uses ONNX
+  exports with int8 weights published by istupakov
+  (https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx and
+  https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx): the model was
+  converted to ONNX and its weights quantized. Lyssna does not change it
+  further.
+- **"S1-mini" by "Superwhisper"** (https://huggingface.co/superwhisper/s1-mini-GGUF),
+  the GGUF file `s1-mini-q4_k_m.gguf`, licensed "Apache-2.0 with an additional
+  naming term": the model must always be identified as "S1-mini" by
+  "Superwhisper", with that exact capitalization. Its LICENSE and NOTICE files
+  are downloaded next to the weights. Apple Silicon only.
+
 ## The app
 
 | Component | Version | License |

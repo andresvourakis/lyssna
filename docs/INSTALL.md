@@ -1,7 +1,8 @@
 LYSSNA
 
-Lyssna reads text aloud on your Mac. Select text in any app,
-press Control-Option-S, and listen.
+Lyssna reads text aloud on your Mac and types what you say.
+Select text in any app, press Control-Option-S, and listen.
+Or hold fn, speak, and let go.
 
 You need macOS 14 or later on Apple silicon (M1 or newer),
 or macOS 13 or later on an Intel Mac.
@@ -48,6 +49,15 @@ A setup window opens.
    You can also paste an API key for a cloud voice instead.
 3. Try it. Select some text anywhere and press
    Control-Option-S.
+4. Dictate. Click Allow so Lyssna may use the microphone.
+   macOS asks once; you can change it later in System
+   Settings > Privacy & Security > Microphone.
+   Then set the Globe key: open System Settings > Keyboard
+   (the setup window has a button for it) and set
+   "Press Globe key to" to Do Nothing. Otherwise holding fn
+   also opens the emoji picker.
+   Last, click Download for the speech models (about 1.1 GB,
+   once), or paste your own OpenAI and Anthropic keys.
 
 Lyssna lives in the menu bar at the top right of the screen.
 To see the setup window again, click the Lyssna icon and
@@ -65,6 +75,13 @@ HOTKEYS
   Control-Option-=        faster
   Control-Option-minus    slower
   Control-Option-B        play button on or off
+
+DICTATION
+
+  Hold fn                 dictate while you hold it
+  fn, then Space          keep dictating hands-free;
+                          press fn again to finish
+  Escape                  cancel a hands-free dictation
 
 When you select text, a small play button appears above it.
 Click it instead of using the hotkey if you like.
@@ -92,7 +109,8 @@ Paste this into Terminal:
   curl -fsSL https://raw.githubusercontent.com/andresvourakis/lyssna/main/scripts/uninstall.sh | sh
 
 This removes the app and keeps your settings. To also delete
-settings, the audio cache and the logs, use:
+settings, the audio cache, the dictation history, dictionary
+and models, and the logs, use:
 
   curl -fsSL https://raw.githubusercontent.com/andresvourakis/lyssna/main/scripts/uninstall.sh | sh -s -- --purge
 
@@ -100,7 +118,8 @@ API keys you added stay in your Keychain. To remove them,
 use Settings > API Keys in the menu before you uninstall,
 or open Keychain Access and delete the items named
 "Lyssna API key". You can also remove Lyssna from
-System Settings > Privacy & Security > Accessibility.
+System Settings > Privacy & Security > Accessibility and
+Microphone.
 
 
 HELP

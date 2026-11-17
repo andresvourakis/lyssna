@@ -1,7 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
+- Dictation. Hold fn and speak, and Lyssna types what you said, cleaned up,
+  wherever your cursor is. Press Space while holding fn to keep going
+  hands-free. It runs on your Mac by default (Parakeet for speech, S1-mini by
+  Superwhisper for the cleanup, a one-time 1.1 GB download). Online engines
+  with your own keys are optional: OpenAI or Inworld for speech, Claude Haiku
+  for the cleanup.
+- A dictionary that learns: fix a name right after a dictation and Lyssna
+  spells it right next time. Turn it off with `auto_learn = false`.
+- A History window with what you dictated (kept 30 days by default) and the
+  dictionary.
+- The setup window has a dictation step: the microphone, the Globe key
+  setting, the model download, or your OpenAI and Anthropic keys, each checked
+  with a request that costs nothing.
+- The play button also appears in programs that copy what you select instead
+  of reporting it, such as terminal apps. It then reads the clipboard.
+- Launch no longer waits for the Keychain. After an update macOS may ask for
+  your password before Lyssna can read its saved keys; the menu bar icon now
+  appears at once, and your chosen voice is kept while the question is open.
 - New name: Speechy is now Lyssna. On first launch Lyssna picks up the Speechy
   settings, usage figures and audio cache, so nothing needs to be set up again.
 - A free voice that runs on your Mac (Kokoro) is now the default. No account or
@@ -13,8 +31,9 @@
 - The audio cache has a size limit (500 MB by default). The audio played longest
   ago is deleted first.
 - A one-line installer and updater, plus an uninstaller.
-- Local-only mode: Settings > Only Use Voices on This Mac hides and blocks every
-  cloud voice. Organizations can enforce it with a managed preference.
+- Local-only mode: Settings > Keep Everything on This Mac hides and blocks every
+  cloud voice and online dictation engine. Organizations can enforce it with a
+  managed preference.
 - The menu shows where your text goes with the current voice.
 - The OpenAI voice provider accepts a custom `base_url`, for company gateways.
 - License changed to GPL-3.0-or-later, because the local voice bundles GPL

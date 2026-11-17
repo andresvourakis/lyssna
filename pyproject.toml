@@ -1,13 +1,13 @@
 [project]
 name = "lyssna"
-version = "0.2.0"
-description = "Read any text on your Mac aloud with a natural voice. Select text, press a hotkey, listen."
+version = "0.3.0"
+description = "Read any text on your Mac aloud with a natural voice, and dictate into any app."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Andres Vourakis" }]
-keywords = ["text-to-speech", "tts", "macos", "menu-bar", "accessibility"]
+keywords = ["text-to-speech", "tts", "speech-to-text", "dictation", "macos", "menu-bar", "accessibility"]
 classifiers = [
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
