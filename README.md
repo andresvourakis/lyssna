@@ -13,7 +13,7 @@ Lyssna is Swedish for "listen" (say "LISS-nah").
 
 - **A voice that sounds human.** Not the robotic system voice.
 - **Dictation that cleans up.** Filler words and false starts go, punctuation goes in, and it learns the names you correct.
-- **Free, and it runs on your Mac.** The voice and dictation run on your Mac. No account, no API key, and your text and voice never leave the computer.
+- **Free, and it runs on your Mac.** No account, no API key, and your text and voice never leave the computer.
 - **Works in any app.** Browsers, mail, PDFs, Slack, the terminal. If you can select it, Lyssna can read it. If you can type in it, Lyssna can dictate into it.
 - **Open source.** GPL-3.0. Read the code, build it yourself, change it.
 
