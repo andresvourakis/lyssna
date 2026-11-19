@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/andresvourakis/lyssna/main/scripts/
 
 That downloads the latest version, checks it, puts Lyssna in your Applications folder and opens it. Run the same line again any time to update.
 
-Prefer to download by hand? Get the zip from the [Releases page](https://github.com/andresvourakis/lyssna/releases) and follow [docs/INSTALL.md](docs/INSTALL.md). macOS will show a "cannot verify" warning the first time; that page explains the one-time fix.
+Prefer to download by hand? Get the zip from the [Releases page](https://github.com/andresvourakis/lyssna/releases) and follow [docs/INSTALL.md](docs/INSTALL.md). macOS will say the app "is damaged" the first time; that page has the one Terminal line that fixes it.
 
 You need macOS 14 or later on an Apple silicon Mac, or macOS 13 or later on an Intel Mac. The built-in voice is a one-time 140 MB download, and dictation on your Mac a one-time 1.1 GB download (about 660 MB on Intel, where dictation cleans up with simple rules instead of a model). The Intel version is new and less tested, so please open an issue if something is off.
 
@@ -145,7 +145,7 @@ A heavy reader (about 300,000 characters a month, roughly five hours of listenin
 
 **No sound.** Check your Mac's output device and volume. The first reading with the local voice waits for its download; the menu bar shows "Downloading voice" with a percentage until it is done. Errors show briefly in the menu bar. The log records which voice provider failed and how, without the message.
 
-**"Lyssna cannot be verified" after a manual download.** Open System Settings > Privacy & Security, scroll down, and click **Open Anyway** next to the Lyssna message. This happens because Lyssna is not notarized by Apple, which needs a paid Apple developer membership. The one-line installer avoids the warning.
+**"Lyssna is damaged and can't be opened" after a manual download.** The app is not damaged. Click Cancel, then paste `xattr -dr com.apple.quarantine /Applications/Lyssna.app` into Terminal and open Lyssna again. macOS shows this for downloaded apps that are not notarized by Apple, which needs a paid Apple developer membership. The one-line installer avoids the message.
 
 **Holding fn opens the emoji picker.** Set **System Settings > Keyboard > Press Globe key to** to **Do Nothing**. The setup window has a button that opens that page.
 
