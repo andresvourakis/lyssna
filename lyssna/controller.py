@@ -91,6 +91,8 @@ class Controller:
         self.message: str = ""  # transient user-facing notice (errors, "nothing selected")
         self.extensions: dict[str, Callable[[dict], dict]] = {}  # extra socket commands registered by the app layer
         self.selection_button_enabled: bool = bool(self.cfg.get("ui", {}).get("selection_button", True))
+        self.auto_hide_enabled: bool = bool(self.cfg.get("ui", {}).get("auto_hide", True))
+        self.wave_enabled: bool = bool(self.cfg.get("ui", {}).get("wave", True))
         self._keep_dictation_local()
         self._toast_observers: list[Callable[[Notice], None]] = []
         self._dictation_lock = threading.Lock()
@@ -477,6 +479,19 @@ class Controller:
 
     def toggle_selection_button(self) -> None:
         self.set_selection_button(not self.selection_button_enabled)
+
+    def set_auto_hide(self, enabled: bool) -> None:
+        """Keep the idle pill out of sight until the cursor comes near its spot. Persisted;
+        the app applies it to the pill."""
+        self.auto_hide_enabled = enabled
+        self.cfg = config.update(**{"ui.auto_hide": enabled})
+        log.info("idle pill auto-hide %s", "on" if enabled else "off")
+
+    def set_wave(self, enabled: bool) -> None:
+        """Let the resting wave ripple now and then. Persisted; the app applies it to the pill."""
+        self.wave_enabled = enabled
+        self.cfg = config.update(**{"ui.wave": enabled})
+        log.info("idle pill wave %s", "on" if enabled else "off")
 
     def player_layout(self) -> dict:
         """Where the mini player was last left: dock ("left"/"right"/"bottom"/"") and position

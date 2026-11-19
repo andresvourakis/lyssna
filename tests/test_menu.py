@@ -166,11 +166,35 @@ def test_provider_menu_groups_local_and_online(menubar):
 
 def test_settings_menu(menubar):
     assert visible_rows(menubar.settings_menu._menu) == [
-        "Play Button on Selection", "Keep Everything on This Mac", "API Keys", "---",
+        "Play Button on Selection", "Auto-hide Squiggle", "Squiggle Wave", "Keep Everything on This Mac", "API Keys", "---",
         "Edit Config File…", "Open Log", "Clear Audio Cache",
     ]
     keys = visible_rows(menubar.key_menu._menu)
     assert "---" not in keys and not any(k.startswith("Remove") for k in keys)  # no key stored
+
+
+def test_auto_hide_squiggle_is_checked_persisted_and_applied(menubar):
+    applied = []
+    menubar.on_auto_hide = applied.append
+    item = menubar.item_auto_hide
+    assert item.state == 1 and menubar.ctl.auto_hide_enabled is True
+    item.callback(item)
+    assert item.state == 0 and applied == [False]
+    assert config.load()["ui"]["auto_hide"] is False
+    item.callback(item)
+    assert item.state == 1 and applied == [False, True] and config.load()["ui"]["auto_hide"] is True
+
+
+def test_squiggle_wave_is_checked_persisted_and_applied(menubar):
+    applied = []
+    menubar.on_wave = applied.append
+    item = menubar.item_wave
+    assert item.state == 1 and menubar.ctl.wave_enabled is True
+    item.callback(item)
+    assert item.state == 0 and applied == [False]
+    assert config.load()["ui"]["wave"] is False
+    item.callback(item)
+    assert item.state == 1 and applied == [False, True] and config.load()["ui"]["wave"] is True
 
 
 def test_stored_key_shows_its_remove_entry(menubar):

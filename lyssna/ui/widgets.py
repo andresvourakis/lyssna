@@ -30,6 +30,14 @@ SQUIGGLE_LEN = 34.0     # one full wave, along the edge
 SQUIGGLE_AMP = 3.2      # peak height either side of the centre line
 SQUIGGLE_STROKE = 3.6
 SQUIGGLE_HALO = 2.0     # the halo under it is this much wider than the line
+# Its colours, the same in light and dark mode: a quiet dark shape with a soft white outline
+# reads on any background and asks for less attention than the brand colours did.
+SQUIGGLE_FILL = (0x2C / 255, 0x2C / 255, 0x2E / 255, 0.95)   # dark gray, sRGB + alpha
+SQUIGGLE_OUTLINE = (1.0, 1.0, 1.0, 0.55)                     # soft white, sRGB + alpha
+# Its wave now and then: one slow ripple runs along it and it settles back at rest. A detail, not a nudge.
+WAVE_SECS = 2.8
+WAVE_CYCLES = 1.0
+WAVE_FRAMES = 72        # key paths per wave; the render server blends between them
 
 
 def capsule_centre(edge: str) -> tuple[float, float]:
@@ -47,18 +55,37 @@ def squiggle_size() -> tuple[float, float]:
     return (2 * SQUIGGLE_AMP + pad, SQUIGGLE_LEN + pad)
 
 
-def _squiggle_path():
-    """The logo's wave (mark.py) standing up in the squiggle layer: one sine period from bottom
-    to top, first out to the left, so turned a quarter clockwise it rises first, then dips."""
+def squiggle_points(phase: float = 0.0) -> list[tuple[float, float]]:
+    """The points of the logo's wave (mark.py) standing up in the squiggle layer: one sine
+    period from bottom to top, first out to the left, so turned a quarter clockwise it rises
+    first, then dips. `phase` (in cycles) moves the crests up the line, so turned flat they run
+    left to right; whole cycles give the resting shape back. The amplitude never changes: the
+    layer is exactly as wide as the wave plus its round caps, so a taller wave would poke out."""
     w, h = squiggle_size()
     x0, y0 = w / 2, (h - SQUIGGLE_LEN) / 2
-    path = Quartz.CGPathCreateMutable()
-    Quartz.CGPathMoveToPoint(path, None, x0, y0)
     steps = 64
-    for i in range(1, steps + 1):
-        t = i / steps
-        Quartz.CGPathAddLineToPoint(path, None, x0 - SQUIGGLE_AMP * math.sin(2 * math.pi * t), y0 + SQUIGGLE_LEN * t)
+    return [(x0 - SQUIGGLE_AMP * math.sin(2 * math.pi * (i / steps - phase)), y0 + SQUIGGLE_LEN * (i / steps))
+            for i in range(steps + 1)]
+
+
+def _squiggle_path(phase: float = 0.0):
+    (x, y), *rest = squiggle_points(phase)
+    path = Quartz.CGPathCreateMutable()
+    Quartz.CGPathMoveToPoint(path, None, x, y)
+    for x, y in rest:
+        Quartz.CGPathAddLineToPoint(path, None, x, y)
     return path
+
+
+def wave_phases(frames: int = WAVE_FRAMES, cycles: float = WAVE_CYCLES) -> list[float]:
+    """The phase of each key path of one wave, evenly spaced in time: eased in and out (a half
+    cosine), so the ripple gathers speed and settles. The ends are exactly 0, the resting
+    shape, so the wave starts and stops without a jump."""
+    return [(cycles * (1 - math.cos(math.pi * i / frames)) / 2) % 1.0 for i in range(frames + 1)]
+
+
+def wave_paths(frames: int = WAVE_FRAMES, cycles: float = WAVE_CYCLES) -> list:
+    return [_squiggle_path(p) for p in wave_phases(frames, cycles)]
 
 
 def clear_glow():
@@ -304,8 +331,11 @@ class Sliver(AppKit.NSView):
     the whole fill dims. Transparent around the capsule.
 
 At rest (set_rest(True), the idle pill when nothing plays) there is no capsule: only the wave
-from the Lyssna logo, slim, centred where the capsule would be. A content-coloured line over a
-slightly wider halo in the surface tone, so it reads on any background. Nothing animates.
+from the Lyssna logo, slim, centred where the capsule would be. A dark gray line over a
+slightly wider soft white halo, the same in light and dark mode, so it reads on any
+background without asking for attention. It is still but for
+wave(): one ripple running along it, played when the owner asks (about every 10 s, see
+MiniPlayer), on the shapes' paths only, ending on the resting path.
 
 On the bottom edge (edge "bottom") the view is SLIVER_H wide and SLIVER_W tall and the whole
 capsule layer is turned a quarter clockwise, so the fill grows from the left and the sparks
@@ -461,8 +491,8 @@ left to right like the logo's."""
             self.squiggle.setTransform_(self.capsule.transform())
             w = self.window()
             scale = w.backingScaleFactor() if w is not None else 2.0
-            self.halo.setStrokeColor_(theme.surface(0.45).CGColor())
-            self.line.setStrokeColor_(theme.content(0.88).CGColor())
+            self.halo.setStrokeColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(*SQUIGGLE_OUTLINE).CGColor())
+            self.line.setStrokeColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(*SQUIGGLE_FILL).CGColor())
             for shape in (self.halo, self.line):
                 shape.setContentsScale_(scale)
             Quartz.CATransaction.commit()
@@ -515,3 +545,24 @@ left to right like the logo's."""
         group.setDuration_(0.75)
         group.setTimingFunction_(Quartz.CAMediaTimingFunction.functionWithName_(Quartz.kCAMediaTimingFunctionEaseOut))
         self.bloom.addAnimation_forKey_(group, "bloom")
+
+    @objc.python_method
+    def wave(self) -> None:
+        """At rest: one ripple along the wave. A one-shot keyframe animation of both shapes'
+        paths, so the halo never leaves the line; the model path stays the resting one, so
+        when it ends (or is cut) the wave is exactly as it was. Only the paths move: the
+        squiggle layer's geometry belongs to updateLayer and its opacity to auto-hide's slide."""
+        if not self.rest:
+            return
+        anim = Quartz.CAKeyframeAnimation.animationWithKeyPath_("path")
+        anim.setValues_(wave_paths())
+        anim.setDuration_(WAVE_SECS)
+        Quartz.CATransaction.begin()
+        for shape in (self.halo, self.line):
+            shape.addAnimation_forKey_(anim, "wave")
+        Quartz.CATransaction.commit()
+
+    @objc.python_method
+    def stop_wave(self) -> None:
+        for shape in (self.halo, self.line):
+            shape.removeAnimationForKey_("wave")

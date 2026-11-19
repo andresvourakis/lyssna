@@ -69,6 +69,8 @@ If nothing is selected, Control-Option-S reads the clipboard instead.
 
 Recording your screen? Press Control-Option-B or untick **Settings > Play Button on Selection** and the button stays hidden until you turn it back on.
 
+**The squiggle.** When nothing plays, the wave from the Lyssna logo waits on the edge of the screen. It stays out of sight until your cursor comes near its spot, then slides in; hover it to dictate, read the selection or open the history. Untick **Settings > Auto-hide Squiggle** to keep it in view, and **Settings > Squiggle Wave** to keep it still.
+
 <details>
 <summary><strong>From the terminal</strong></summary>
 

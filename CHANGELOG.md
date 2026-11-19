@@ -48,6 +48,11 @@
   stays in view at the bottom.
 - When nothing plays, the pill rests at the screen edge as the wave from the
   Lyssna logo instead of a plain capsule.
+- The resting wave hides until the cursor comes near its spot on the screen
+  edge, then slides in. Turn it off with Settings > Auto-hide Squiggle.
+- The resting wave waves now and then: about every 10 seconds a ripple runs
+  along it while it sits in view. Not with Reduce Motion on in the system
+  settings. Turn it off with Settings > Squiggle Wave (or `ui.wave = false`).
 - The OpenAI voice provider accepts a custom `base_url`, for company gateways.
 - License changed to GPL-3.0-or-later, because the local voice bundles GPL
   components.

@@ -35,7 +35,7 @@ DEFAULTS: dict = {
     },
     "ui": {"selection_button": True, "mini_player": True, "button_timeout": 4.0,
            "player_dock": "", "player_x": -1.0, "player_y": -1.0,
-           "idle_pill": True, "dictation_dock": "", "dictation_y": -1.0},
+           "idle_pill": True, "auto_hide": True, "wave": True, "dictation_dock": "", "dictation_y": -1.0},
     "inworld": {"api_key": "", "voice": "Sarah", "model": "inworld-tts-2"},
     "cartesia": {"api_key": "", "voice": "47c38ca4-5f35-497b-b1a3-415245fb35e1", "model": "sonic-3.6"},
     "elevenlabs": {"api_key": "", "voice": "JBFqnCBsd6RMkjVDRZzb", "model": "eleven_v3"},
@@ -95,6 +95,8 @@ player_x = -1.0
 player_y = -1.0
 idle_pill = true           # a slim pill on the screen edge when nothing plays; hover it to dictate,
                            # read the selection or open the history. false = nothing at rest
+auto_hide = true           # the idle pill stays out of sight until the cursor comes near its spot
+wave = true                # the resting wave ripples now and then; false = it stays still
 # Where you last left the idle pill while the player is not docked: dictation_dock = "left" |
 # "right" | "bottom" and dictation_y, the position along that edge (0..1). Empty = the bottom
 # centre of the screen. Managed by the app.

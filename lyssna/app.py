@@ -176,6 +176,8 @@ class MenuBar(rumps.App):
         self.on_setup: Callable[[str | None], None] = lambda engine: None  # opens the setup window; set by LyssnaApp
         self.on_setup_dictation: Callable[[str], None] = lambda engine: None  # ...at its dictation keys
         self.on_history: Callable[[], None] = lambda: None  # opens the dictation history; set by LyssnaApp
+        self.on_auto_hide: Callable[[bool], None] = lambda on: None  # applies auto-hide to the pill; set by LyssnaApp
+        self.on_wave: Callable[[bool], None] = lambda on: None  # applies the resting wave to the pill; set by LyssnaApp
         self._downloading = False
         self._engine_groups: list[tuple[rumps.MenuItem, list[rumps.MenuItem]]] = []  # header, its rows
         self._privacy_symbols: dict[str, str] = {}  # "reading" / "dictation": the symbol shown now
@@ -279,8 +281,10 @@ class MenuBar(rumps.App):
             self.item_login.state = 1 if autostart.is_enabled() else 0
             self.settings_menu.add(self.item_login)
         self.item_button = self._item("Play Button on Selection", self._toggle_button, "button")
+        self.item_auto_hide = self._item("Auto-hide Squiggle", self._toggle_auto_hide)
+        self.item_wave = self._item("Squiggle Wave", self._toggle_wave)
         self.item_local = rumps.MenuItem(local_only_title(False), callback=self._toggle_local_only)
-        for item in (self.item_button, self.item_local, self._build_api_keys(), None,
+        for item in (self.item_button, self.item_auto_hide, self.item_wave, self.item_local, self._build_api_keys(), None,
                      rumps.MenuItem("Edit Config File…", callback=lambda _: open_path("-t", str(config.CONFIG_PATH))),
                      rumps.MenuItem("Open Log", callback=lambda _: open_path(str(config.LOG_DIR / "lyssna.log"))),
                      rumps.MenuItem("Clear Audio Cache", callback=lambda _: self.ctl.reader.cache.clear())):
@@ -319,6 +323,16 @@ class MenuBar(rumps.App):
 
     def _toggle_button(self) -> None:
         self.ctl.set_selection_button(not self.ctl.selection_button_enabled)
+        self._refresh_checks()
+
+    def _toggle_auto_hide(self) -> None:
+        self.ctl.set_auto_hide(not self.ctl.auto_hide_enabled)
+        self.on_auto_hide(self.ctl.auto_hide_enabled)
+        self._refresh_checks()
+
+    def _toggle_wave(self) -> None:
+        self.ctl.set_wave(not self.ctl.wave_enabled)
+        self.on_wave(self.ctl.wave_enabled)
         self._refresh_checks()
 
     def _toggle_local_only(self, _=None) -> None:
@@ -518,6 +532,8 @@ class MenuBar(rumps.App):
 
     def _refresh_settings(self) -> None:
         self.item_button.state = 1 if self.ctl.selection_button_enabled else 0
+        self.item_auto_hide.state = 1 if self.ctl.auto_hide_enabled else 0
+        self.item_wave.state = 1 if self.ctl.wave_enabled else 0
         managed = self.ctl.local_only_managed()
         self.item_local.state = 1 if self.ctl.local_only() else 0
         self.item_local.title = local_only_title(managed)
@@ -615,6 +631,10 @@ class LyssnaApp:
             self.mini_player.layout = self.ctl.player_layout()
             self.mini_player.dictation_layout = self.ctl.dictation_layout()
             self.mini_player.idle_pill = bool(ui_cfg.get("idle_pill", True))
+            self.mini_player.auto_hide = bool(ui_cfg.get("auto_hide", True))
+            self.menubar.on_auto_hide = self.mini_player.set_auto_hide
+            self.mini_player.rest_wave = bool(ui_cfg.get("wave", True))
+            self.menubar.on_wave = self.mini_player.set_wave
             self.mini_player.key_name = dictation_key
             self.mini_player.read_key = pretty(self.ctl.cfg["hotkeys"]["speak"])
             self.ctl.subscribe(self.mini_player.update)

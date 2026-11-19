@@ -6,6 +6,7 @@ each panel, so the tests check forms, frames and view state, not pixels. The who
 half skips without a window server."""
 
 import itertools
+import math
 import threading
 
 import AppKit
@@ -26,6 +27,8 @@ from lyssna.ui.mini_player import (
     DOCK_H,
     DOCK_W,
     FREE_H,
+    HIDE_DELAY,
+    LINGER_SECS,
     MENU_DISC,
     MENU_H,
     MENU_MIC_H,
@@ -38,11 +41,14 @@ from lyssna.ui.mini_player import (
     docked_frame,
     edge_frame,
     lay,
+    may_wave,
+    near_frame,
     nearest_edge,
     oriented,
     pick_form,
     pill_len,
     snap_edge,
+    tuck_due,
 )
 from lyssna.ui.toast import ACTION_PAD, ACTION_RIGHT, BOTTOM, PAD_L, TOAST_H, tip_origin, toast_width
 from lyssna.ui.widgets import (
@@ -52,10 +58,19 @@ from lyssna.ui.widgets import (
     SLIVER_H,
     SLIVER_W,
     SQUIGGLE_AMP,
+    SQUIGGLE_HALO,
     SQUIGGLE_LEN,
     SQUIGGLE_STROKE,
+    WAVE_CYCLES,
+    WAVE_FRAMES,
+    WAVE_SECS,
     Sliver,
+    _squiggle_path,
     capsule_centre,
+    squiggle_points,
+    squiggle_size,
+    wave_paths,
+    wave_phases,
 )
 
 # -- the rules -------------------------------------------------------------------------------
@@ -157,6 +172,84 @@ def test_nearest_and_snap_edges():
     assert snap_edge(VF, ((5, 30), (100, 50))) == "left"     # a tie goes to the side, as nearest_edge
 
 
+@pytest.mark.parametrize("edge", EDGES)
+def test_near_means_within_reach_of_the_resting_spot_on_each_edge(edge):
+    frame = edge_frame(VF, edge, 0.5, SLIVER_H, SLIVER_W, inset=0.0)
+    (x, y), (w, h) = frame
+    cx, cy = x + w / 2, y + h / 2
+    inward = {"left": (1, 0), "right": (-1, 0), "bottom": (0, 1)}[edge]
+    along = (0, 1) if edge != "bottom" else (1, 0)
+    depth = w if edge != "bottom" else h
+    length = h if edge != "bottom" else w
+
+    def at(into, sideways):  # a point `into` points in from the sliver's inner side, `sideways` along
+        return (cx + inward[0] * (depth / 2 + into) + along[0] * sideways,
+                cy + inward[1] * (depth / 2 + into) + along[1] * sideways)
+
+    assert near_frame(cx, cy, frame) and near_frame(*at(0, 0), frame, reach=0.0)  # on it
+    assert near_frame(*at(99, 0), frame) and not near_frame(*at(101, 0), frame)
+    assert near_frame(*at(0, length / 2 + 99), frame) and not near_frame(*at(0, length / 2 + 101), frame)
+    assert not near_frame(*at(5, 0), frame, reach=0.0)  # beside it is near, not on it
+    assert not near_frame(720, 460, frame)  # the middle of the screen
+
+
+def test_tuck_due_waits_for_the_delay_and_the_linger():
+    assert tuck_due(True, 10.0, 9.0, 0.0) == (False, None)  # near: never, and the clock resets
+    assert tuck_due(False, 10.0, None, 0.0) == (False, 10.0)  # just left: the clock starts
+    assert tuck_due(False, 10.0 + HIDE_DELAY - 0.01, 10.0, 0.0)[0] is False
+    assert tuck_due(False, 10.0 + HIDE_DELAY, 10.0, 0.0) == (True, 10.0)
+    assert tuck_due(False, 11.0, 10.0, 12.0)[0] is False  # lingering: not before it ends
+    assert tuck_due(False, 12.0, 10.0, 12.0)[0] is True
+    assert tuck_due(False, 12.2, 11.9, 12.0)[0] is False  # left near the end of a linger: the delay still runs
+
+
+STILL = {"form": "rest", "visible": True, "tucked": False, "sliding": False, "dragging": False, "reading": False,
+         "dictation": "idle", "reduce_motion": False, "enabled": True}
+
+
+@pytest.mark.parametrize(("change", "waves"), [
+    ({}, True),
+    ({"dictation": "notice"}, True),  # a notice is a toast; the wave is still in view
+    ({"form": "menu"}, False),
+    ({"form": "sliver"}, False),
+    ({"visible": False}, False),
+    ({"tucked": True}, False),
+    ({"sliding": True}, False),
+    ({"dragging": True}, False),
+    ({"reading": True}, False),
+    ({"dictation": "recording"}, False),
+    ({"dictation": "working"}, False),
+    ({"reduce_motion": True}, False),
+    ({"enabled": False}, False),  # ui.wave off
+])
+def test_the_resting_wave_waves_only_in_view_and_still(change, waves):
+    assert may_wave(**{**STILL, **change}) is waves
+
+
+def test_one_wave_starts_and_ends_on_the_resting_shape():
+    phases = wave_phases()
+    assert len(phases) == WAVE_FRAMES + 1 and phases[0] == 0.0 and phases[-1] == 0.0
+    assert squiggle_points(phases[0]) == squiggle_points() == squiggle_points(phases[-1])
+    unwrapped = [WAVE_CYCLES * (1 - math.cos(math.pi * i / WAVE_FRAMES)) / 2
+                 for i in range(WAVE_FRAMES + 1)]
+    steps = [b - a for a, b in itertools.pairwise(unwrapped)]
+    assert steps[0] < steps[WAVE_FRAMES // 2] > steps[-1]  # eased in and out
+    assert unwrapped[-1] == WAVE_CYCLES == 1.0  # one ripple runs along it: a detail, not a nudge
+    paths = wave_paths()
+    rest = _squiggle_path()
+    assert Quartz.CGPathEqualToPath(paths[0], rest) and Quartz.CGPathEqualToPath(paths[-1], rest)
+    assert not Quartz.CGPathEqualToPath(paths[WAVE_FRAMES // 3], rest)
+    assert 2.0 <= WAVE_SECS <= 4.0  # slow enough to read as calm
+
+
+def test_the_wave_never_leaves_its_layer():
+    w, h = squiggle_size()
+    cap = (SQUIGGLE_STROKE + SQUIGGLE_HALO) / 2  # the halo's round caps reach this far past a point
+    for phase in wave_phases():
+        for x, y in squiggle_points(phase):
+            assert cap - 1e-9 <= x <= w - cap + 1e-9 and cap - 1e-9 <= y <= h - cap + 1e-9
+
+
 def test_sizes():
     assert (CAP_W, COMPACT_H, FREE_H) == (34.0, 60.0, 118.0)
     assert (MENU_MIC_W, MENU_MIC_H, MENU_DISC) == (CAP_W, 52.0, 28.0)  # the dictate item as slim as the capsule
@@ -251,14 +344,18 @@ def pill(nsapp, monkeypatch):
     p.zone.order_front = lambda: p.zones.append("side")
     p.flat_zone.order_front = lambda: p.zones.append("flat")
     p.visible = lambda: bool(p.shown)  # as if each order_front had put it on screen
+    p.auto_hide = False  # the tests below expect the resting sliver to stay out; auto-hide has its own
     p.dictation_layout = {"dock": "right", "y": -1.0}  # the side tests below; bottom ones set their own
     p.fired = []
     p.actions = {name: (lambda *a, n=name: p.fired.append((n, *a)))
                  for name in ("dictate", "dictate_stop", "dictate_cancel", "layout", "dictation_layout", "toggle",
                               "read_selection", "history")}
+    p._reduce_motion = lambda: False
     yield p
     p.wave.stop()
     p._stop_watch()
+    p._stop_auto_watch()
+    p._stop_wave_timer()
 
 
 def frame(p):
@@ -324,6 +421,94 @@ def test_the_idle_wave_is_one_slim_wave_turned_on_the_bottom(nsapp):
     flat = sliver("bottom", True).squiggle.frame().size
     assert (flat.width, flat.height) == pytest.approx((side.height, side.width))
     assert s.line.lineWidth() == SQUIGGLE_STROKE and s.halo.lineWidth() > SQUIGGLE_STROKE
+
+
+def waving(s) -> bool:
+    """Is a wave playing on this Sliver's shapes? Both carry it, or neither."""
+    on = [shape.animationForKey_("wave") is not None for shape in (s.halo, s.line)]
+    assert on[0] == on[1]
+    return on[0]
+
+
+@appkit
+@pytest.mark.parametrize("edge", EDGES)
+def test_a_wave_runs_on_the_line_and_its_halo_only_at_rest(nsapp, edge):
+    s = sliver(edge, True)
+    still = s.squiggle.transform(), s.squiggle.position(), s.squiggle.opacity()
+    s.wave()
+    assert waving(s)
+    a, b = s.halo.animationForKey_("wave"), s.line.animationForKey_("wave")
+    assert a.keyPath() == b.keyPath() == "path" and a.duration() == WAVE_SECS
+    assert len(a.values()) == len(b.values()) == WAVE_FRAMES + 1
+    assert all(Quartz.CGPathEqualToPath(p, q) for p, q in zip(a.values(), b.values(), strict=True))
+    assert Quartz.CGPathEqualToPath(s.line.path(), _squiggle_path())  # the model stays at rest
+    assert (s.squiggle.transform(), s.squiggle.position(), s.squiggle.opacity()) == still
+    s.stop_wave()
+    assert not waving(s)
+    reading = sliver(edge, False)
+    reading.wave()
+    assert not waving(reading)
+
+
+@appkit
+def test_the_resting_sliver_waves_on_each_tick_while_it_sits_there(pill):
+    pill.show_idle()
+    assert pill._wave_timer is not None and pill._wave_timer.timeInterval() == mp_mod.WAVE_EVERY
+    pill._wave_tick()
+    assert waving(pill.rest)
+    pill.rest.stop_wave()
+    pill._reduce_motion = lambda: True
+    pill._wave_tick()
+    assert not waving(pill.rest)
+
+
+@appkit
+def test_the_wave_switched_off_does_not_wave_and_cuts_one_in_flight(pill):
+    pill.show_idle()
+    pill._wave_tick()
+    assert waving(pill.rest)
+    pill.set_wave(False)
+    assert not waving(pill.rest) and pill._wave_timer is not None  # the countdown runs on; the rule says no
+    pill._wave_tick()
+    assert not waving(pill.rest)
+    pill.set_wave(True)
+    pill._wave_tick()
+    assert waving(pill.rest)
+
+
+@appkit
+def test_a_drag_or_the_menu_cuts_the_wave(pill):
+    pill.show_idle()
+    pill._wave_tick()
+    pill.drag_began()
+    assert not waving(pill.rest)
+    pill._wave_tick()
+    assert not waving(pill.rest)  # in the hand
+    pill.drag_ended(1420, 460)
+    assert pill.form == "rest" and pill._wave_timer is not None
+    pill._wave_tick()
+    assert waving(pill.rest)
+    pill.mouseEntered_(None)
+    assert pill.form == "menu" and pill._wave_timer is None and not waving(pill.rest)
+    pill._close_menu_now()
+    assert pill.form == "rest" and pill._wave_timer is not None
+
+
+@appkit
+def test_no_wave_timer_during_a_reading_a_dictation_or_with_the_pill_off(pill):
+    pill.show_idle()
+    pill._wave_tick()
+    pill._update(Status(state="playing", session=1, total=3, index=1))
+    assert pill.form == "card" and pill._wave_timer is None and not waving(pill.rest)
+    pill._update(Status())
+    assert pill.form == "rest" and pill._wave_timer is not None
+    pill._set_dictation("recording")
+    assert pill._wave_timer is None
+    pill._set_dictation("idle")
+    assert pill._wave_timer is not None
+    pill._wave_tick()
+    pill.set_idle_pill(False)
+    assert pill._wave_timer is None and not waving(pill.rest)
 
 
 @appkit
@@ -564,6 +749,177 @@ def test_wave_reads_the_stored_level(pill):
     for i in range(30, 120):
         pill.wave.tick(i / 30)
     assert pill.wave.amplitude == pytest.approx(wave.WORK_AMP, abs=0.1)
+
+
+# -- auto-hide -------------------------------------------------------------------------------
+
+REST_X = 1440 - SLIVER_W  # the resting sliver on the right edge, middle: x and centre y
+REST_CY = 25 + 875 / 2
+FAR = (720.0, 460.0)
+NEAR = (REST_X - 60, REST_CY)
+
+
+@pytest.fixture
+def hiding(pill):
+    """The pill with auto-hide on, its clock and cursor in the test's hands. hide() takes it off
+    screen as visible() sees it."""
+    pill.auto_hide = True
+    pill.clock = [100.0]
+    pill._now = lambda: pill.clock[0]
+    pill.cursor = FAR
+    pill._cursor = lambda: pill.cursor
+    pill.hide = lambda: pill.shown.clear()
+    return pill
+
+
+def at(p, t):
+    """Set the clock and run one auto-hide tick."""
+    p.clock[0] = t
+    p._auto_tick()
+
+
+def slid_out(p) -> float:
+    """How far the resting wave is moved out of its window, towards the screen edge."""
+    return p.rest.layer().sublayerTransform().m41
+
+
+@appkit
+def test_auto_hide_shows_at_idle_then_slides_away_after_the_linger(hiding):
+    hiding.show_idle()
+    assert hiding.form == "rest" and hiding.shown == ["rest"] and hiding._auto_watch is not None
+    at(hiding, 100.0)
+    at(hiding, 100.0 + LINGER_SECS - 0.01)
+    assert not hiding._tucked  # far from it, but lingering so a new user sees where it lives
+    at(hiding, 100.0 + LINGER_SECS)
+    assert hiding._tucked and slid_out(hiding) == SLIVER_W
+    x, _y, w, h = frame(hiding)
+    assert (x, w, h) == (REST_X, SLIVER_W, SLIVER_H)  # the window stays put: the wave slides inside it
+    pump(0.4)  # the slide's completion
+    assert hiding.shown == [] and hiding.form == "rest" and hiding._auto_watch is not None
+
+
+@appkit
+def test_auto_hide_reveals_near_keeps_the_menu_and_hides_after_the_delay(hiding):
+    hiding.show_idle()
+    at(hiding, 100.0)
+    at(hiding, 103.0)
+    pump(0.4)
+    assert hiding._tucked and hiding.shown == []
+    hiding.mouseEntered_(None)  # a stale enter on the hidden window
+    assert hiding.form == "rest"
+
+    hiding.cursor = NEAR
+    at(hiding, 104.0)
+    assert not hiding._tucked and hiding.shown == ["rest"] and hiding.form == "rest"
+    assert slid_out(hiding) == 0.0 and frame(hiding)[0] == REST_X
+    at(hiding, 110.0)
+    assert not hiding._tucked  # near: it stays
+
+    hiding.mouseEntered_(None)
+    assert hiding.form == "menu"
+    hiding.cursor = FAR
+    at(hiding, 120.0)
+    at(hiding, 130.0)
+    assert hiding.form == "menu" and not hiding._tucked  # never while the menu is open
+
+    hiding._close_menu_now()
+    assert hiding.form == "rest" and hiding.shown[-1] == "rest"
+    at(hiding, 131.0)
+    at(hiding, 131.0 + HIDE_DELAY - 0.01)
+    assert not hiding._tucked  # no linger after the menu, only the delay
+    at(hiding, 131.0 + HIDE_DELAY)
+    assert hiding._tucked
+
+
+@appkit
+def test_auto_hide_opens_the_menu_when_it_slides_in_under_the_cursor(hiding):
+    hiding.show_idle()
+    at(hiding, 100.0)
+    at(hiding, 103.0)
+    hiding.cursor = (REST_X + 5, REST_CY)
+    at(hiding, 104.0)  # revealed
+    assert hiding.form == "rest"
+    at(hiding, 104.1)  # arrived on it
+    assert hiding.form == "menu"
+
+
+@appkit
+def test_auto_hide_off_keeps_the_resting_sliver_out(pill):
+    pill.show_idle()
+    assert pill._auto_watch is None
+    pill._auto_tick()
+    assert not pill._tucked and pill.shown == ["rest"]
+
+
+@appkit
+def test_auto_hide_switched_live(pill):
+    pill.clock = [100.0]
+    pill._now = lambda: pill.clock[0]
+    pill.show_idle()
+    pill.set_auto_hide(True)
+    assert pill._auto_watch is not None and pill._linger_until == 100.0 + LINGER_SECS
+    pill.set_auto_hide(False)
+    assert pill._auto_watch is None and pill.form == "rest" and not pill._tucked
+
+
+@appkit
+def test_a_reading_or_a_dictation_while_hidden_shows_its_own_form_and_stops_the_watch(hiding):
+    hiding.show_idle()
+    at(hiding, 100.0)
+    at(hiding, 103.0)
+    pump(0.4)
+    assert hiding._tucked
+    hiding._update(Status(state="playing", session=1, total=3, index=1))
+    assert hiding.form == "card" and hiding.shown[-1] == "card"
+    assert hiding._auto_watch is None and not hiding._tucked
+    hiding._update(Status())  # the reading ended: back, lingering
+    assert hiding.form == "rest" and hiding.shown[-1] == "rest" and hiding._auto_watch is not None
+    assert hiding._linger_until == 103.0 + LINGER_SECS
+    at(hiding, 103.0)
+    at(hiding, 103.0 + LINGER_SECS)
+    assert hiding._tucked
+    hiding._set_dictation("recording")
+    assert hiding.form == "dictate" and hiding.shown[-1] == "dictate" and hiding._auto_watch is None
+    hiding._set_dictation("idle")
+    assert hiding.form == "rest" and hiding._auto_watch is not None and not hiding._tucked
+
+
+@appkit
+def test_no_wave_while_it_slides_or_hides_and_the_countdown_restarts_on_reveal(hiding):
+    hiding.show_idle()
+    hiding._wave_tick()
+    assert not waving(hiding.rest)  # sliding in
+    pump(0.4)
+    hiding._wave_tick()
+    assert waving(hiding.rest)
+    at(hiding, 100.0)
+    at(hiding, 100.0 + LINGER_SECS)
+    assert hiding._tucked and hiding._wave_timer is None and not waving(hiding.rest)  # cut as it slides away
+    hiding._wave_tick()
+    assert not waving(hiding.rest)
+    pump(0.4)
+    hiding.cursor = NEAR
+    at(hiding, 104.0)
+    assert not hiding._tucked and hiding._wave_timer is not None
+    hiding._wave_tick()
+    assert not waving(hiding.rest)  # sliding back in
+    pump(0.4)
+    hiding._wave_tick()
+    assert waving(hiding.rest)
+
+
+@appkit
+def test_dropping_the_idle_pill_with_auto_hide_lingers_where_it_landed(hiding):
+    hiding.show_idle()
+    hiding.clock[0] = 150.0
+    hiding.panel.setFrameOrigin_((300, 500))
+    hiding.drag_began()
+    at(hiding, 150.0)
+    assert not hiding._tucked  # never during a drag
+    hiding.drag_ended(320, 520)
+    assert hiding.form == "rest" and hiding._edge == "left" and hiding._linger_until == 150.0 + LINGER_SECS
+    at(hiding, 151.0)
+    assert not hiding._tucked
 
 
 # -- the bottom dock ---------------------------------------------------------------------------

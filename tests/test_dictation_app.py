@@ -66,7 +66,9 @@ def test_the_pill_is_wired_to_dictation(lyssna):
     mp = lyssna.mini_player
     for name in ("dictate", "dictate_stop", "dictate_cancel", "dictation_layout", "read_selection", "history"):
         assert callable(mp.actions[name])
-    assert mp.key_name == "fn" and mp.read_key and mp.idle_pill is True
+    assert mp.key_name == "fn" and mp.read_key and mp.idle_pill is True and mp.auto_hide is True
+    assert lyssna.menubar.on_auto_hide == mp.set_auto_hide  # the Settings item applies it live
+    assert mp.rest_wave is True and lyssna.menubar.on_wave == mp.set_wave
     assert "dictation_update" in [getattr(fn, "__name__", "") for fn in lyssna.ctl.dictation._observers]
     assert "show_idle" in [getattr(fn, "__name__", "") for fn in lyssna.deferred]  # the mic button, after launch
 

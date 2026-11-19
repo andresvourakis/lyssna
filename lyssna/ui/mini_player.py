@@ -20,10 +20,20 @@ window, one form in it at a time, every switch through _show_form:
 
     mode        form
     idle        rest: the slim sliver on a screen edge, neutral (nothing, ui.idle_pill off);
+                while it sits in view and still, its wave ripples about every WAVE_EVERY
+                seconds (not with ui.wave off or Reduce Motion, see may_wave); with ui.auto_hide
+                it is out of sight until the cursor comes near its spot, then slides in from the
+                edge, and slides away again once the cursor leaves;
                 menu: hovered, it grows into dictate, read selection and history buttons
     reading     card, or sliver / pill when docked (as above)
     dictating   dictate: a capsule with the wave meter; hands-free it grows a cancel and a
                 finish button; while the speech is turned into text the wave breathes
+
+Auto-hide only ever hides the rest form: the window stays where the sliver rests and the wave
+slides inside it, so the slide never shows on a neighbouring display. Whenever the rest form
+comes out for any other reason than the cursor (launch, a reading or dictation ending, a drop,
+auto-hide switched on), it lingers for LINGER_SECS so a new user sees where it lives
+(near_frame and tuck_due hold these rules, without AppKit).
 
 Dictation wins: when one starts during a reading the reading pauses and its form goes away,
 and when it ends the reading form comes back where it was, still paused. The dictation forms
@@ -119,6 +129,17 @@ HOVER_POLL = 0.03
 
 CAP_W = 34.0      # the dictation capsule's thickness, and the dictate item's in the hover menu
 
+# Auto-hide (ui.auto_hide): the resting sliver stays out of sight until the cursor is near it.
+REVEAL_REACH = 100.0      # points around the sliver's spot that count as near
+HIDE_DELAY = 0.5          # seconds the cursor must be away before the sliver slides out
+LINGER_SECS = 2.0         # shown for any reason but the cursor, it stays this long at least
+SLIDE_SECS = HOVER_SECS   # the slide in or out of the edge
+AUTO_HIDE_POLL = 0.1      # cursor check while idle with auto-hide on
+
+# The resting wave waves (Sliver.wave, WAVE_SECS long) about this often while it sits in view.
+WAVE_EVERY = 10.0
+WAVE_TOLERANCE = 1.0      # lets the system fold the timer's wakeups in with others
+
 # Idle: at rest the slim sliver (flush with the edge); hovered, a stack of a dictate capsule
 # and two discs, DOCK_GAP in from the edge. MENU_W is across, MENU_H along.
 MENU_MIC_W, MENU_MIC_H = CAP_W, 52.0  # as thick as the dictation capsule
@@ -163,6 +184,33 @@ def dictation_spot(layout: dict, own: dict) -> tuple[str, float]:
     if edge in DOCKS:
         return edge, float(own.get("y", -1.0))
     return "bottom", -1.0
+
+
+def near_frame(px: float, py: float, frame, reach: float = REVEAL_REACH) -> bool:
+    """Is the point (px, py) within `reach` points of the frame ((x, y), (w, h))? The resting
+    sliver's frame is flush with its edge, so this is a band along the edge around its spot."""
+    (x, y), (w, h) = frame
+    return x - reach <= px <= x + w + reach and y - reach <= py <= y + h + reach
+
+
+def tuck_due(near: bool, now: float, away_since: float | None, linger_until: float,
+             delay: float = HIDE_DELAY) -> tuple[bool, float | None]:
+    """One step of the auto-hide rule for a shown resting sliver: (slide out now, when the
+    cursor left). It goes once the cursor has been away for `delay`, and never before
+    `linger_until`; near, the clock resets."""
+    if near:
+        return False, None
+    away = now if away_since is None else away_since
+    return now >= max(away + delay, linger_until), away
+
+
+def may_wave(form: str, visible: bool, tucked: bool, sliding: bool, dragging: bool, reading: bool,
+             dictation: str, reduce_motion: bool, enabled: bool) -> bool:
+    """May the resting wave wave now? Only when it is switched on (ui.wave) and on screen and
+    still: the rest form, shown, not hidden or sliding under auto-hide, not in the hand,
+    nothing being read or dictated, and the system's Reduce Motion off."""
+    return (enabled and form == "rest" and visible and not tucked and not sliding and not dragging
+            and not reading and dictation not in DICTATING and not reduce_motion)
 
 
 # -- geometry: one set of rules for the three docks -------------------------------------------
@@ -360,6 +408,15 @@ class MiniPlayer(FloatingPanel):
         self._tip_token = None
         self.tip = Tip.alloc().init()
         self._rest_anchor = (0.0, 0.0)                # (edge coord, centre along) of the resting sliver
+        self.auto_hide = True                         # ui.auto_hide: the resting sliver hides until the cursor comes near
+        self.rest_wave = True                         # ui.wave: the resting wave ripples now and then
+        self._tucked = False                          # the resting sliver is hidden, or sliding out, by auto-hide
+        self._auto_watch = None                       # the cursor poll while idle with auto-hide on
+        self._away_since: float | None = None         # when the cursor left the sliver's surroundings
+        self._linger_until = 0.0                      # the sliver stays out at least until then
+        self._slide_token = None                      # completion token of the running slide
+        self._was_inside = False                      # the cursor was on the sliver at the last auto-hide tick
+        self._wave_timer = None                       # the resting wave's wave, while the rest form is up
         self._kits = {flat: self._build_kit(flat) for flat in (False, True)}
         self._flat = None
         self._orient(False)
@@ -801,7 +858,7 @@ class MiniPlayer(FloatingPanel):
                 and self._status is not None and self.visible()):
             self._open_pill()
         elif (self.form == "rest" and not self._dragging and self._status is None
-              and self.dictation_state not in DICTATING and self.visible()):
+              and self.dictation_state not in DICTATING and self.visible() and not self._tucked):
             self._open_menu()
 
     def mouseExited_(self, event):
@@ -879,6 +936,14 @@ class MiniPlayer(FloatingPanel):
         views = {"card": self.card, "pill": self.pill_host, "sliver": self.sliver,
                  "rest": self.rest, "menu": self.menu_host, "dictate": self.dictate_host}
         self._hide_tip()
+        self._tucked = False  # a new form is a shown form; only _tuck hides the rest form
+        self._slide_token = None  # and a slide still running belongs to the old one
+        if name not in ("rest", "menu"):
+            self._stop_auto_watch()  # a reading or a dictation owns the window: nothing to auto-hide
+        if name == "rest":
+            self._start_wave_timer()  # (re)shown: the countdown starts over
+        else:
+            self._stop_wave_timer()
         self.form = name
         self.draggable = name != "dictate"  # a drag would fight push-to-talk
         self.panel.setContentView_(views[name])
@@ -919,14 +984,15 @@ class MiniPlayer(FloatingPanel):
     def _close_menu(self) -> None:
         if self.form != "menu" or self._dragging:
             return
-        self._set_scale(SLIVER_H / MENU_H, animate=True, done=self.show_idle)
+        # The cursor closed it, so it is near: back to the sliver without a linger.
+        self._set_scale(SLIVER_H / MENU_H, animate=True, done=lambda: self.show_idle(linger=False))
 
     @objc.python_method
     def _close_menu_now(self) -> None:
         """An item was clicked: back to the resting sliver at once, before its action runs."""
         if self.form == "menu":
             self._cancel_anim()
-            self.show_idle()
+            self.show_idle(linger=False)
 
     @objc.python_method
     def _show_sliver(self, show: bool = True) -> None:
@@ -1038,6 +1104,10 @@ class MiniPlayer(FloatingPanel):
         log.debug("drag_began form=%s dock=%s scale=%.2f", self.form, self.dock, self._scale)
         self._dragging = True
         if self.form in ("rest", "menu"):
+            self.rest.stop_wave()
+            if self._tucked:  # caught mid slide-out: it is in the hand now, fully in
+                self._tucked = False
+                self._slide_rest(True, animate=False)
             self._hide_tip()
             self._cancel_anim()
             if self.form == "menu" and self._scale != 1.0:
@@ -1288,18 +1358,35 @@ class MiniPlayer(FloatingPanel):
     # -- dictation -------------------------------------------------------------------
 
     @objc.python_method
-    def show_idle(self) -> None:
-        """Nothing playing and nothing being dictated: the resting sliver on its edge, or nothing."""
+    def show_idle(self, linger: bool = True) -> None:
+        """Nothing playing and nothing being dictated: the resting sliver on its edge, or nothing.
+        With auto-hide it slides in (unless it is out already) and the watch takes over; `linger`
+        keeps it out for LINGER_SECS, for every caller but the cursor closing the menu."""
         form = pick_form("idle" if self._status is None else "playing", self.dictation_state, bool(self.dock),
                          self.idle_pill)
         if form != "rest":
+            self._stop_auto_watch()
+            self._stop_wave_timer()
             if self.form in ("rest", "menu"):
                 self._cancel_anim()
                 self.hide()
             return
+        out = self.form in ("rest", "menu") and not self._tucked  # on screen already: no second slide
         edge, fy = dictation_spot(self.layout, self.dictation_layout)
         self._place_rest(_vf(screen_under_mouse()), edge, fy)
+        if not self.auto_hide:
+            self._stop_auto_watch()
+            self.order_front()
+            return
+        self._away_since = None
+        if linger:
+            self._linger_until = self._now() + LINGER_SECS
+        if not out:
+            self._slide_rest(False, animate=False)
         self.order_front()
+        if not out:
+            self._slide_rest(True, animate=True)
+        self._start_auto_watch()
 
     @objc.python_method
     def _place_rest(self, vf, edge: str, frac: float) -> None:
@@ -1310,6 +1397,200 @@ class MiniPlayer(FloatingPanel):
         self.rest.setBoundsSize_(oriented(SLIVER_H, SLIVER_W, edge))  # after the frame: see _show_sliver
         self.rest.set_state(0.0, False, edge)
         self._rest_anchor = anchor_of(frame, edge)
+        self._slide_rest(True, animate=False)  # fully in; show_idle and _reveal slide it from there
+
+    @objc.python_method
+    def set_auto_hide(self, on: bool) -> None:
+        """Switch auto-hide live. Switched on, the sliver lingers before it first slides away,
+        so the change is visible; switched off, it simply stays out."""
+        self.auto_hide = bool(on)
+        if not on:
+            self._stop_auto_watch()
+        if self.form in ("rest", "menu") or (self._status is None and self.dictation_state not in DICTATING):
+            self.show_idle()
+
+    @objc.python_method
+    def set_wave(self, on: bool) -> None:
+        """Switch the resting wave live. The countdown keeps running and may_wave says no;
+        switched off, a wave in flight is cut back to the resting shape."""
+        self.rest_wave = bool(on)
+        if not on:
+            for kit in self._kits.values():
+                kit["rest"].stop_wave()
+
+    # -- auto-hide -------------------------------------------------------------------
+
+    @objc.python_method
+    def _now(self) -> float:
+        return time.monotonic()  # replaced in tests
+
+    @objc.python_method
+    def _cursor(self) -> tuple[float, float]:
+        p = NSEvent.mouseLocation()  # replaced in tests
+        return p.x, p.y
+
+    @objc.python_method
+    def _start_auto_watch(self) -> None:
+        """Poll the cursor while idle with auto-hide on, like _watch_hover: tracking areas
+        cannot see a cursor approaching a window that is not on screen."""
+        if self._auto_watch is not None:
+            return
+        self._auto_watch = NSTimer.timerWithTimeInterval_repeats_block_(AUTO_HIDE_POLL, True,
+                                                                         lambda _timer: self._auto_tick())
+        NSRunLoop.mainRunLoop().addTimer_forMode_(self._auto_watch, NSRunLoopCommonModes)
+
+    @objc.python_method
+    def _stop_auto_watch(self) -> None:
+        if self._auto_watch is not None:
+            self._auto_watch.invalidate()
+            self._auto_watch = None
+        self._away_since = None
+
+    @objc.python_method
+    def _auto_tick(self) -> None:
+        """Hidden: slide in when the cursor comes near the spot on the screen it is on. Shown:
+        slide out once tuck_due says so; never while the menu is open or during a drag."""
+        if (not self.auto_hide or not self.idle_pill or self._status is not None
+                or self.dictation_state in DICTATING or self.form not in ("rest", "menu")):
+            return
+        px, py = self._cursor()
+        if self._tucked:
+            self._was_inside = False
+            if self._dragging:
+                return
+            edge, fy = dictation_spot(self.layout, self.dictation_layout)
+            vf = _vf(screen_at(px, py))
+            if near_frame(px, py, edge_frame(vf, edge, fy, SLIVER_H, SLIVER_W, inset=0.0)):
+                self._reveal(vf, edge, fy)
+            return
+        if self.form != "rest" or self._dragging:
+            self._away_since = None
+            self._was_inside = True  # leaving the menu or a drop: not an arrival on the sliver
+            return
+        f = self.panel.frame()
+        frame = ((f.origin.x, f.origin.y), (f.size.width, f.size.height))
+        inside = near_frame(px, py, frame, reach=0.0)
+        arrived, self._was_inside = inside and not self._was_inside, inside
+        due, self._away_since = tuck_due(near_frame(px, py, frame), self._now(), self._away_since,
+                                         self._linger_until)
+        if due:
+            self._tuck()
+        elif arrived and not (NSEvent.pressedMouseButtons() & 1):
+            # Slid in under the cursor: no enter event may come, so the arrival opens the menu here.
+            self._open_menu()
+
+    @objc.python_method
+    def _reveal(self, vf, edge: str, frac: float) -> None:
+        """The cursor came near: slide the sliver in. Caught mid slide-out at the same spot it
+        turns around from where it is; anywhere else it is placed afresh."""
+        target = edge_frame(vf, edge, frac, SLIVER_H, SLIVER_W, inset=0.0)
+        f = self.panel.frame()
+        here = ((f.origin.x, f.origin.y), (f.size.width, f.size.height)) == target
+        if not (here and self.visible() and self.form == "rest"):
+            self._place_rest(vf, edge, frac)
+            self._slide_rest(False, animate=False)
+            self.order_front()
+        self._tucked = False
+        self._away_since = None
+        self._slide_rest(True, animate=True)
+        self._start_wave_timer()
+
+    @objc.python_method
+    def _tuck(self) -> None:
+        """Slide the sliver out of the edge, then take the window off screen."""
+        self._tucked = True
+        self._away_since = None
+        self._stop_wave_timer()
+        self._hide_tip()
+        self._slide_rest(False, animate=True, done=self._tucked_away)
+
+    @objc.python_method
+    def _tucked_away(self) -> None:
+        if self._tucked and self.form == "rest":
+            self.hide()
+
+    @objc.python_method
+    def _slide_rest(self, inward: bool, animate: bool, done: Callable[[], None] | None = None) -> None:
+        """Slide the resting wave in from (or out past) its screen edge, fading as it goes. It
+        moves inside the window, which stays put and clips it at the edge, so the wave never
+        shows on a display beside this one. The slide is the rest view's sublayerTransform and
+        the wave's opacity: AppKit owns the view's own layer geometry, and the Sliver's
+        updateLayer resets the wave's position and transform but neither of these."""
+        host, wave = self.rest.layer(), self.rest.squiggle
+        out = SLIVER_W
+        dx, dy = {"left": (-out, 0.0), "right": (out, 0.0), "bottom": (0.0, -out)}[self._edge]
+        target = Quartz.CATransform3DIdentity if inward else Quartz.CATransform3DMakeTranslation(dx, dy, 0)
+        opacity = 1.0 if inward else 0.0
+        moving = host.animationForKey_("slide") is not None
+        pres, wpres = host.presentationLayer(), wave.presentationLayer()
+        current = pres.sublayerTransform() if (moving and pres is not None) else host.sublayerTransform()
+        current_opacity = wpres.opacity() if (moving and wpres is not None) else wave.opacity()
+        token = object() if animate else None
+        self._slide_token = token
+        Quartz.CATransaction.begin()
+        Quartz.CATransaction.setDisableActions_(True)
+        host.removeAnimationForKey_("slide")
+        wave.removeAnimationForKey_("fade")
+        if animate:
+            timing = Quartz.CAMediaTimingFunction.functionWithName_(
+                Quartz.kCAMediaTimingFunctionEaseOut if inward else Quartz.kCAMediaTimingFunctionEaseIn)
+            slide = Quartz.CABasicAnimation.animationWithKeyPath_("sublayerTransform")
+            slide.setFromValue_(NSValue.valueWithCATransform3D_(current))
+            slide.setToValue_(NSValue.valueWithCATransform3D_(target))
+            fade = Quartz.CABasicAnimation.animationWithKeyPath_("opacity")
+            fade.setFromValue_(current_opacity)
+            fade.setToValue_(opacity)
+            for anim in (slide, fade):
+                anim.setDuration_(SLIDE_SECS)
+                anim.setTimingFunction_(timing)
+
+            def finished(*_):
+                if self._slide_token is token:
+                    self._slide_token = None
+                    self.panel.invalidateShadow()
+                    if done:
+                        done()
+            Quartz.CATransaction.setCompletionBlock_(finished)
+            host.addAnimation_forKey_(slide, "slide")
+            wave.addAnimation_forKey_(fade, "fade")
+        host.setSublayerTransform_(target)
+        wave.setOpacity_(opacity)
+        Quartz.CATransaction.commit()
+        if not animate:
+            self.panel.invalidateShadow()
+            if done:
+                done()
+
+    # -- the resting wave's wave -----------------------------------------------------------
+
+    @objc.python_method
+    def _reduce_motion(self) -> bool:
+        return bool(AppKit.NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion())  # replaced in tests
+
+    @objc.python_method
+    def _start_wave_timer(self) -> None:
+        """(Re)start the countdown to the next wave. A timer firing one short animation each
+        time, not one endless animation: between waves the window server has nothing to draw."""
+        self._stop_wave_timer()
+        self._wave_timer = NSTimer.timerWithTimeInterval_repeats_block_(WAVE_EVERY, True,
+                                                                        lambda _timer: self._wave_tick())
+        self._wave_timer.setTolerance_(WAVE_TOLERANCE)
+        NSRunLoop.mainRunLoop().addTimer_forMode_(self._wave_timer, NSRunLoopCommonModes)
+
+    @objc.python_method
+    def _stop_wave_timer(self) -> None:
+        """Stop the countdown and cut a wave in flight back to the resting shape."""
+        if self._wave_timer is not None:
+            self._wave_timer.invalidate()
+            self._wave_timer = None
+        for kit in self._kits.values():
+            kit["rest"].stop_wave()
+
+    @objc.python_method
+    def _wave_tick(self) -> None:
+        if may_wave(self.form, self.visible(), self._tucked, self._slide_token is not None, self._dragging,
+                    self._status is not None, self.dictation_state, self._reduce_motion(), self.rest_wave):
+            self.rest.wave()
 
     @objc.python_method
     def set_idle_pill(self, on: bool) -> None:
@@ -1350,6 +1631,10 @@ class MiniPlayer(FloatingPanel):
         the spot (shared with the docked player)."""
         _screen, vf, edge, fy = self._rest_landing(mx, my)
         self._place_rest(vf, edge, fy)
+        if self.auto_hide:  # a drop is a showing of its own: it lingers where it landed
+            self._away_since = None
+            self._linger_until = self._now() + LINGER_SECS
+            self._start_auto_watch()
         if self.layout.get("dock") in DOCKS:
             self.layout = {"dock": edge, "x": 0.0, "y": fy}
             self._fire("layout", edge, 0.0, fy)
