@@ -1,5 +1,3 @@
-import time
-
 import Quartz
 
 from lyssna import events
@@ -12,7 +10,7 @@ def make(ignore=None):
         on_select=lambda p: hits["select"].append(p),
         on_dismiss=lambda p: hits["dismiss"].append(p),
         ignore_region=ignore,
-        on_press=lambda p: hits["press"].append(p),
+        on_press=lambda p, clicks: hits["press"].append((p, clicks)),
     )
     return d, hits
 
@@ -20,11 +18,18 @@ def make(ignore=None):
 def test_drag_selects():
     d, hits = make()
     d.mouse_down(Point(10, 10))
-    time.sleep(0.1)
     d.mouse_dragged(Point(60, 12))
     d.mouse_up(Point(60, 12))
     assert len(hits["select"]) == 1 and hits["select"][0].x == 60
     assert len(hits["dismiss"]) == 1  # the mouse-down dismissed any previous button
+
+
+def test_short_drag_does_not_select():
+    d, hits = make()
+    d.mouse_down(Point(10, 10))
+    d.mouse_dragged(Point(15, 12))
+    d.mouse_up(Point(15, 12))
+    assert hits["select"] == []
 
 
 def test_plain_click_dismisses_only():
@@ -54,7 +59,7 @@ def test_press_fires_on_every_press():
     d.mouse_down(Point(1, 1))
     d.mouse_up(Point(1, 1))
     d.mouse_down(Point(2, 2), click_state=2)
-    assert [p.x for p in hits["press"]] == [1, 2]
+    assert [(p.x, clicks) for p, clicks in hits["press"]] == [(1, 1), (2, 2)]
 
 
 def test_press_not_fired_on_our_ui():

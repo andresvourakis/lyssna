@@ -1,25 +1,34 @@
 import threading
+import time
 
 from lyssna.events import Point
-from lyssna.selection import AXSelection, SelectionWatcher, offers_button
+from lyssna.selection import AXSelection, SelectionWatcher, offers_button, selection_proof
 
-NONE = AXSelection(True, "")
+BOX = (1.0, 2.0, 3.0, 4.0)
+NONE = AXSelection(True, "", ("plain", 3, 0))
 UNSUPPORTED = AXSelection(False, "")
-OLD = AXSelection(True, "old words")
-NEW = AXSelection(True, "hello world")
+OLD = AXSelection(True, "old words", ("plain", 20, 9), BOX)
+NEW = AXSelection(True, "hello world", ("plain", 0, 11), BOX)
 
 
-def make(selections, non_text=True, owner=100, front=100, enabled=True, delays=(0, 0), copied=None, sources=None):
+def make(selections, enabled=True, delays=(0, 0), copied=None, sources=None, before_timeout=0.5, slow_before=0.0):
     """`selections` are the AX answers in order: the before-snapshot first, then each after-probe.
     `copied` is the text someone else put on the clipboard since the press ("" or None: nothing);
-    the source each shown button was offered for is appended to `sources`."""
+    the source each shown button was offered for is appended to `sources`. `slow_before` makes
+    the before-snapshot take that long (after taking its answer)."""
     answers = list(selections)
     shown = []
     done = threading.Event()
     seen_counts = []
+    woken = []
+    calls = [0]
 
     def probe_selection():
-        return answers.pop(0) if len(answers) > 1 else answers[0]
+        calls[0] += 1
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if calls[0] == 1 and slow_before:
+            time.sleep(slow_before)
+        return answer
 
     def present(p, bounds, source):
         shown.append((p, bounds))
@@ -32,22 +41,26 @@ def make(selections, non_text=True, owner=100, front=100, enabled=True, delays=(
         return copied or ""
 
     w = SelectionWatcher(
-        probe_cursor=lambda: non_text,
         probe_selection=probe_selection,
-        probe_press_owner=lambda p: owner,
-        probe_front_pid=lambda: front,
         present=present,
         enabled=lambda: enabled,
-        probe_bounds=lambda: (1.0, 2.0, 3.0, 4.0),
         delays=delays,
+        before_timeout=before_timeout,
         probe_clipboard=lambda: 7,
         probe_copied=probe_copied,
+        wake=lambda: woken.append(1),
     )
     w.seen_counts = seen_counts
+    w.woken = woken
     return w, shown, done
 
 
 HERE = Point(10, 10)
+
+
+def _join(before):
+    for t in set(threading.enumerate()) - before:
+        t.join(2)
 
 
 def run(w, p=HERE):
@@ -55,41 +68,79 @@ def run(w, p=HERE):
     before = set(threading.enumerate())
     w.press(p)
     w.gesture(p)
-    for t in set(threading.enumerate()) - before:
-        t.join(2)
+    _join(before)
 
 
-def test_new_selection_shows():
-    w, shown, _ = make([NONE, NEW])
+def test_new_selection_shows_as_a_selection_with_its_bounds():
+    sources = []
+    w, shown, _ = make([NONE, NEW], sources=sources)
     run(w)
-    assert shown == [(Point(10, 10), (1.0, 2.0, 3.0, 4.0))]
+    assert shown == [(Point(10, 10), BOX)]
+    assert sources == ["selection"]
 
 
-def test_screenshot_like_drag_does_not_show():
-    # Arrow cursor, and the old selection is still there afterwards.
-    w, shown, _ = make([OLD, OLD], non_text=True)
-    run(w)
-    assert shown == []
-
-
-def test_press_on_another_apps_window_does_not_show():
-    # Screenshot overlay owns the window under the press; the front app gains a selection anyway.
-    w, shown, _ = make([NONE, NEW], non_text=False, owner=200, front=100)
+def test_ax_cannot_answer_and_nothing_copied_does_not_show():
+    # A screenshot region drag over Chrome before it reports anything.
+    w, shown, _ = make([UNSUPPORTED, UNSUPPORTED])
     run(w)
     assert shown == []
 
 
-def test_unknown_owner_or_front_does_not_block():
-    for owner, front in ((None, 100), (200, None)):
-        w, shown, _ = make([NONE, NEW], owner=owner, front=front)
-        run(w)
-        assert len(shown) == 1
+def test_same_selection_before_and_after_does_not_show():
+    # A screenshot or slider drag over text that was already selected.
+    w, shown, _ = make([OLD, OLD])
+    run(w)
+    assert shown == []
+
+
+def test_missing_before_snapshot_shows_only_on_a_copy():
+    w, shown, _ = make([NONE, NEW], before_timeout=0.01, slow_before=0.3)
+    run(w)
+    assert shown == []
+    sources = []
+    w, shown, _ = make([NONE, NEW], before_timeout=0.01, slow_before=0.3, copied="hello world", sources=sources)
+    run(w)
+    assert sources == ["clipboard"]
+    assert shown[0][1] is None  # no Accessibility proof: the button sits by the cursor
+
+
+def test_empty_selection_whose_range_moved_does_not_show():
+    # iTerm2: the caret's range moves while output scrolls, with nothing selected.
+    w, shown, _ = make([AXSelection(True, "", ("plain", 5, 0)), AXSelection(True, "", ("plain", 90, 0))])
+    run(w)
+    assert shown == []
 
 
 def test_retry_catches_a_late_selection():
     w, shown, _ = make([NONE, NONE, NEW])
     run(w)
     assert len(shown) == 1
+
+
+def test_double_click_compares_with_the_first_press():
+    # The first press saw nothing selected; by the second press the app already shows the word.
+    w, shown, _ = make([NONE, NEW, NEW])
+    before = set(threading.enumerate())
+    w.press(HERE, 1)
+    _join(before)
+    before = set(threading.enumerate())
+    w.press(HERE, 2)
+    w.gesture(HERE)
+    _join(before)
+    assert len(shown) == 1
+
+
+def test_a_press_while_our_own_app_is_in_front_does_not_show():
+    # With our app in front capture reads nothing (see test_capture_ax_gate); no rule needed here.
+    w, shown, _ = make([UNSUPPORTED, UNSUPPORTED])
+    run(w)
+    assert shown == []
+
+
+def test_press_asks_the_front_app_to_report():
+    w, _, _ = make([NONE, NONE])
+    run(w)
+    assert w.woken == [1]
 
 
 def test_newer_press_cancels_pending_check():
@@ -107,53 +158,38 @@ def test_disabled_never_presents():
     assert shown == []
 
 
-# -- offers_button: the decision itself, from the facts the watcher gathers --------
-
-ARROW = dict(non_text_cursor=True, pressed_in_front_app=True)
-CUSTOM = dict(non_text_cursor=False, pressed_in_front_app=True)
+# -- the decision itself, from the facts the watcher gathers ----------------------------
 
 
-def test_press_on_another_apps_window_never_shows():
-    # Screenshot overlay: new text in the front app doesn't matter.
-    for cursor in (True, False):
-        assert not offers_button(NONE, NEW, non_text_cursor=cursor, pressed_in_front_app=False)
-        assert not offers_button(UNSUPPORTED, UNSUPPORTED, non_text_cursor=cursor, pressed_in_front_app=False)
+def test_a_new_word_selection_is_proof():
+    assert selection_proof(OLD, NEW)
+    assert selection_proof(NONE, NEW)
+    assert selection_proof(UNSUPPORTED, NEW)  # a reading was taken; the app could not answer then
 
 
-def test_new_word_selection_shows_even_on_arrow():
-    assert offers_button(OLD, NEW, **ARROW)
-    assert offers_button(NONE, NEW, **ARROW)
-    assert offers_button(UNSUPPORTED, NEW, **ARROW)
+def test_the_same_text_in_a_new_place_is_proof():
+    assert selection_proof(NEW, NEW._replace(range=("plain", 40, 11)))
 
 
-def test_unchanged_selection_shows_only_on_custom_cursor():
-    assert not offers_button(NEW, NEW, **ARROW)  # file or window drag over an old selection
-    assert offers_button(NEW, NEW, **CUSTOM)  # e.g. a terminal's own text cursor
+def test_unchanged_selection_is_no_proof():
+    assert not offers_button(NEW, NEW)
+    assert not offers_button(UNSUPPORTED, UNSUPPORTED)
+
+
+def test_missing_before_snapshot_is_no_proof():
+    assert not offers_button(None, NEW)
+    assert offers_button(None, NEW, copied=True)
 
 
 def test_nothing_selected_never_shows():
-    assert not offers_button(OLD, NONE, **CUSTOM)
-    assert not offers_button(OLD, AXSelection(True, "   "), **CUSTOM)
+    assert not offers_button(OLD, NONE)
+    assert not offers_button(OLD, AXSelection(True, "   "))
 
 
 def test_single_character_is_not_a_word():
-    assert not offers_button(NONE, AXSelection(True, "a"), **CUSTOM)
-    assert not offers_button(NONE, AXSelection(True, " , "), **CUSTOM)
-    assert offers_button(NONE, AXSelection(True, "ab"), **ARROW)
-
-
-def test_unsupported_shows_unless_standard_non_text_cursor():
-    assert offers_button(UNSUPPORTED, UNSUPPORTED, **CUSTOM)
-    assert not offers_button(UNSUPPORTED, UNSUPPORTED, **ARROW)
-
-
-def test_press_on_our_own_ui_does_not_show():
-    # Our app is in front (say the History window) and the press landed on our own window.
-    for front in (100, 300):
-        w, shown, _ = make([NONE, NEW], non_text=False, owner=100, front=front)
-        w.own_pid = 100
-        run(w)
-        assert shown == []
+    assert not offers_button(NONE, AXSelection(True, "a"))
+    assert not offers_button(NONE, AXSelection(True, " , "))
+    assert offers_button(NONE, AXSelection(True, "ab"))
 
 
 # -- clipboard evidence: programs that copy their own selection -------------------------
@@ -162,37 +198,37 @@ def test_press_on_our_own_ui_does_not_show():
 def test_copy_on_select_shows_when_ax_says_nothing_selected():
     # A terminal program draws its own selection and copies it; the terminal reports no selection.
     sources = []
-    w, shown, _ = make([NONE, NONE], non_text=False, copied="ls -la is a word", sources=sources)
+    w, shown, _ = make([NONE, NONE], copied="ls -la is a word", sources=sources)
     run(w)
     assert len(shown) == 1 and sources == ["clipboard"]
     assert shown[0][1] is None  # Accessibility has no rectangle for it: the button sits by the cursor
     assert set(w.seen_counts) == {7}  # compared against the change count read at the press
 
 
-def test_copy_on_select_shows_when_ax_cannot_answer_even_on_arrow():
+def test_copy_on_select_shows_when_ax_cannot_answer():
     sources = []
-    w, _, _ = make([UNSUPPORTED, UNSUPPORTED], non_text=True, copied="hello there", sources=sources)
+    w, _, _ = make([UNSUPPORTED, UNSUPPORTED], copied="hello there", sources=sources)
+    run(w)
+    assert sources == ["clipboard"]
+
+
+def test_copy_on_select_over_an_unchanged_old_selection_reads_the_clipboard():
+    sources = []
+    w, _, _ = make([OLD, OLD], copied="hello there", sources=sources)
     run(w)
     assert sources == ["clipboard"]
 
 
 def test_copied_text_without_a_word_does_not_show():
-    w, shown, _ = make([NONE, NONE], non_text=False, copied=" . ")
+    w, shown, _ = make([NONE, NONE], copied=" . ")
     run(w)
     assert shown == []
 
 
 def test_nothing_copied_still_needs_a_selection():
-    w, shown, _ = make([NONE, NONE], non_text=False, copied="")
+    w, shown, _ = make([NONE, NONE], copied="")
     run(w)
     assert shown == []
-
-
-def test_copy_on_select_never_beats_a_press_on_another_apps_window():
-    w, shown, _ = make([NONE, NONE], non_text=False, owner=200, front=100, copied="hello world")
-    run(w)
-    assert shown == []
-    assert not offers_button(NONE, NONE, non_text_cursor=False, pressed_in_front_app=False, copied=True)
 
 
 def test_an_accessibility_selection_is_read_as_a_selection():
@@ -203,9 +239,9 @@ def test_an_accessibility_selection_is_read_as_a_selection():
 
 
 def test_offers_button_takes_the_copy_as_evidence():
-    assert offers_button(NONE, NONE, **CUSTOM, copied=True)
-    assert offers_button(UNSUPPORTED, UNSUPPORTED, **ARROW, copied=True)
-    assert offers_button(NEW, NEW, **ARROW, copied=True)  # an old selection, but a fresh copy
+    assert offers_button(NONE, NONE, copied=True)
+    assert offers_button(UNSUPPORTED, UNSUPPORTED, copied=True)
+    assert offers_button(NEW, NEW, copied=True)  # an old selection, but a fresh copy
 
 
 # -- capture: which clipboard changes count -----------------------------------------

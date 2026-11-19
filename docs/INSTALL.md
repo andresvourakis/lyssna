@@ -85,6 +85,8 @@ DICTATION
 
 When you select text, a small play button appears above it.
 Click it instead of using the hotkey if you like.
+In an app that does not report its selection or copy it on
+select, there is no button; the hotkey still works there.
 While Lyssna reads, a small player floats on the screen.
 Drag it to the left or right edge to tuck it away.
 Settings > Start at Login in the menu opens Lyssna when you log in.

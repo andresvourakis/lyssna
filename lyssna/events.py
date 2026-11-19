@@ -131,8 +131,9 @@ class SelectionGestureDetector:
 
     Feed it mouse events; it calls on_select(point) when a gesture that usually ends
     with selected text completes: a drag longer than `drag_threshold` points, or a
-    double/triple click. It calls on_dismiss(point) on any other click, and on_press(point)
-    on every press outside our own UI (so the caller can snapshot state before the gesture)."""
+    double/triple click. It calls on_dismiss(point) on any other click, and
+    on_press(point, click_state) on every press outside our own UI (so the caller can
+    snapshot state before the gesture; click_state is 2 or more on a double or triple click)."""
 
     def __init__(
         self,
@@ -140,7 +141,7 @@ class SelectionGestureDetector:
         on_dismiss: Callable[[Point], None],
         drag_threshold: float = 8.0,
         ignore_region: Callable[[Point], bool] | None = None,
-        on_press: Callable[[Point], None] | None = None,
+        on_press: Callable[[Point, int], None] | None = None,
     ):
         self.on_select = on_select
         self.on_dismiss = on_dismiss
@@ -150,7 +151,6 @@ class SelectionGestureDetector:
         self._down: Point | None = None
         self._max_dist = 0.0
         self._click_state = 1
-        self._down_time = 0.0
 
     def mouse_down(self, p: Point, click_state: int = 1) -> None:
         if self.ignore_region(p):
@@ -159,10 +159,9 @@ class SelectionGestureDetector:
         self._down = p
         self._max_dist = 0.0
         self._click_state = click_state
-        self._down_time = time.time()
         self.on_dismiss(p)
         if self.on_press:
-            self.on_press(p)
+            self.on_press(p, click_state)
 
     def mouse_dragged(self, p: Point) -> None:
         if self._down is None:
@@ -174,11 +173,10 @@ class SelectionGestureDetector:
             return
         dragged = self._max_dist >= self.drag_threshold
         multi_click = self._click_state >= 2
-        held = time.time() - self._down_time
         self._down = None
-        # A quick drag across a big distance is usually a window move or a scrollbar; text
-        # selections are slower. Keep it simple: any real drag or multi-click counts.
-        if (dragged and held > 0.08) or multi_click:
+        # Any real drag or multi-click counts; the selection watcher then wants proof that
+        # text was selected, so window moves and scrollbar drags need no rule here.
+        if dragged or multi_click:
             self.on_select(p)
 
     def other_click(self, p: Point) -> None:

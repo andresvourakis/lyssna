@@ -10,8 +10,8 @@ Every clipboard change Lyssna itself causes (the Cmd+C here and the restore afte
 paste of a dictation) is noted by its pasteboard change count, so the selection watcher can
 tell a change the user's app made (a terminal that copies on select) from one of ours.
 
-Also here: the probes the selection watcher uses (cursor shape, window owner under the
-mouse, frontmost app, selection bounds, clipboard changes)."""
+Also here: the probes the selection watcher uses (the selection with its range and bounds,
+clipboard changes), and the request that makes a silent app report its selection."""
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ import logging
 import os
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 
 import Quartz
-from AppKit import NSApp, NSCursor, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSWorkspace
+from AppKit import NSApp, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSRunningApplication, NSWorkspace
 
 from .hotkeys import MODIFIER_MASK
 from .selection import AXSelection
@@ -33,6 +33,7 @@ _KEY_C = 8
 
 
 _AX_ERROR_NO_VALUE = -25212  # kAXErrorNoValue: the attribute is supported but nothing is selected
+_AX_ERROR_ATTRIBUTE_UNSUPPORTED = -25205  # kAXErrorAttributeUnsupported
 
 
 # The rule: never make an Accessibility client call that can land in our own process from a
@@ -161,21 +162,121 @@ def ax_set_timeout(element, seconds: float) -> None:
         log.debug("AX timeout not set", exc_info=True)
 
 
-def ax_selection() -> AXSelection:
-    """The focused element's selection, telling "nothing selected" apart from "this app
-    can't say" (no focused element, or the attribute isn't exposed)."""
-    try:
-        from ApplicationServices import AXUIElementCopyAttributeValue, kAXSelectedTextAttribute
+def _rect(value) -> tuple[float, float, float, float] | None:
+    """An AXValue holding a CGRect as (x, y, w, h), Quartz top-left origin; None if empty."""
+    from ApplicationServices import AXValueGetValue, kAXValueTypeCGRect
 
+    ok, rect = AXValueGetValue(value, kAXValueTypeCGRect, None)
+    if not ok or rect.size.width <= 0 or rect.size.height <= 0:
+        return None
+    return (rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
+
+
+def _plain_selection(element) -> AXSelection | None:
+    """The plain route (AXSelectedText, AXSelectedTextRange, AXBoundsForRange) that native
+    text views and text fields answer. None when the element can't answer it."""
+    from ApplicationServices import (
+        AXUIElementCopyAttributeValue,
+        AXUIElementCopyParameterizedAttributeValue,
+        AXValueGetValue,
+        kAXBoundsForRangeParameterizedAttribute,
+        kAXSelectedTextAttribute,
+        kAXSelectedTextRangeAttribute,
+        kAXValueTypeCFRange,
+    )
+
+    err, text = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, None)
+    if err == _AX_ERROR_NO_VALUE:
+        text = ""
+    elif err or not isinstance(text, str):
+        return None
+    text = str(text) if text.strip() else ""
+    rng = bounds = None
+    err, value = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, None)
+    if not err and value is not None:
+        ok, cf_range = AXValueGetValue(value, kAXValueTypeCFRange, None)
+        if ok:
+            location, length = tuple(cf_range)[:2]
+            rng = ("plain", int(location), int(length))
+        if text:
+            err, rect = AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute, value, None)
+            if not err and rect is not None:
+                bounds = _rect(rect)
+    return AXSelection(True, text, rng, bounds)
+
+
+def _marker_identity(markers) -> tuple[str, bytes, bytes] | None:
+    """Something comparable for a text marker range: the bytes of its start and end markers.
+    A marker is the app's own opaque record of a position (in Chrome and WebKit: which node,
+    which offset), so the same selection read twice gives the same bytes and a different one
+    gives different bytes. None when the bytes can't be read; then the text alone tells two
+    readings apart."""
+    try:
+        from ApplicationServices import (
+            AXTextMarkerGetBytePtr,
+            AXTextMarkerGetLength,
+            AXTextMarkerRangeCopyEndMarker,
+            AXTextMarkerRangeCopyStartMarker,
+            AXTextMarkerRangeGetTypeID,
+        )
+        from CoreFoundation import CFGetTypeID
+
+        if CFGetTypeID(markers) != AXTextMarkerRangeGetTypeID():
+            return None
+        parts = []
+        for marker in (AXTextMarkerRangeCopyStartMarker(markers), AXTextMarkerRangeCopyEndMarker(markers)):
+            length = int(AXTextMarkerGetLength(marker))
+            parts.append(bytes(AXTextMarkerGetBytePtr(marker)[:length]) if length > 0 else b"")
+        if not any(parts):
+            return None
+        return ("marker", parts[0], parts[1])
+    except Exception:
+        log.debug("text marker bytes unavailable", exc_info=True)
+        return None
+
+
+def _marker_selection(element) -> AXSelection | None:
+    """The text-marker route (AXSelectedTextMarkerRange, AXStringForTextMarkerRange,
+    AXBoundsForTextMarkerRange) that web content answers: Chrome, Safari and Electron apps
+    often give no AXSelectedText on a web area. None when the element can't answer it."""
+    from ApplicationServices import AXUIElementCopyAttributeValue, AXUIElementCopyParameterizedAttributeValue
+
+    err, markers = AXUIElementCopyAttributeValue(element, "AXSelectedTextMarkerRange", None)
+    if err or markers is None:
+        return None
+    err, text = AXUIElementCopyParameterizedAttributeValue(element, "AXStringForTextMarkerRange", markers, None)
+    text = str(text) if not err and isinstance(text, str) and text.strip() else ""
+    bounds = None
+    if text:
+        err, rect = AXUIElementCopyParameterizedAttributeValue(element, "AXBoundsForTextMarkerRange", markers, None)
+        if not err and rect is not None:
+            bounds = _rect(rect)
+    return AXSelection(True, text, _marker_identity(markers), bounds)
+
+
+def _read_selection(element) -> AXSelection:
+    """One element's selection: the plain route first, the text-marker route when the plain
+    one has no text. The caller has made sure the element is not ours (see the rule above)."""
+    plain = _plain_selection(element)
+    if plain is not None and plain.text:
+        return plain
+    marker = _marker_selection(element)
+    if marker is not None and (marker.text or plain is None):
+        return marker
+    return plain or AXSelection(False, "")
+
+
+def ax_selection() -> AXSelection:
+    """The focused element's selection, with its range and screen bounds, telling "nothing
+    selected" apart from "this app can't say" (no focused element, or neither route answers)."""
+    try:
         focused = _focused_element()
         if focused is None:
             return AXSelection(False, "")
-        err, text = AXUIElementCopyAttributeValue(focused, kAXSelectedTextAttribute, None)
-        if err == _AX_ERROR_NO_VALUE:
-            return AXSelection(True, "")
-        if err or not isinstance(text, str):
-            return AXSelection(False, "")
-        return AXSelection(True, str(text) if text.strip() else "")
+        selection = _read_selection(focused)
+        if selection.supported:
+            _note_answered(ax_pid(focused))
+        return selection
     except Exception:
         log.debug("AX selection lookup failed", exc_info=True)
         return AXSelection(False, "")
@@ -185,55 +286,6 @@ def ax_selected_text() -> str | None:
     """Ask the Accessibility API for the focused element's selection. Works in most native
     apps and browsers, returns None where the app doesn't expose it (then we fall back to ⌘C)."""
     return ax_selection().text or None
-
-
-# Standard cursors that never mean "text here". Selectors missing on this macOS are skipped.
-_NON_TEXT_CURSORS = (
-    "arrowCursor", "crosshairCursor", "pointingHandCursor", "openHandCursor", "closedHandCursor",
-    "resizeLeftCursor", "resizeRightCursor", "resizeLeftRightCursor",
-    "resizeUpCursor", "resizeDownCursor", "resizeUpDownCursor",
-    "operationNotAllowedCursor", "dragCopyCursor", "dragLinkCursor", "contextualMenuCursor",
-    "disappearingItemCursor", "columnResizeCursor", "rowResizeCursor", "zoomInCursor", "zoomOutCursor",
-)
-
-_non_text_refs: dict[tuple[float, float, float, float], list[bytes]] | None = None
-
-
-def _cursor_key(cursor) -> tuple[float, float, float, float]:
-    hot, size = cursor.hotSpot(), cursor.image().size()
-    return (hot.x, hot.y, size.width, size.height)
-
-
-def _non_text_references() -> dict[tuple[float, float, float, float], list[bytes]]:
-    """TIFF bytes of the standard non-text cursors, keyed by hotspot + size, built once.
-    Needs NSApplication to exist (the app has it)."""
-    global _non_text_refs
-    if _non_text_refs is None:
-        refs: dict[tuple[float, float, float, float], list[bytes]] = {}
-        for name in _NON_TEXT_CURSORS:
-            try:
-                c = getattr(NSCursor, name)()
-                refs.setdefault(_cursor_key(c), []).append(bytes(c.image().TIFFRepresentation()))
-            except Exception:
-                log.debug("cursor reference %s unavailable", name)
-        _non_text_refs = refs
-    return _non_text_refs
-
-
-def cursor_is_standard_non_text() -> bool:
-    """True when the on-screen cursor (in whatever app is under it) is exactly one of the
-    standard non-text NSCursors (arrow, hand, resize, crosshair...). Custom cursors, I-beams
-    included, give False, as does any error. Main thread only (NSCursor needs it)."""
-    try:
-        cur = NSCursor.currentSystemCursor()
-        if cur is None or cur.image() is None:
-            return False
-        # Cheap hotspot+size filter first; only a candidate pays for the TIFF comparison.
-        candidates = _non_text_references().get(_cursor_key(cur))
-        return bool(candidates) and bytes(cur.image().TIFFRepresentation()) in candidates
-    except Exception:
-        log.debug("cursor probe failed", exc_info=True)
-        return False
 
 
 def front_app_pid() -> int | None:
@@ -246,93 +298,87 @@ def front_app_pid() -> int | None:
         return None
 
 
-def _on_screen_windows() -> list:
-    """Every on-screen window, front to back (CGWindowListCopyWindowInfo is thread-safe)."""
-    return Quartz.CGWindowListCopyWindowInfo(
-        Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
-        Quartz.kCGNullWindowID,
-    ) or []
+# Chrome and Electron apps keep their accessibility tree off until an assistive client asks
+# for it: until then they report no focused element and so no selection. One rule for every
+# app: an app with no focused element is asked once per process. AXManualAccessibility comes first
+# because AXEnhancedUserInterface, the older switch, also changes how some apps animate window
+# moves; it is only tried when the first is unsupported. Keyed on pid plus launch date, so a
+# reused pid is asked again, and bounded, so the record stays small.
+_asked: OrderedDict[tuple[int, float], None] = OrderedDict()
+_warming: dict[int, float] = {}  # pid -> when it was asked, until it first answers
+_asked_lock = threading.Lock()
+_ASKED_MAX = 64
+_WAKE_TIMEOUT = 1.0  # seconds a hung app may hold a request
 
 
-def _topmost_window_pid_at(windows, x: float, y: float, skip_own: bool) -> int | None:
-    own = os.getpid()
-    for w in windows:  # front to back
-        pid = w.get(Quartz.kCGWindowOwnerPID)
-        if pid is None or (skip_own and pid == own):
-            continue
-        if w.get(Quartz.kCGWindowLayer, 0) < 0 or w.get(Quartz.kCGWindowAlpha, 1.0) <= 0:
-            continue
-        b = w.get(Quartz.kCGWindowBounds) or {}
-        bx, by = b.get("X", 0), b.get("Y", 0)
-        if bx <= x < bx + b.get("Width", 0) and by <= y < by + b.get("Height", 0):
-            return int(pid)
-    return None
-
-
-def window_owner_pid_at(x: float, y: float) -> int | None:
-    """Process id owning what's on screen at (x, y), Quartz coordinates (top-left origin).
-    When the topmost window there is ours (status item, menu, panels, windows) the answer is
-    our pid, without asking Accessibility (see the rule above). Otherwise asks Accessibility,
-    then falls back to the topmost visible window containing the point (ignoring our own).
-    During a ⌘⇧4 drag this is the Screenshot process."""
-    own = os.getpid()
+def _launch_key(pid: int) -> tuple[int, float]:
     try:
-        windows = _on_screen_windows()
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        date = app.launchDate() if app is not None else None
+        return (pid, float(date.timeIntervalSince1970()) if date is not None else 0.0)
     except Exception:
-        log.debug("window list failed", exc_info=True)
-        return None  # unknown owner; skip the hit test, which might land in our own app
-    if _topmost_window_pid_at(windows, x, y, skip_own=False) == own:
-        return own
+        log.debug("launch date lookup failed", exc_info=True)
+        return (pid, 0.0)
+
+
+def _app_answers(app) -> bool:
+    """Does the app report a focused element at all? That is the sign its accessibility is on.
+    Whether that element holds text is beside the point: Finder's file list can't report a
+    selection either, and asking it would switch AXEnhancedUserInterface on in nearly every
+    native app for nothing."""
+    from ApplicationServices import AXUIElementCopyAttributeValue, kAXFocusedUIElementAttribute
+
+    err, focused = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute, None)
+    return not err and focused is not None
+
+
+def _note_answered(pid: int | None) -> None:
+    """Log how long an app we asked took to start answering, once."""
+    if pid is None:
+        return
+    with _asked_lock:
+        asked_at = _warming.pop(pid, None)
+    if asked_at is not None:
+        log.info("pid %d answers Accessibility %.2f s after it was asked", pid, time.monotonic() - asked_at)
+
+
+def wake_accessibility(pid: int | None) -> None:
+    """Ask app `pid` to turn its accessibility on, if it can't answer and was never asked.
+    Never our own process. Called on the main thread it hands itself to a worker thread: a
+    slow app must not stall the UI or the mouse tap."""
+    if not pid or pid == os.getpid():
+        return
+    if _on_main_thread():
+        threading.Thread(target=wake_accessibility, args=(pid,), daemon=True, name="lyssna-wake").start()
+        return
+    key = _launch_key(pid)
+    with _asked_lock:
+        if key in _asked:
+            return
     try:
-        from ApplicationServices import (
-            AXUIElementCopyElementAtPosition,
-            AXUIElementCreateSystemWide,
-            AXUIElementGetPid,
-        )
+        from ApplicationServices import AXUIElementCreateApplication, AXUIElementSetAttributeValue
 
-        err, element = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), x, y, None)
-        if not err and element is not None:
-            err, pid = AXUIElementGetPid(element, None)
-            if not err and pid:
-                return int(pid)
+        app = AXUIElementCreateApplication(pid)
+        ax_set_timeout(app, _WAKE_TIMEOUT)
+        if _app_answers(app):
+            return  # not recorded: if it falls silent later (a web view gets focus), ask then
+        with _asked_lock:
+            if key in _asked:
+                return
+            _asked[key] = None
+            while len(_asked) > _ASKED_MAX:
+                (old_pid, _), _ = _asked.popitem(last=False)
+                _warming.pop(old_pid, None)
+            _warming[pid] = time.monotonic()
+        attribute = "AXManualAccessibility"
+        err = AXUIElementSetAttributeValue(app, attribute, True)
+        if err == _AX_ERROR_ATTRIBUTE_UNSUPPORTED:
+            attribute = "AXEnhancedUserInterface"
+            # Its error code is only logged: Chrome answers -25208 yet turns it on.
+            err = AXUIElementSetAttributeValue(app, attribute, True)
+        log.info("asked pid %d to turn on Accessibility: %s, error %d", pid, attribute, err)
     except Exception:
-        log.debug("AX hit-test failed", exc_info=True)
-    try:
-        return _topmost_window_pid_at(windows, x, y, skip_own=True)
-    except Exception:
-        log.debug("window list hit-test failed", exc_info=True)
-    return None
-
-
-def ax_selection_bounds() -> tuple[float, float, float, float] | None:
-    """Screen rectangle (x, y, w, h; Quartz top-left origin) of the focused element's
-    selected text, or None if the app doesn't expose it."""
-    try:
-        from ApplicationServices import (
-            AXUIElementCopyAttributeValue,
-            AXUIElementCopyParameterizedAttributeValue,
-            AXValueGetValue,
-            kAXBoundsForRangeParameterizedAttribute,
-            kAXSelectedTextRangeAttribute,
-            kAXValueTypeCGRect,
-        )
-
-        focused = _focused_element()
-        if focused is None:
-            return None
-        err, rng = AXUIElementCopyAttributeValue(focused, kAXSelectedTextRangeAttribute, None)
-        if err or rng is None:
-            return None
-        err, bounds = AXUIElementCopyParameterizedAttributeValue(focused, kAXBoundsForRangeParameterizedAttribute, rng, None)
-        if err or bounds is None:
-            return None
-        ok, rect = AXValueGetValue(bounds, kAXValueTypeCGRect, None)
-        if not ok or rect.size.width <= 0 or rect.size.height <= 0:
-            return None
-        return (rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
-    except Exception:
-        log.debug("AX selection bounds lookup failed", exc_info=True)
-        return None
+        log.debug("accessibility request failed", exc_info=True)
 
 
 def clipboard_text() -> str:

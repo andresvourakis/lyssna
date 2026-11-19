@@ -17,6 +17,11 @@
   with a request that costs nothing.
 - The play button also appears in programs that copy what you select instead
   of reporting it, such as terminal apps. It then reads the clipboard.
+- The play button no longer appears after a screenshot drag or other gestures
+  that select nothing. It shows only when the app reports a new selection or
+  copies what you select. Chrome, Slack and other apps that keep this
+  information off are asked once to turn it on. An app that still reports
+  nothing gets no button; Read Selection (Control-Option-S) works there.
 - Launch no longer waits for the Keychain. After an update macOS may ask for
   your password before Lyssna can read its saved keys; the menu bar icon now
   appears at once, and your chosen voice is kept while the question is open.

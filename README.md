@@ -50,6 +50,8 @@ You can open this window again from the menu bar with **Setup…**.
 
 Select text and a small play button appears just above the selection. Click it, or use the hotkey.
 
+The button shows only when Lyssna can tell that you selected text: the app reports a new selection, or it copies what you select (as terminal apps do). An app that does neither gets no button; the hotkey still reads your selection there.
+
 | Action                   | Hotkey        |
 | ------------------------ | ------------- |
 | Read the selected text   | ⌃⌥S           |
@@ -178,7 +180,7 @@ cli.py ──socket──▶ controller.py ◀── app.py (menu bar, hotkeys, 
 ```
 
 - `controller.py` owns playback and exposes every action once. The menu bar, hotkeys, floating player and the command line all call it.
-- `events.py` has the keyboard tap for hotkeys and a listen-only mouse tap that spots selection gestures. `selection.py` confirms that text is really selected before the play button shows.
+- `events.py` has the keyboard tap for hotkeys and a listen-only mouse tap that spots selection gestures. `selection.py` shows the play button only on proof that text was selected: a new selection reported through Accessibility, or a copy on select.
 - `capture.py` reads the selection through the Accessibility API first. Only where an app does not expose it does it send Command-C, then put the whole previous clipboard back.
 - `text.py` strips markdown, code fences, URLs, tables and hashtags, then splits the text into sentences.
 - `player.py` synthesizes up to four sentences ahead with two parallel requests, so stopping early does not pay for the rest, and plays them with AVAudioPlayer. Speed changes are time-stretched with pitch preserved.

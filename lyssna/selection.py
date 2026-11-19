@@ -1,35 +1,42 @@
 """Decide whether a finished mouse gesture really selected text, and only then show the button.
 
-A drag or double-click alone proves nothing: screenshot drags, file drags, window moves and
-Finder double-clicks look the same to the mouse tap. So at mouse-down we note whether the
-cursor was a standard non-text one (arrow, hand, resize...), which process owns the window
-under the press, the Accessibility selection and the clipboard's change count; after the
-gesture we ask AX again, compare the press owner with the frontmost app and look at whether
-someone other than Lyssna put text on the clipboard meanwhile. `offers_button` decides from
-those facts, blocking only on evidence: unknowns count in favour of showing.
+A drag or double-click alone proves nothing: screenshot drags, file drags, window moves,
+slider drags and Finder double-clicks look the same to the mouse tap. So the button needs
+proof, never a guess. There are two kinds:
 
-The clipboard counts because some programs select without telling Accessibility: a terminal
-program that draws its own selection copies it on select, while the terminal truthfully says
-nothing is selected. A clipboard that changed during the gesture and now holds a word is as
-good a sign of a selection as Accessibility's. Lyssna's own clipboard writes never count
-(capture notes their change counts). A button shown on that evidence reads the clipboard when
-pressed, with no Cmd+C sent to the program.
+A. Accessibility. After the gesture the focused element reports selected text with a word in
+   it, and that selection differs (in text or in range) from the snapshot taken at
+   mouse-down. A selection that was already there before the press proves nothing: the drag
+   may have been a screenshot or a slider over old highlighted text.
+B. Clipboard. During the gesture someone other than Lyssna put text with a word on the
+   clipboard. Some programs select without telling Accessibility: a terminal program that
+   draws its own selection copies it on select, while the terminal truthfully says nothing is
+   selected. Lyssna's own clipboard writes never count (capture notes their change counts).
+   A button shown on that proof reads the clipboard when pressed, with no Cmd+C sent.
+
+Everything else means no button: Accessibility can't answer, the snapshot at mouse-down is
+missing, the selection did not change, or it is empty. Unknown means no. An app that neither
+reports its selection nor copies on select gets no button; the Read Selection hotkey still
+works there. Earlier versions guessed from the cursor's shape and the window under the press
+when Accessibility was silent, and those guesses are what made the button pop up after
+screenshot drags; capture now asks silent apps to turn their accessibility on instead.
+
+A double or triple click is compared with the snapshot from the first press of the sequence:
+by the second press some apps already show the word selected.
 
 Threading: press() and gesture() run in the mouse tap callback on the main thread, which must
-stay fast. Only the cursor probe (cheap, and main-thread only) and the clipboard change count
-(one cheap call) run there; every AX and window call runs on a worker thread. The press owner
-is looked up at press time, while an overlay such as the screenshot tool still exists. A
-generation counter, bumped on each press, lets a newer press cancel a pending check, and the
-after-check waits a bounded time for the before-snapshot."""
+stay fast. Only the clipboard change count (one cheap call) is read there; every
+Accessibility call runs on a worker thread. A generation counter, bumped on each press, lets
+a newer press cancel a pending check, and the after-check waits a bounded time for the
+before-snapshot."""
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -42,10 +49,14 @@ Bounds = tuple[float, float, float, float]
 
 class AXSelection(NamedTuple):
     """What Accessibility says about the focused element's selection. `supported` is False
-    when the app can't tell us (no focused element, attribute unsupported); then `text` is ""."""
+    when the app can't tell us (no focused element, neither selection route answers); then
+    `text` is "". `range` identifies where the selection is, so two readings can be compared
+    (None when the app gave no range); `bounds` is its screen rectangle, when known."""
 
     supported: bool
     text: str
+    range: Hashable | None = None
+    bounds: Bounds | None = None
 
 
 _WORD = re.compile(r"\w\w")
@@ -55,91 +66,70 @@ def has_word(text: str) -> bool:
     return bool(_WORD.search(text))
 
 
-def offers_button(
-    before: AXSelection, after: AXSelection, non_text_cursor: bool, pressed_in_front_app: bool,
-    copied: bool = False,
-) -> bool:
-    """Should a finished selection gesture show the play button?
-
-    `before` is the selection at mouse-down, `after` the one after the gesture.
-    `non_text_cursor`: the press began on a standard non-text cursor (arrow, hand, resize...).
-    `pressed_in_front_app`: the press landed on a window of the frontmost app (False for
-    overlays such as the screenshot tool). `copied`: during the gesture someone other than
-    Lyssna put text with a word in it on the clipboard. We block only on evidence:
-    1. press on another app's window -> no;
-    2. text with a word was copied during the gesture -> yes (the app copies on select);
-    3. AX can answer: a word must be selected, and it must be new unless the cursor was
-       not a standard non-text one;
-    4. AX can't answer: show unless the cursor was a standard non-text one."""
-    if not pressed_in_front_app:
+def selection_proof(before: AXSelection | None, after: AXSelection) -> bool:
+    """Proof A: after the gesture a selection with a word is there, and it is not the one the
+    snapshot at mouse-down saw (`before`, None when that snapshot is missing). An empty
+    selection never counts, even when its range moved: a terminal's caret moves while output
+    scrolls."""
+    if before is None or not has_word(after.text):
         return False
-    if copied:
-        return True
-    if after.supported:
-        if not has_word(after.text):
-            return False
-        changed = not before.supported or before.text != after.text
-        return changed or not non_text_cursor
-    return not non_text_cursor
+    return before.text != after.text or before.range != after.range
+
+
+def offers_button(before: AXSelection | None, after: AXSelection, copied: bool = False) -> bool:
+    """Should a finished gesture show the play button? Only on proof: a new Accessibility
+    selection (see selection_proof) or `copied`, text with a word that someone other than
+    Lyssna put on the clipboard during the gesture."""
+    return selection_proof(before, after) or copied
 
 
 @dataclass
 class _Press:
     generation: int
-    non_text_cursor: bool
     clipboard: int | None = None  # the clipboard's change count at mouse-down
+    first: _Press | None = None  # the first press of a double or triple click
     before: AXSelection | None = None
-    owner_pid: int | None = None
     ready: threading.Event = field(default_factory=threading.Event)
 
 
 class SelectionWatcher:
     def __init__(
         self,
-        probe_cursor: Callable[[], bool],
         probe_selection: Callable[[], AXSelection],
-        probe_press_owner: Callable[[Point], int | None],
-        probe_front_pid: Callable[[], int | None],
         present: Callable[[Point, Bounds | None, str], None],
         enabled: Callable[[], bool],
-        probe_bounds: Callable[[], Bounds | None] | None = None,
         probe_clipboard: Callable[[], int | None] = lambda: None,
         probe_copied: Callable[[int | None], str] = lambda count: "",
+        wake: Callable[[], None] = lambda: None,
         delays: tuple[float, ...] = (0.05, 0.25),
         before_timeout: float = 0.5,
-        own_pid: int | None = None,
     ):
-        self.probe_cursor = probe_cursor
         self.probe_selection = probe_selection
-        self.probe_press_owner = probe_press_owner
-        self.probe_front_pid = probe_front_pid
         self.present = present
         self.enabled = enabled
-        if probe_bounds is None:
-            from . import capture
-
-            probe_bounds = capture.ax_selection_bounds
-        self.probe_bounds = probe_bounds
         self.probe_clipboard = probe_clipboard  # the clipboard's change count; cheap, at press time
         self.probe_copied = probe_copied  # text someone else put on the clipboard since that count, or ""
+        self.wake = wake  # asks the front app to report its selection, if it was never asked (worker thread)
         self.delays = delays
         self.before_timeout = before_timeout
-        self.own_pid = os.getpid() if own_pid is None else own_pid
         self._lock = threading.Lock()
         self._generation = 0
         self._press: _Press | None = None
 
-    def press(self, p: Point) -> None:
-        """Mouse-down outside our UI (tap thread): note the cursor and the clipboard's change
-        count; owner and AX off-thread. `probe_cursor` answers "standard non-text cursor?" and
-        must run here (main thread); the change count must be read before the gesture copies."""
-        non_text_cursor = self.probe_cursor()
+    def press(self, p: Point, click_state: int = 1) -> None:
+        """Mouse-down outside our UI (tap thread): note the clipboard's change count, which must
+        be read before the gesture copies; the Accessibility snapshot runs off-thread.
+        `click_state` 2 or more is a later click of a double or triple click."""
         clipboard = self.probe_clipboard()
         with self._lock:
             self._generation += 1
-            rec = _Press(self._generation, non_text_cursor, clipboard)
+            prev = self._press
+            first = (prev.first or prev) if click_state >= 2 and prev is not None else None
+            rec = _Press(self._generation, clipboard, first)
             self._press = rec
-        spawn(self._snapshot_before, rec, p, name="lyssna-selection")
+        spawn(self._snapshot_before, rec, name="lyssna-selection")
+        # Its own thread: a slow app must not hold up the before-snapshot.
+        spawn(self.wake, name="lyssna-selection")
 
     def gesture(self, p: Point) -> None:
         """A selection-like gesture finished (tap thread): check AX off-thread."""
@@ -153,10 +143,15 @@ class SelectionWatcher:
         with self._lock:
             return self._generation == rec.generation
 
-    def _snapshot_before(self, rec: _Press, p: Point) -> None:
+    def _snapshot_before(self, rec: _Press) -> None:
         try:
-            rec.owner_pid = self.probe_press_owner(p)
-            rec.before = self.probe_selection()
+            if rec.first is not None:
+                # By this press the app may already show the new word selected; the first
+                # press of the sequence saw the state before the clicks.
+                if rec.first.ready.wait(self.before_timeout):
+                    rec.before = rec.first.before
+            else:
+                rec.before = self.probe_selection()
         finally:
             rec.ready.set()
 
@@ -172,32 +167,27 @@ class SelectionWatcher:
                 log.debug("selection check: button disabled")
                 return
             after = self.probe_selection()
-            front_pid = self.probe_front_pid()
-            # Without a before-snapshot we can't tell a new selection from an old one, so treat
-            # it as unchanged: then only a non-standard cursor can vouch for it.
-            before = rec.before if before_ready and rec.before is not None else after
-            # Unknown owner or front app counts as the same app: block only on evidence.
-            owner = rec.owner_pid if before_ready else None
-            # A press on our own UI (status item, menu, windows) never offers the button.
-            in_front = owner != self.own_pid and (owner is None or front_pid is None or owner == front_pid)
+            # Without a before-snapshot a new selection can't be told from an old one: no proof.
+            before = rec.before if before_ready else None
             copied_text = self.probe_copied(rec.clipboard)
             copied = has_word(copied_text)
-            # The button reads the selection when Accessibility vouches for it, else the clipboard.
-            by_selection = offers_button(before, after, rec.non_text_cursor, in_front)
-            show = by_selection or offers_button(before, after, rec.non_text_cursor, in_front, copied=copied)
+            # The button reads the selection when Accessibility proved it, else the clipboard.
+            by_selection = selection_proof(before, after)
+            show = offers_button(before, after, copied=copied)
             source = "selection" if by_selection else "clipboard"
             # Shown buttons log at INFO so a false pop-up leaves a trace in the normal log.
             # Lengths and booleans only: never the text.
             log.log(
                 logging.INFO if show else logging.DEBUG,
-                "selection check %d/%d: before=%s after=%s changed=%s non_text_cursor=%s owner=%s"
-                " front=%s before_ready=%s copied=%d chars, word=%s -> %s",
-                attempt, len(self.delays), before.supported, after.supported, before.text != after.text,
-                rec.non_text_cursor, owner, front_pid, before_ready, len(copied_text), copied,
-                f"show ({source})" if show else "no",
+                "selection check %d/%d: before=%s after=%s after_len=%d changed=%s"
+                " copied=%d chars, word=%s -> %s",
+                attempt, len(self.delays),
+                "missing" if before is None else before.supported, after.supported, len(after.text),
+                before is not None and (before.text != after.text or before.range != after.range),
+                len(copied_text), copied, f"show ({source})" if show else "no",
             )
             if show:
-                bounds = self.probe_bounds() if by_selection else None
+                bounds = after.bounds if by_selection else None
                 if self._current(rec):
                     self.present(p, bounds, source)
                 return

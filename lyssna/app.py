@@ -658,19 +658,25 @@ class LyssnaApp:
         self._attach_push_to_talk()
         self.mouse = None
         if self.selection_button:
-            # The detector spots selection-like gestures; the watcher confirms text was really
-            # selected (cursor, window owner, Accessibility, a copy on select) before the button shows.
+            # The detector spots selection-like gestures; the watcher wants proof that text was
+            # really selected (a new Accessibility selection, or a copy on select) before the button shows.
             self.selection_watcher = SelectionWatcher(
-                probe_cursor=capture.cursor_is_standard_non_text,
                 probe_selection=capture.ax_selection,
-                probe_press_owner=lambda p: capture.window_owner_pid_at(p.x, p.y),
-                probe_front_pid=capture.front_app_pid,
                 present=self._on_selection_gesture,
                 enabled=lambda: self.ctl.selection_button_enabled,
-                probe_bounds=capture.ax_selection_bounds,
                 probe_clipboard=capture.clipboard_change_count,
                 probe_copied=capture.copied_since,
+                wake=lambda: capture.wake_accessibility(capture.front_app_pid()),
             )
+            # Apps that keep their accessibility off until asked (Chrome, Electron) are asked as
+            # they come to the front, and the one in front now at launch; the press is the fallback.
+            # wake_accessibility moves itself off the main thread.
+            workspace_center = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
+            self._activation_observer = workspace_center.addObserverForName_object_queue_usingBlock_(
+                AppKit.NSWorkspaceDidActivateApplicationNotification, None, NSOperationQueue.mainQueue(),
+                self._on_app_activated,
+            )
+            capture.wake_accessibility(capture.front_app_pid())
             detector = SelectionGestureDetector(
                 on_select=self.selection_watcher.gesture,
                 on_dismiss=lambda p: self._dismiss_button(),
@@ -788,6 +794,14 @@ class LyssnaApp:
         self._button_source = source
         avoid = self.mini_player.panel.frame() if self.mini_player and self.mini_player.visible() else None
         self.selection_button.present(p.x, p.y, avoid, bounds)
+
+    def _on_app_activated(self, note) -> None:
+        """An app came to the front: ask it to report its selection, if it never was."""
+        try:
+            app = note.userInfo()[AppKit.NSWorkspaceApplicationKey]
+            capture.wake_accessibility(int(app.processIdentifier()))
+        except Exception:
+            log.debug("activated app lookup failed", exc_info=True)
 
     def _play_from_button(self) -> None:
         """The play button reads what it was offered for: a selection the app copied itself is
