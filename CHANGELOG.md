@@ -12,6 +12,13 @@
   spells it right next time. Turn it off with `auto_learn = false`.
 - A History window with what you dictated (kept 30 days by default) and the
   dictionary.
+- A quiet way to support Lyssna, in three places you open yourself: a Support
+  Lyssna row in the menu, a line under the totals in the History window (once
+  you have dictated 1,000 words), and a line in the new What's New window.
+  Nothing pops up. The links stay hidden until the website has an address
+  (`SITE_URL` in `lyssna/support.py`).
+- After an update the menu offers a What's New row with the highlights of that
+  version. It stays until you open it once, and a first install never shows it.
 - The setup window has a dictation step: the microphone, the Globe key
   setting, the model download, or your OpenAI and Anthropic keys, each checked
   with a request that costs nothing.

@@ -33,6 +33,13 @@ def test_no_voice_list_hides_voice():
     assert visibility(MenuState(has_voices=False))["voice"] is False
 
 
+def test_whats_new_and_support_rows_are_off_unless_asked_for():
+    assert visibility(MenuState())["whats_new"] is False
+    assert visibility(MenuState())["support"] is False
+    assert visibility(MenuState(whats_new=True))["whats_new"] is True
+    assert visibility(MenuState(support=True))["support"] is True
+
+
 def test_transport_shows_only_while_reading():
     assert visibility(MenuState(player="idle"))["transport"] is False
     assert visibility(MenuState(player="idle", message="Nothing selected", downloading=True))["transport"] is False
@@ -119,6 +126,37 @@ def test_top_level_menu_when_idle(menubar):
         "Settings", "Setup…", "About Lyssna", "---",
         "Quit Lyssna",
     ]
+
+
+def test_support_row_shows_once_the_website_has_an_address(menubar, monkeypatch):
+    from lyssna import support
+
+    opened = []
+    monkeypatch.setattr(support, "SITE_URL", "https://example.test/")
+    monkeypatch.setattr(support, "_open", opened.append)
+    menubar._tick(None)
+    rows = visible_rows(menubar._menu._menu)
+    assert rows[-4:] == ["About Lyssna", "Support Lyssna", "---", "Quit Lyssna"]
+    assert menubar.item_support._menuitem.image() is not None  # the heart
+    menubar.item_support.callback(None)
+    assert opened == ["https://example.test/?support=1"]
+
+
+def test_whats_new_row_shows_while_a_note_waits_and_goes_once_opened(menubar):
+    import lyssna
+    from lyssna import whatsnew
+
+    opened = []
+    menubar.on_whats_new = lambda: opened.append(True)
+    menubar.whats_new_pending = True
+    menubar._tick(None)
+    title = whatsnew.menu_title(lyssna.__version__)
+    rows = visible_rows(menubar._menu._menu)
+    assert rows[rows.index(title) + 1] == "Settings"  # first row of the app section
+    menubar.item_whats_new.callback(None)
+    assert opened == [True]
+    assert title not in visible_rows(menubar._menu._menu)
+    assert whatsnew.read_seen() == lyssna.__version__
 
 
 def test_sections_have_native_headers(menubar):

@@ -7,12 +7,14 @@ live under the temp dir too, and nothing may download them or load onnxruntime: 
 client and the model loader refuse unless a test fakes them.
 Dictation is kept off the machine the same way: its vocabulary and model files live under the
 temp dir, the speech and cleanup models cannot load, and httpx.post and httpx.get (every
-online engine, and the key checks) refuse unless a test fakes them. Tests that need a config file write their own on top of this."""
+online engine, and the key checks) refuse unless a test fakes them. Tests that need a config file write their own on top of this.
+The browser is never opened: the website has no address unless a test gives it one, and the
+call that would open a page refuses unless a test fakes it."""
 
 import httpx
 import pytest
 
-from lyssna import cache, cli, config, download, keychain, migrate, policy, server, usage
+from lyssna import cache, cli, config, download, keychain, migrate, policy, server, support, usage
 from lyssna.providers import kokoro
 
 
@@ -150,3 +152,15 @@ def offline_dictation(isolated_paths, monkeypatch):
     monkeypatch.setattr(httpx, "post", no_network)
     monkeypatch.setattr(httpx, "get", no_network)
     return isolated_paths / "state" / "dictation"
+
+
+@pytest.fixture(autouse=True)
+def no_browser(monkeypatch):
+    """Support links are off (no website address) and nothing can open a page in the browser."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a test tried to open a page in the browser")
+
+    monkeypatch.setattr(support, "SITE_URL", "")
+    monkeypatch.delenv(support.SITE_ENV, raising=False)
+    monkeypatch.setattr(support, "_open", refuse)

@@ -33,11 +33,15 @@ class MenuState:
     local_only: bool = False
     stored_keys: bool = False   # any API key the app could remove
     dictation: str = "idle"     # the dictation session's state
+    whats_new: bool = False     # an update's note is waiting to be opened
+    support: bool = False       # the website has an address to send supporters to
 
 
 def visibility(s: MenuState) -> dict[str, bool]:
     """Which optional items show. Everything not listed here always shows."""
     return {
+        "whats_new": s.whats_new,
+        "support": s.support,
         "now_playing": s.downloading or bool(s.message) or s.player != "idle",
         "transport": s.player != "idle",  # Pause / Resume, Stop, Previous and Next Sentence
         "voice": s.has_voices,

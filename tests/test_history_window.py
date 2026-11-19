@@ -183,6 +183,34 @@ def test_stats_use_thousands_separators(win, store, clock):
     assert str(win.stat_numbers[1].stringValue()) == "1,500"
 
 
+def test_no_support_line_without_a_website(win, store, clock):
+    add(store, clock, "word " * 1500)
+    win.prepare()
+    assert win.support_label.isHidden() and win.support_button.isHidden()
+
+
+def test_support_line_waits_for_a_thousand_words(win, store, clock, monkeypatch):
+    from lyssna import support
+
+    opened = []
+    monkeypatch.setattr(support, "SITE_URL", "https://example.test")
+    monkeypatch.setattr(support, "_open", opened.append)
+    add(store, clock, "word " * 999)
+    win.prepare()
+    assert win.support_label.isHidden() and win.support_button.isHidden()
+    tabs_y = win.tabs.frame().origin.y
+    add(store, clock, "one more")
+    win._refresh()
+    assert not win.support_label.isHidden() and not win.support_button.isHidden()
+    assert support.HISTORY_LINE in strings(win.content)
+    assert win.tabs.frame().origin.y > tabs_y  # the line takes its own row above the tabs
+    label, button = win.support_label.frame(), win.support_button.frame()
+    assert button.origin.x >= label.origin.x + label.size.width  # the link follows the sentence
+    assert win.support_button.image() is not None  # every support link carries the heart
+    win.support_button.performClick_(None)
+    assert opened == ["https://example.test/?support=1"]
+
+
 def test_rows_are_grouped_by_day_newest_first(win, store, clock):
     add(store, clock, "Booked the train.", NOW - timedelta(days=3))
     add(store, clock, "Thanks, that works.", NOW - timedelta(days=1))

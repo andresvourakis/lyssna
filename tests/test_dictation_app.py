@@ -137,3 +137,21 @@ def test_play_button_reads_what_it_was_offered_for(lyssna, monkeypatch):
     lyssna._present_button(Point(1, 1), (0.0, 0.0, 1.0, 1.0), "selection")
     lyssna.selection_button.on_play()
     assert calls == ["clipboard", "selection"]
+
+
+def test_a_first_launch_offers_no_whats_new_note(lyssna):
+    from lyssna import __version__, whatsnew
+
+    assert lyssna.menubar.whats_new_pending is False
+    assert whatsnew.read_seen() == __version__  # recorded, so the next update is recognised
+    assert lyssna.menubar.on_whats_new == lyssna.show_whats_new
+
+
+def test_an_update_offers_the_whats_new_note(monkeypatch):
+    """Decided at launch, before the first-run marker is written."""
+    from lyssna import __version__, whatsnew
+
+    monkeypatch.setattr(whatsnew, "NOTES", {__version__: ("Something new.",)})
+    config.ensure_dirs()
+    (config.STATE_DIR / "welcomed").write_text("")
+    assert whatsnew.check(__version__, (config.STATE_DIR / "welcomed").exists()) is True

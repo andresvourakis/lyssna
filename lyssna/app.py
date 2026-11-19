@@ -13,7 +13,7 @@ import rumps
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSBundle
 from Foundation import NSURL, NSNotificationCenter, NSOperationQueue
 
-from . import __version__, autostart, capture, config
+from . import __version__, autostart, capture, config, support, whatsnew
 from .controller import Controller, Notice
 from .dictation import cleaners, transcribers
 from .events import KeyboardTap, MouseTap, Point, SelectionGestureDetector, accessibility_trusted
@@ -161,7 +161,8 @@ class MenuBar(rumps.App):
           Speed ▸, [Voice ▸], Voice Provider ▸, where the text goes
         Dictate (a section header)
           Start Dictation, History…, Transcription ▸, Cleanup ▸, where speech goes
-        [usage this month], Settings ▸, Setup…, About Lyssna
+        [What's New in 0.3.0…], [usage this month], Settings ▸, Setup…, About Lyssna,
+        [Support Lyssna]
         Quit Lyssna
 
     with a separator after each section and before Quit. Separators hide themselves when the
@@ -178,6 +179,8 @@ class MenuBar(rumps.App):
         self.on_history: Callable[[], None] = lambda: None  # opens the dictation history; set by LyssnaApp
         self.on_auto_hide: Callable[[bool], None] = lambda on: None  # applies auto-hide to the pill; set by LyssnaApp
         self.on_wave: Callable[[bool], None] = lambda on: None  # applies the resting wave to the pill; set by LyssnaApp
+        self.on_whats_new: Callable[[], None] = lambda: None  # opens the What's New window; set by LyssnaApp
+        self.whats_new_pending = False  # an update's note is waiting; set by LyssnaApp at launch
         self._downloading = False
         self._engine_groups: list[tuple[rumps.MenuItem, list[rumps.MenuItem]]] = []  # header, its rows
         self._privacy_symbols: dict[str, str] = {}  # "reading" / "dictation": the symbol shown now
@@ -266,11 +269,18 @@ class MenuBar(rumps.App):
 
     def _build_app(self) -> list:
         self.item_usage = info_item("No usage this month")
+        # Both hidden until _apply_visibility says otherwise: an update's note, and the support
+        # link once the website has an address. Neither ever opens on its own.
+        self.item_whats_new = rumps.MenuItem(whatsnew.menu_title(__version__), callback=lambda _: self._open_whats_new())
+        self.item_support = rumps.MenuItem(support.MENU_TITLE, callback=lambda _: support.open_support("menu"))
+        set_symbol(self.item_support, support.SYMBOL)
         return [
+            self.item_whats_new,
             self.item_usage,
             self._build_settings(),
             rumps.MenuItem("Setup…", callback=lambda _: self.on_setup(None)),
             rumps.MenuItem("About Lyssna", callback=lambda _: show_about()),
+            self.item_support,
         ]
 
     def _build_settings(self) -> rumps.MenuItem:
@@ -418,6 +428,13 @@ class MenuBar(rumps.App):
         self.ctl.remove_api_key(name)
         self._refresh_checks()
 
+    def _open_whats_new(self) -> None:
+        """Opening the note is what deals with it: the row goes and does not come back."""
+        self.whats_new_pending = False
+        whatsnew.mark_seen(__version__)
+        self._apply_visibility()
+        self.on_whats_new()
+
     def _toggle_login(self, item: rumps.MenuItem) -> None:
         autostart.set_enabled(not autostart.is_enabled())
         item.state = 1 if autostart.is_enabled() else 0
@@ -548,10 +565,12 @@ class MenuBar(rumps.App):
             self.item_usage.title = usage_line
         state = MenuState(player=self.ctl.status.state, downloading=self._downloading, message=self.ctl.message,
                           has_voices=bool(self.ctl.voices()), usage_line=usage_line, local_only=self.ctl.local_only(),
-                          dictation=self.ctl.dictation.state)
+                          dictation=self.ctl.dictation.state, whats_new=self.whats_new_pending,
+                          support=support.enabled())
         shown = visibility(state)
         for item, key in ((self.item_now, "now_playing"), *((t, "transport") for t in self.transport_items),
-                          (self.voice_menu, "voice"), (self.item_usage, "usage"), (self.key_menu, "api_keys")):
+                          (self.voice_menu, "voice"), (self.item_usage, "usage"), (self.key_menu, "api_keys"),
+                          (self.item_whats_new, "whats_new"), (self.item_support, "support")):
             if item.hidden == shown[key]:
                 item.hidden = not shown[key]
         for menu in (self._menu._menu, self.settings_menu._menu, self.key_menu._menu):
@@ -714,6 +733,10 @@ class LyssnaApp:
         self.menubar.on_setup_dictation = lambda engine: self.show_setup(dictation=engine)
         self.history_window = None
         self.menubar.on_history = self.show_history
+        self.whats_new_window = None
+        self.menubar.on_whats_new = self.show_whats_new
+        # Before _welcome_once writes its marker: the marker is how an update is told from a first install.
+        self.menubar.whats_new_pending = whatsnew.check(__version__, (config.STATE_DIR / "welcomed").exists())
         self.ctl.warm_dictation()  # gets the microphone ready if access was already granted
 
         self.ctl.extensions["ui"] = self._ui_state
@@ -777,6 +800,13 @@ class LyssnaApp:
             if hasattr(self.history_window, "ctl"):
                 self.history_window.ctl = self.ctl
         self.history_window.show()
+
+    def show_whats_new(self) -> None:
+        from .ui.whats_new_window import WhatsNewWindow
+
+        if self.whats_new_window is None:
+            self.whats_new_window = WhatsNewWindow.alloc().init()
+        self.whats_new_window.show()
 
     def show_setup(self, engine: str | None = None, dictation: str | None = None) -> None:
         if self.setup_window is None:

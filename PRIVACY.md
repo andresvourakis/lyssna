@@ -9,6 +9,7 @@ Lyssna is a menu bar app that reads selected text aloud and types what you dicta
 - Dictation runs on the Mac by default: the recording and the text never leave it. With an online engine, the recording or the text goes to that provider, with the user's own key.
 - The microphone is on only while you dictate. Recordings stay in memory and are never saved or logged.
 - No analytics, no telemetry, no crash reporting, no update checks. Lyssna makes no network requests other than the ones listed below.
+- The Support Lyssna links open the Lyssna website in your browser, and only when you click one. The link carries nothing about you or your usage, and the app itself sends nothing.
 - An administrator can force local-only mode on managed Macs. It covers reading and dictation.
 
 ## What Lyssna touches, and where it is kept

@@ -2,6 +2,7 @@
 
     History                                           (mark + serif headline)
     1,204          18,930          412                 words this week, in total, dictations
+    Lyssna is free and made by one person. ♥ Support it   (past 1,000 words; see lyssna.support)
     ( Dictations | Dictionary )                        one segmented control
     Dictations: search, then the list grouped by day; each row copies, shows the original
                 transcript, takes a fix ("Fix a Word…", which teaches the dictionary) or goes
@@ -55,6 +56,7 @@ from Foundation import (
     NSTimer,
 )
 
+from .. import support
 from ..dictation import history as history_mod
 from ..dictation import vocabulary as vocabulary_mod
 from ..dictation.learn import find_corrections
@@ -84,6 +86,10 @@ MARK_GAP = 10.0               # mark to headline
 HEAD_TO_STATS = 24.0
 STAT_SIZE = 28.0
 STAT_LABEL_SIZE = 12.0
+STATS_TO_SUPPORT = 12.0       # the totals to the support line under them
+SUPPORT_SIZE = 12.0
+SUPPORT_GAP = 2.0             # the sentence to its action
+SYMBOL_SMALLER = 2.0          # a symbol in front of a text button is this much smaller than the text
 STATS_TO_TABS = 28.0
 LABEL_INSET = 2.0             # an NSTextField label draws its text this far in from its frame
 
@@ -348,16 +354,25 @@ class HistoryIconButton(NSButton):
 
 class HistoryTextButton(NSButton):
     """A quiet text button: dim, full colour under the cursor, no pill and no outline. The title
-    is an attributed string in the brand colour (a borderless button's tint does not reach it)."""
+    is an attributed string in the brand colour (a borderless button's tint does not reach it).
+    With `link`, it reads as a link inside a dim sentence instead: full colour at rest and
+    underlined under the cursor. `symbol` puts an SF Symbol in front of the title, in the
+    title's colour (the heart on every support link)."""
 
     @classmethod
     @objc.python_method
     def make(cls, title: str, target, action: str, size: float = FOOTER_SIZE,
-             weight=AppKit.NSFontWeightMedium) -> HistoryTextButton:
+             weight=AppKit.NSFontWeightMedium, link: bool = False, symbol: str = "") -> HistoryTextButton:
         b = cls.buttonWithTitle_target_action_(title, target, action)
         b.setBordered_(False)
+        if symbol:
+            b.setImage_(_symbol(symbol, size - SYMBOL_SMALLER, weight))
+            b.setImagePosition_(AppKit.NSImageLeading)
+            b.setImageHugsTitle_(True)
+            b.setContentTintColor_(theme.CONTENT)
         b.text = title
         b.text_font = _font(size, weight)
+        b.link = link
         b.hovered = False
         b._paint()
         b.sizeToFit()
@@ -369,8 +384,10 @@ class HistoryTextButton(NSButton):
         if not self.isEnabled():
             color = theme.content(DISABLED_ALPHA)
         else:
-            color = theme.CONTENT if self.hovered else theme.CONTENT_DIM
+            color = theme.CONTENT if self.hovered or self.link else theme.CONTENT_DIM
         attrs = {AppKit.NSFontAttributeName: self.text_font, AppKit.NSForegroundColorAttributeName: color}
+        if self.link and self.hovered:
+            attrs[AppKit.NSUnderlineStyleAttributeName] = AppKit.NSUnderlineStyleSingle
         self.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(self.text, attrs))
 
     @objc.python_method
@@ -855,6 +872,7 @@ class HistoryWindow(NSObject):
         self._editing: str | None = None
         self._edit_text: str | None = None
         self._add_note = ""
+        self._support_shown = False
         self.items: list[_Item] = []
         return self
 
@@ -944,6 +962,13 @@ class HistoryWindow(NSObject):
             self.stat_numbers.append(number)
             self.stat_labels.append(label)
 
+        # Under the totals, once they are worth a look: one quiet sentence and its link.
+        self.support_label = _label(support.HISTORY_LINE, SUPPORT_SIZE, color=theme.CONTENT_DIM)
+        add(self.support_label)
+        self.support_button = HistoryTextButton.make(support.HISTORY_ACTION, self, "openSupport:",
+                                                     size=SUPPORT_SIZE, link=True, symbol=support.SYMBOL)
+        add(self.support_button)
+
         self.tabs = HistorySegments.make(["Dictations", "Dictionary"], lambda i: self.select_tab(TABS[i]))
         add(self.tabs)
 
@@ -1025,6 +1050,7 @@ class HistoryWindow(NSObject):
         for label, value in zip(self.stat_numbers, values, strict=True):
             label.setStringValue_(figure(value))
         self.retention.setStringValue_(retention_text(self._store().days()))
+        self._support_shown = support.in_history(stats["words_total"])
 
     @objc.python_method
     def _rebuild_list(self) -> None:
@@ -1102,7 +1128,19 @@ class HistoryWindow(NSObject):
             number.setFrameOrigin_((left - _ink_left(number), y))
             label.setFrameOrigin_((left - _ink_left(label), y + nh))
             stats_h = max(stats_h, nh + lh)
-        y += stats_h + STATS_TO_TABS
+        y += stats_h
+        for view in (self.support_label, self.support_button):
+            view.setHidden_(not self._support_shown)
+        if self._support_shown:
+            y += STATS_TO_SUPPORT
+            lw, lh = _fit(self.support_label)
+            self.support_label.setFrameOrigin_((x0 - _ink_left(self.support_label), y))
+            self.support_button.sizeToFit()
+            bh = self.support_button.frame().size.height
+            self.support_button.setFrameOrigin_((x0 - _ink_left(self.support_label) + lw + SUPPORT_GAP,
+                                                 y + (lh - bh) / 2))
+            y += lh
+        y += STATS_TO_TABS
 
         self.tabs.setFrameOrigin_((x0, y))
         y += SEG_H + TABS_TO_FIELD
@@ -1204,6 +1242,9 @@ class HistoryWindow(NSObject):
             self.cancelFix_(control)
             return True
         return False
+
+    def openSupport_(self, sender):
+        support.open_support("history")
 
     def showOlder_(self, sender):
         self._cap += ROW_CAP
