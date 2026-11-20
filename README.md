@@ -1,15 +1,19 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-light.png">
-    <img src="docs/images/logo-dark.png" width="96" alt="Lyssna logo">
-  </picture>
+  <img src="docs/images/header.png" alt="Lyssna. Speak to write. Select to listen. A free, open-source Mac app. Everything runs on your Mac.">
 </p>
 
-# Lyssna
+<p align="center">
+  <a href="https://github.com/andresvourakis/lyssna/releases/latest"><img src="https://img.shields.io/github/v/release/andresvourakis/lyssna?label=download&color=141414" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/price-free-141414" alt="Free">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-141414" alt="License: GPL-3.0">
+  <img src="https://img.shields.io/badge/macOS-Apple%20silicon%20and%20Intel-141414" alt="macOS, Apple silicon and Intel">
+</p>
 
 Lyssna does two things on your Mac. Select text in any app, press Control-Option-S, and hear it read aloud in a natural voice. Or hold fn and speak, and Lyssna types what you said wherever your cursor is.
 
-Lyssna is Swedish for "listen" (say "LISS-nah").
+<p align="center">
+  <img src="docs/images/demo.gif" width="840" alt="A 20 second demo: a spoken sentence lands in an email as clean text, then a selected paragraph is read aloud while the pill on the screen edge fills up.">
+</p>
 
 - **A voice that sounds human.** Not the robotic system voice.
 - **Dictation that cleans up.** Filler words and false starts go, punctuation goes in, and it learns the names you correct.
@@ -17,9 +21,7 @@ Lyssna is Swedish for "listen" (say "LISS-nah").
 - **Works in any app.** Browsers, mail, PDFs, Slack, the terminal. If you can select it, Lyssna can read it. If you can type in it, Lyssna can dictate into it.
 - **Open source.** GPL-3.0. Read the code, build it yourself, change it.
 
-<!-- Demo GIF goes here: docs/images/demo.gif (select text, press the hotkey, the player appears) -->
-
-I built Lyssna because I wanted to listen to long articles and AI answers while I work, without paying for another subscription. It started as a personal tool, and I use it every day.
+I built Lyssna because I wanted to listen to long articles and AI answers while I work, without paying for another subscription. It started as a personal tool, and I use it every day. Lyssna is Swedish for "listen" (say "LISS-nah").
 
 ## Install
 
