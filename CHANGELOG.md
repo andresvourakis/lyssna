@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - The full player moves freely when you drag it. It no longer docks when it
   comes near a screen edge; use its tuck button for that.

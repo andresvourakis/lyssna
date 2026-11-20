@@ -20,6 +20,9 @@ from . import config
 log = logging.getLogger("lyssna.whatsnew")
 
 NOTES: dict[str, tuple[str, ...]] = {
+    "0.3.1": (
+        "The full player moves freely when you drag it. Use its arrow button to tuck it into the edge.",
+    ),
     "0.3.0": (
         "Dictation. Hold fn and speak, and Lyssna types what you said, cleaned up, wherever your cursor is.",
         "A dictionary that learns. Correct a name once and Lyssna spells it right next time.",
