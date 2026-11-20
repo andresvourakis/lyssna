@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The full player moves freely when you drag it. It no longer docks when it
+  comes near a screen edge; use its tuck button for that.
+
 ## 0.3.0
 
 - Dictation. Hold fn and speak, and Lyssna types what you said, cleaned up,

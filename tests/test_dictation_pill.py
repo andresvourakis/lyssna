@@ -1002,10 +1002,12 @@ def test_a_reading_docked_at_the_bottom(pill):
 
 
 @appkit
-def test_dragging_the_card_onto_the_bottom_docks_it(pill):
+def test_dragging_the_docked_player_onto_the_bottom_docks_it_there(pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
     pill._update(Status(state="playing", session=1, total=3, index=1))
-    pill.panel.setFrameOrigin_((500, 40))
+    assert pill.form == "sliver" and pill.dock == "left"
     pill.drag_began()
+    pill.panel.setFrameOrigin_((500, 40))
     pill.drag_moved(600, 80)
     assert pill.zones == ["flat"]  # the hint lies flat along the bottom edge
     _zx, zy, zw, zh = frame(pill.flat_zone)
@@ -1013,6 +1015,44 @@ def test_dragging_the_card_onto_the_bottom_docks_it(pill):
     pill.drag_ended(600, 80)
     assert pill.dock == "bottom" and pill.form == "sliver"
     assert pill.fired[-1][:2] == ("layout", "bottom")
+
+
+@appkit
+def test_a_docked_player_dropped_away_from_every_edge_becomes_the_card(pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill._update(Status(state="playing", session=1, total=3, index=1))
+    assert pill.form == "sliver" and pill.dock == "left"
+    pill.drag_began()
+    pill.panel.setFrameOrigin_((600, 400))
+    pill.drag_moved(620, 420)
+    assert pill.zones == []
+    pill.drag_ended(620, 420)
+    assert pill.dock == "" and pill.form == "card"
+
+
+@appkit
+@pytest.mark.parametrize(("origin", "to"), [((-60, 400), (0.0, 400)), ((500, 10), (500, 25.0))])
+def test_the_card_drags_freely_past_the_edges(pill, origin, to):
+    pill._update(Status(state="playing", session=1, total=3, index=1))
+    assert pill.form == "card"
+    pill.drag_began()
+    pill.panel.setFrameOrigin_(origin)
+    pill.drag_moved(origin[0] + 20, origin[1] + 20)
+    assert pill.zones == []  # no landing hint: the card never docks by dragging
+    pill.drag_ended(origin[0] + 20, origin[1] + 20)
+    assert pill.dock == "" and pill.form == "card"
+    x, y, w, h = frame(pill)
+    assert (x, y) == to  # pulled back onto the screen, right against the edge
+    assert x >= VF[0] and y >= VF[1] and x + w <= VF[0] + VF[2] and y + h <= VF[1] + VF[3]
+
+
+@appkit
+def test_the_dock_button_tucks_the_card_into_the_nearest_edge(pill):
+    pill._update(Status(state="playing", session=1, total=3, index=1))
+    pill.panel.setFrameOrigin_((20, 400))
+    pill.dockSide_(None)
+    assert pill.dock == "left" and pill.form == "sliver"
+    assert pill.fired[-1][:2] == ("layout", "left")
 
 
 def zone_centre(zone):

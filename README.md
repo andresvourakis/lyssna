@@ -60,7 +60,7 @@ Select text and a small play button appears just above the selection. Click it, 
 
 If nothing is selected, Control-Option-S reads the clipboard instead.
 
-**The player.** While Lyssna reads, a small floating player shows progress and lets you pause, skip by sentence and change speed. Drop it on the left or right edge of the screen and it tucks in as a slim capsule; hover it to get the controls back.
+**The player.** While Lyssna reads, a small floating player shows progress and lets you pause, skip by sentence and change speed. Drag it anywhere. Its tuck button sends it to the edge of the screen as a slim capsule; hover the capsule to get the controls back.
 
 **The menu bar.** Click the Lyssna icon for the same controls, plus the voice, the speed and **Settings**. One line in the menu always tells you where your text goes: "Text stays on this Mac" or, for example, "Text is sent to Inworld".
 

@@ -8,8 +8,9 @@
     │  (S)        ⏮      ( ▶ )      ⏭         1.2×  │  voice badge, prev/next sentence, speed
     └────────────────────────────────────────────────┘
 
-Drag it anywhere. Drop it on the left, right or bottom edge of a screen and it docks there as
-a slim capsule against the screen edge that shows only progress. Hover the capsule and
+Drag it anywhere; it never docks by being dragged. Its dock button tucks it into the nearest
+left, right or bottom edge of the screen as a slim capsule that shows only progress. The
+capsule can be dragged to another edge and docks there. Hover the capsule and
 it grows into a pill of controls (close, chevron, prev, play/pause, next, progress), upright
 on a side edge and lying flat along the bottom; move away and it shrinks back. Dragging it out of the edge, clicking the chevron, or
 clicking the pill's background restores the card. Dock and position persist across
@@ -443,7 +444,7 @@ class MiniPlayer(FloatingPanel):
         self._button("stop", close)
 
         # Dock button beside it: collapses the card to the nearest screen edge (the arrow
-        # points at the side it will go to), so dragging isn't the only way to tuck it away.
+        # points at the side it will go to). Dragging the card never docks it, so this is the way.
         dock_bg = HoverView.make(((W - PAD - CLOSE - 8 - CLOSE, H - CLOSE_TOP - CLOSE), (CLOSE, CLOSE)), theme.FILL_SOFT, CLOSE / 2)
         content.addSubview_(dock_bg)
         dock = symbol_button("arrow.right.to.line.compact", self, "dockSide:", size=11.0, tint=secondary, weight=AppKit.NSFontWeightBold)
@@ -1122,6 +1123,8 @@ class MiniPlayer(FloatingPanel):
         if self.form in ("rest", "menu"):
             self._hint_rest(mx, my)  # it follows the mouse; on release it snaps to the nearer edge
             return
+        if not self.dock:
+            return  # the card moves freely; only its dock button tucks it into an edge
         edge, screen = self._edge_near(mx, my)
         if not edge:
             self._hide_zones()
@@ -1150,7 +1153,7 @@ class MiniPlayer(FloatingPanel):
             return
         self._hide_zones()
         edge, screen = self._edge_near(mx, my)
-        if edge:
+        if edge and self.dock:  # a docked player moves between edges; the card never docks by dragging
             self._collapse(edge, screen, self._centre_along(edge))
         elif self.dock:
             self._expand_at(mx, my)
