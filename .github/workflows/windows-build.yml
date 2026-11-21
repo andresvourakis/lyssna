@@ -1,0 +1,190 @@
+name: Windows build
+
+# Builds the Windows app (dist\Lyssna with Lyssna.exe and lyssna-cli.exe), smoke-tests the built
+# app with no one at the keyboard (scripts/smoke_win.py), zips it as
+# Lyssna-<version>-windows-x64.zip with its .sha256, and tests the one-line installer and the
+# uninstaller against that zip in Windows PowerShell 5.1 and PowerShell 7. The zip, the checksum,
+# the smoke report and the screenshots are uploaded even when a step fails.
+#
+# Run by hand with a release tag to attach the zip and its checksum to that existing GitHub
+# release. A push never publishes anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "An existing release tag (for example v0.4.0) to upload the zip and checksum to. Leave empty to only build."
+        required: false
+        default: ""
+  push:
+    branches: [windows]
+    paths:
+      - lyssna/**
+      - lyssna-win.spec
+      - scripts/pyi_entry*.py
+      - scripts/make_icon_win.py
+      - scripts/smoke_win.py
+      - scripts/install.ps1
+      - scripts/uninstall.ps1
+      - .github/workflows/windows-build.yml
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write  # only used by the release upload, which runs only when a tag is given by hand
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group build
+
+      - name: Read the version
+        run: |
+          $version = uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
+          $version = $version.Trim()
+          if (-not $version) { throw "Could not read the version from pyproject.toml" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "ZIP=Lyssna-$version-windows-x64.zip" >> $env:GITHUB_ENV
+          Write-Host "Lyssna $version -> Lyssna-$version-windows-x64.zip"
+
+      - name: Draw the icon
+        run: uv run python scripts/make_icon_win.py
+
+      - name: Build the app
+        id: build
+        run: uv run pyinstaller lyssna-win.spec --noconfirm
+
+      - name: Size of the app folder
+        if: (success() || failure()) && steps.build.outcome == 'success'
+        run: |
+          $files = Get-ChildItem dist\Lyssna -Recurse -File
+          $total = ($files | Measure-Object Length -Sum).Sum
+          Write-Host ("dist\Lyssna: {0:N1} MB in {1} files" -f ($total / 1MB), $files.Count)
+          foreach ($exe in 'Lyssna.exe', 'lyssna-cli.exe') {
+            $info = (Get-Item "dist\Lyssna\$exe").VersionInfo
+            Write-Host ("{0}: file version {1}, product {2} {3}, {4}" -f $exe, $info.FileVersion, $info.ProductName, $info.ProductVersion, $info.LegalCopyright)
+          }
+          Write-Host "The 30 largest files:"
+          $root = (Resolve-Path dist\Lyssna).Path
+          $files | Sort-Object Length -Descending | Select-Object -First 30 | ForEach-Object {
+            Write-Host ("{0,9:N1} MB  {1}" -f ($_.Length / 1MB), $_.FullName.Substring($root.Length + 1))
+          }
+          Write-Host "Size by top-level folder:"
+          Get-ChildItem dist\Lyssna\_internal -Directory | ForEach-Object {
+            $size = (Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum).Sum
+            [pscustomobject]@{ MB = [math]::Round($size / 1MB, 1); Folder = $_.Name }
+          } | Sort-Object MB -Descending | Select-Object -First 15 | Format-Table -AutoSize | Out-String | Write-Host
+
+      - name: Smoke test of the built app
+        id: smoke
+        if: (success() || failure()) && steps.build.outcome == 'success'
+        timeout-minutes: 10
+        run: uv run python scripts/smoke_win.py --out smoke
+
+      - name: Zip the app
+        id: zip
+        if: (success() || failure()) && steps.build.outcome == 'success'
+        run: |
+          # The zip holds one top-level Lyssna folder, like the Mac release zips.
+          uv run python -c "import os, shutil; shutil.make_archive(os.environ['ZIP'][:-4], 'zip', 'dist', 'Lyssna')"
+          $hash = (Get-FileHash $env:ZIP -Algorithm SHA256).Hash.ToLowerInvariant()
+          # The same format as the Mac .sha256 files: the hash, two spaces, the bare file name.
+          [System.IO.File]::WriteAllText("$PWD\$env:ZIP.sha256", "$hash  $env:ZIP`n")
+          Write-Host ("{0}: {1:N1} MB, SHA-256 {2}" -f $env:ZIP, ((Get-Item $env:ZIP).Length / 1MB), $hash)
+
+      - name: Test the installer and the uninstaller
+        if: (success() || failure()) && steps.zip.outcome == 'success'
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = (Resolve-Path $env:ZIP).Path
+          $sum = ((Get-Content "$zip.sha256" -Raw).Trim() -split '\s+')[0]
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Lyssna.lnk'
+          $failures = 0
+          function Check([bool]$ok, [string]$what) {
+            if ($ok) { Write-Host "PASS $what" } else { Write-Host "FAIL $what"; $script:failures++ }
+          }
+          function Running([string]$dir) {
+            @(Get-Process -Name Lyssna -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) }).Count
+          }
+
+          foreach ($shell in 'powershell', 'pwsh') {
+            $dir = Join-Path $env:RUNNER_TEMP "install-$shell\Lyssna"
+            $env:LYSSNA_ZIP_URL = $zip
+            $env:LYSSNA_SHA256 = $sum
+            $env:LYSSNA_INSTALL_DIR = $dir
+            $env:LYSSNA_NO_OPEN = '1'
+            & $shell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' | ForEach-Object { Write-Host "==== $shell, PowerShell $_" }
+
+            Write-Host "---- $shell, first install, run the way irm | iex runs it"
+            & $shell -NoProfile -ExecutionPolicy Bypass -Command 'Get-Content -Raw scripts\install.ps1 | Invoke-Expression'
+            Check (Test-Path "$dir\Lyssna.exe") "$shell installs $dir\Lyssna.exe"
+            Check (Test-Path "$dir\lyssna-cli.exe") "$shell installs $dir\lyssna-cli.exe"
+            Check (Test-Path $lnk) "$shell creates the Start menu shortcut $lnk"
+            if (Test-Path $lnk) {
+              $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+              Check ($target -eq "$dir\Lyssna.exe") "the shortcut points at $dir\Lyssna.exe (it points at $target)"
+            }
+
+            Write-Host "---- $shell, update over the install while Lyssna runs from it"
+            if (Test-Path "$dir\Lyssna.exe") {
+              Start-Process -FilePath "$dir\Lyssna.exe" -WorkingDirectory $dir
+              $answered = $false
+              for ($i = 0; $i -lt 60 -and -not $answered; $i++) {
+                Start-Sleep -Milliseconds 500
+                $out = & "$dir\lyssna-cli.exe" status 2>$null
+                $answered = ($LASTEXITCODE -eq 0)
+              }
+              Write-Host "the installed Lyssna answers before the update: $answered ($out)"
+            }
+            & $shell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
+            Check ($LASTEXITCODE -eq 0) "$shell update exits 0 (exit $LASTEXITCODE)"
+            Check (Test-Path "$dir\Lyssna.exe") "$shell update leaves $dir\Lyssna.exe in place"
+            Check ((Running $dir) -eq 0) "$shell update quit the Lyssna that ran from $dir"
+            Check (@(Get-ChildItem (Split-Path $dir) -Force -Filter '.Lyssna-*').Count -eq 0) "$shell update leaves no staging folders next to $dir"
+
+            Write-Host "---- $shell, uninstall"
+            & $shell -NoProfile -ExecutionPolicy Bypass -File scripts\uninstall.ps1
+            Check ($LASTEXITCODE -eq 0) "$shell uninstall exits 0 (exit $LASTEXITCODE)"
+            Check (-not (Test-Path $dir)) "$shell uninstall removes $dir"
+            Check (-not (Test-Path $lnk)) "$shell uninstall removes the Start menu shortcut"
+          }
+
+          Write-Host "---- a wrong checksum installs nothing"
+          $dir = Join-Path $env:RUNNER_TEMP 'install-badhash\Lyssna'
+          $env:LYSSNA_INSTALL_DIR = $dir
+          $env:LYSSNA_SHA256 = '0' * 64
+          & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
+          Check ($LASTEXITCODE -ne 0) "the installer fails on a wrong checksum (exit $LASTEXITCODE)"
+          Check (-not (Test-Path "$dir\Lyssna.exe")) "nothing is installed in $dir"
+
+          Get-Process -Name Lyssna -ErrorAction SilentlyContinue | Stop-Process -Force
+          if ($failures -gt 0) { Write-Host "$failures installer checks failed"; exit 1 }
+          Write-Host "Every installer check passed"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Lyssna-windows-x64
+          path: |
+            Lyssna-*-windows-x64.zip
+            Lyssna-*-windows-x64.zip.sha256
+            smoke/
+          if-no-files-found: warn
+
+      - name: Upload to the release
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY | Select-Object -First 3
+          if ($LASTEXITCODE -ne 0) { throw "There is no release $env:RELEASE_TAG. Create it first; this workflow never creates one." }
+          gh release upload $env:RELEASE_TAG $env:ZIP "$env:ZIP.sha256" --clobber --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
+          Write-Host "Uploaded $env:ZIP and its checksum to $env:RELEASE_TAG"

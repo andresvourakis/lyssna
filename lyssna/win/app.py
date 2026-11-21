@@ -188,8 +188,7 @@ class LyssnaWinApp:
                 self.keyboard.bind(hk[action], fn)
             except ValueError as e:
                 log.error("bad hotkey for %s: %s", action, e)
-        # Keys that are not hotkeys dismiss the play button; the speak and button hotkeys
-        # dismiss it themselves (the Windows hook calls on_any_key only for other keys).
+        # Any key press dismisses the play button, hotkeys included, as on the Mac.
         self.keyboard.on_any_key = self._dismiss_button
         cap = self._capture
         # The detector spots selection-like gestures; the watcher wants proof that text was

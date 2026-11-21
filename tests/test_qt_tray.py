@@ -511,8 +511,10 @@ def test_dictation_engines_without_their_key_go_to_setup(make_tray):
 
 
 def test_quit_calls_the_app_then_quits(tray, monkeypatch):
-    quit_called, app_quit = [], []
+    """The loop ends with exit(0), which a window cannot refuse, never with quit()."""
+    quit_called, app_exit, app_quit = [], [], []
     tray.on_quit = lambda: quit_called.append(1)
+    monkeypatch.setattr(QApplication, "exit", lambda *args: app_exit.append(args[-1] if args else None))
     monkeypatch.setattr(QApplication, "quit", lambda *args: app_quit.append(1))
     find(tray.menu, "Quit Lyssna").trigger()
-    assert quit_called == [1] and app_quit == [1]
+    assert quit_called == [1] and app_exit == [0] and app_quit == []

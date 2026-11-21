@@ -230,6 +230,10 @@ class KeyboardTap(_Hook):
                 self._held.add(vk)
             else:
                 self._held.discard(vk)
+        elif down and self.on_any_key:
+            # Every key-down, hotkey or not, as on the Mac (whose modifiers never arrive as
+            # key-downs), so any key press dismisses the play button.
+            spawn(self.on_any_key)
         raw = self.raw_listener
         if raw is not None and raw(vk, down, t):
             if not down:
@@ -252,8 +256,6 @@ class KeyboardTap(_Hook):
         flags = modifier_flags(self._held)
         cb = self._bindings.get((flags, vk)) if flags is not None else None
         if cb is None:
-            if self.on_any_key:
-                spawn(self.on_any_key)
             return False
         self._swallowed[vk] = t
         spawn(cb)

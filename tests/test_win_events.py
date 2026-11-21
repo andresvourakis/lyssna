@@ -87,6 +87,23 @@ def test_unbound_key_passes_through_and_reaches_on_any_key(ran):
     assert seen == ["any"]
 
 
+def test_every_key_down_reaches_on_any_key_including_hotkeys(ran):
+    """As on the Mac: a hotkey's key-down reaches on_any_key too (before the hotkey itself), and
+    so does each auto-repeat. Modifier keys and key-ups do not."""
+    tap = KeyboardTap()
+    seen = []
+    tap.on_any_key = lambda: seen.append("any")
+    tap.bind("ctrl+alt+s", lambda: seen.append("hotkey"))
+    assert not press(tap, VK_LCONTROL) and not press(tap, VK_LMENU)
+    assert seen == []
+    assert press(tap, VK_S, 1.0) is True
+    assert seen == ["any", "hotkey"]
+    assert press(tap, VK_S, 1.5) is True  # auto-repeat: swallowed, the hotkey does not fire again
+    assert release(tap, VK_S, 1.6) is True
+    assert not release(tap, VK_LMENU) and not release(tap, VK_LCONTROL)
+    assert seen == ["any", "hotkey", "any"]
+
+
 def test_injected_events_are_ignored(ran):
     tap = KeyboardTap()
     seen = []

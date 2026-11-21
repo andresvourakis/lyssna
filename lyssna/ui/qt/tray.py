@@ -655,13 +655,15 @@ class Tray:
         self.tray.show()
 
     def quit(self) -> None:
+        """Call the app's quit, then end the Qt loop. exit(0), not quit(): Qt 6 lets a window
+        refuse quit(), and the Lyssna windows do (closing one only hides it)."""
         if self.on_quit:
             self.on_quit()
         self.timer.stop()
         self.tray.hide()
         app = QApplication.instance()
         if app is not None:
-            app.quit()
+            app.exit(0)
 
     # -- refreshing ------------------------------------------------------------------------
 
