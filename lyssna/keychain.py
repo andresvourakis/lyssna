@@ -29,11 +29,15 @@ import logging
 import threading
 from collections.abc import Callable, Iterable
 
+from . import host
+
 log = logging.getLogger("lyssna.keychain")
 
 SERVICE = "io.github.andresvourakis.lyssna"
-_ERR_ITEM_NOT_FOUND = -25300
-_ERR_DUPLICATE_ITEM = -25299
+# Backend statuses that are not failures. The values are the macOS ones (errSecItemNotFound,
+# errSecDuplicateItem); the Windows backend answers with the same numbers.
+NOT_FOUND = -25300
+DUPLICATE = -25299
 
 
 class SecurityBackend:
@@ -74,7 +78,7 @@ class SecurityBackend:
         attrs[Security.kSecValueData] = data
         attrs[Security.kSecAttrLabel] = f"Lyssna API key ({account})"
         status, _ = Security.SecItemAdd(attrs, None)
-        if status == _ERR_DUPLICATE_ITEM:
+        if status == DUPLICATE:
             status = Security.SecItemUpdate(query, {Security.kSecValueData: data})
         return status
 
@@ -91,7 +95,7 @@ class _Unknown:
 
 UNKNOWN = _Unknown()  # peek's answer while the Keychain has not been read for that section yet
 
-_backend = SecurityBackend()
+_backend = SecurityBackend() if host.credentials is None else host.credentials.CredentialBackend()
 _lock = threading.Lock()
 _settled = threading.Condition(_lock)  # notified whenever a background read finishes a section
 _cache: dict[str, str | None] = {}
@@ -134,7 +138,7 @@ def _read(account: str) -> tuple[str | None, bool]:
     except Exception as e:  # type only: an encode or decode error message quotes part of the key
         log.warning("keychain read for %s failed: %s", account, type(e).__name__)
         return None, False  # not cached: a crash here is worth retrying
-    if status not in (0, _ERR_ITEM_NOT_FOUND):
+    if status not in (0, NOT_FOUND):
         log.warning("keychain read for %s failed: OSStatus %s", account, status)
     return (value if status == 0 and value else None), True
 
@@ -264,11 +268,11 @@ def delete(account: str) -> bool:
     except Exception as e:  # type only: an encode or decode error message quotes part of the key
         log.warning("keychain delete for %s failed: %s", account, type(e).__name__)
         status = None
-    if status in (0, _ERR_ITEM_NOT_FOUND):
+    if status in (0, NOT_FOUND):
         _forget(account)
     else:
         _invalidate(account)
-    if status not in (0, _ERR_ITEM_NOT_FOUND):
+    if status not in (0, NOT_FOUND):
         if status is not None:
             log.warning("keychain delete for %s failed: OSStatus %s", account, status)
         return False

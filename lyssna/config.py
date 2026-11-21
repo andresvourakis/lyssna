@@ -8,14 +8,17 @@ import os
 import tomllib
 from pathlib import Path
 
+from . import host
+
 log = logging.getLogger("lyssna.config")
 
-CONFIG_DIR = Path.home() / ".config" / "lyssna"
+_paths = host.paths()  # the Mac locations, or %APPDATA% and %LOCALAPPDATA% on Windows
+CONFIG_DIR = _paths.config_dir
 CONFIG_PATH = CONFIG_DIR / "config.toml"
-STATE_DIR = Path.home() / "Library" / "Application Support" / "Lyssna"
-CACHE_DIR = Path.home() / "Library" / "Caches" / "Lyssna"
-LOG_DIR = Path.home() / "Library" / "Logs" / "Lyssna"
-SOCKET_PATH = STATE_DIR / "lyssna.sock"
+STATE_DIR = _paths.state_dir
+CACHE_DIR = _paths.cache_dir
+LOG_DIR = _paths.log_dir
+SOCKET_PATH = _paths.socket_path
 
 DEFAULTS: dict = {
     "provider": "kokoro",

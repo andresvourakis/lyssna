@@ -11,10 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from AVFoundation import AVAudioPlayer
-from Foundation import NSData
-
-from . import usage
+from . import host, usage
 from .cache import AudioCache
 from .providers.base import Audio, Provider, ProviderError, error_summary
 from .text import prepare, preview
@@ -327,14 +324,8 @@ class Reader:
             t.join()
 
     def _make_player(self, audio: Audio):
-        data = NSData.dataWithBytes_length_(audio.data, len(audio.data))
-        player, err = AVAudioPlayer.alloc().initWithData_error_(data, None)
-        if player is None:
-            raise ProviderError(f"Could not decode audio ({audio.ext}): {err}")
-        player.setEnableRate_(True)
-        player.prepareToPlay()
-        player.setRate_(self.speed)
-        return player
+        """A player for one chunk, ready at the current speed (see lyssna/win/audio.py for the contract)."""
+        return host.audio.make_player(audio, self.speed)
 
     def _play_loop(self, session: Session) -> None:
         i = session.index  # 0 for a new reading; the current sentence after restart_from_current()

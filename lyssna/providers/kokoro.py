@@ -23,7 +23,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import ClassVar, NamedTuple
 
-from .. import config
+from .. import config, host
 from ..download import DownloadError, fetch
 from .base import Audio, Provider, ProviderError
 
@@ -68,12 +68,15 @@ def packages_installed() -> bool:
 # -- espeak-ng location ------------------------------------------------------------------
 
 
+_ESPEAK_LIBRARY = "espeak-ng.dll" if host.IS_WINDOWS else "libespeak-ng.dylib"  # its file name in the frozen app
+
+
 def _bundled_espeak() -> tuple[str, str]:
     """(library, data dir) as shipped: inside the app bundle when frozen by PyInstaller
     (lyssna.spec puts the data at <_MEIPASS>/espeak-ng-data), else from the installed wheel."""
     base = getattr(sys, "_MEIPASS", None)
     if base:
-        return str(Path(base) / "espeakng_loader" / "libespeak-ng.dylib"), str(Path(base) / "espeak-ng-data")
+        return str(Path(base) / "espeakng_loader" / _ESPEAK_LIBRARY), str(Path(base) / "espeak-ng-data")
     import espeakng_loader
 
     return espeakng_loader.get_library_path(), espeakng_loader.get_data_path()

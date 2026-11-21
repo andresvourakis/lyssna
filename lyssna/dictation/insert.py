@@ -23,10 +23,7 @@ import threading
 import time
 from collections.abc import Callable
 
-import Quartz
-from AppKit import NSPasteboard, NSPasteboardItem, NSPasteboardTypeString
-
-from .. import capture
+from ..host import capture  # lyssna.capture on the Mac; AppKit and Quartz load where they are used
 
 log = logging.getLogger("lyssna.dictation.insert")
 
@@ -58,6 +55,8 @@ def text_target(element) -> str:
 
 
 def _text_item(text: str, transient: bool):
+    from AppKit import NSPasteboardItem, NSPasteboardTypeString
+
     item = NSPasteboardItem.alloc().init()
     item.setString_forType_(text, NSPasteboardTypeString)
     if transient:
@@ -92,22 +91,29 @@ class Inserter:
     def __init__(
         self,
         pasteboard=None,
-        focused: Callable[[], object] = capture.focused_element,
+        focused: Callable[[], object] | None = None,
         target: Callable[[object], str] = text_target,
-        send_key: Callable[[int, int], None] = capture.send_key,
-        wait_for_modifiers: Callable[[], None] = capture._wait_for_modifiers_release,
+        send_key: Callable[[int, int], None] | None = None,
+        wait_for_modifiers: Callable[[], None] | None = None,
         later: Callable[[float, Callable[[], None]], None] | None = None,
         restore_delay: float = RESTORE_DELAY,
     ):
+        # Left out, the machine calls are the capture module's, looked up here rather than when
+        # the module loads, so importing this module needs no Mac framework.
         self._pasteboard = pasteboard
-        self.focused, self.target = focused, target
-        self.send_key, self.wait_for_modifiers = send_key, wait_for_modifiers
+        self.focused, self.target = focused or capture.focused_element, target
+        self.send_key = send_key or capture.send_key
+        self.wait_for_modifiers = wait_for_modifiers or capture._wait_for_modifiers_release
         self.later = later or _later
         self.restore_delay = restore_delay
 
     @property
     def pasteboard(self):
-        return self._pasteboard or NSPasteboard.generalPasteboard()
+        if self._pasteboard:
+            return self._pasteboard
+        from AppKit import NSPasteboard
+
+        return NSPasteboard.generalPasteboard()
 
     def __call__(self, text: str) -> str:
         return self.paste(text)
@@ -122,10 +128,16 @@ class Inserter:
         previous = capture.snapshot_pasteboard(pb)
         count = put_text(pb, text, transient=True)
         self.wait_for_modifiers()
-        self.send_key(KEY_V, Quartz.kCGEventFlagMaskCommand)
+        self.send_key(KEY_V, _command_flag())
         self.later(self.restore_delay, lambda: restore_unless_changed(pb, previous, count))
         log.info("pasted %d chars (target %s)", len(text), kind)
         return "pasted"
+
+
+def _command_flag() -> int:
+    import Quartz
+
+    return Quartz.kCGEventFlagMaskCommand
 
 
 def _later(delay: float, fn: Callable[[], None]) -> None:

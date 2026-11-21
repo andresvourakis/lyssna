@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
+
+from . import host
 
 log = logging.getLogger("lyssna.support")
 
@@ -47,8 +48,7 @@ def in_history(words_total: int) -> bool:
 
 
 def _open(target: str) -> None:
-    subprocess.run(["open", target], check=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
+    host.open_target(target)
 
 
 def open_support(source: str) -> None:

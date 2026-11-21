@@ -10,7 +10,7 @@ import os
 import shutil
 from pathlib import Path
 
-from . import config
+from . import config, host
 
 log = logging.getLogger("lyssna.migrate")
 
@@ -56,7 +56,10 @@ def _move_cache() -> list[str]:
 
 
 def run() -> list[str]:
-    """Migrate whatever is still missing. Returns what was migrated; never raises."""
+    """Migrate whatever is still missing. Returns what was migrated; never raises.
+    Mac only: Speechy never ran anywhere else."""
+    if not host.IS_MAC:
+        return []
     done: list[str] = []
     for step in (_copy_config, _copy_state, _move_cache):
         try:

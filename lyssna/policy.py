@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from . import host
+
 log = logging.getLogger("lyssna.policy")
 
 DOMAIN = "io.github.andresvourakis.lyssna"
@@ -31,7 +33,8 @@ def _read_preference(key: str) -> object | None:
         return None
 
 
-_reader: Callable[[str], object | None] = _read_preference
+# The Mac reads the defaults domain; Windows reads its registry policy key (lyssna/win/policy.py).
+_reader: Callable[[str], object | None] = _read_preference if host.policy_impl is None else host.policy_impl.read_preference
 
 
 def managed_local_only() -> bool:

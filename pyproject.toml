@@ -15,14 +15,18 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
-    "rumps>=0.4",
+    "rumps>=0.4; sys_platform == 'darwin'",
     "httpx>=0.27",
-    "pyobjc-framework-Cocoa>=10",
-    "pyobjc-framework-AVFoundation>=10",
-    "pyobjc-framework-Quartz>=10",
-    "pyobjc-framework-ApplicationServices>=10",
-    "pyobjc-framework-servicemanagement>=12.2.2",
-    "pyobjc-framework-security>=10",
+    "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-AVFoundation>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-servicemanagement>=12.2.2; sys_platform == 'darwin'",
+    "pyobjc-framework-security>=10; sys_platform == 'darwin'",
+    # The Windows app: its interface (Qt through PySide6) and UI Automation for the selected text.
+    "PySide6-Essentials>=6.10; sys_platform == 'win32'",
+    "PySide6-Addons>=6.10; sys_platform == 'win32'",
+    "comtypes>=1.4; sys_platform == 'win32'",
     # The free voice that runs on this Mac (Kokoro-82M through onnxruntime, CPU only).
     "kokoro-onnx>=0.6.1,<0.7",
     # onnxruntime stopped publishing Intel Mac wheels after 1.23.2, so Intel Macs stay there.
@@ -59,6 +63,11 @@ dev = [
 ]
 build = [
     "pyinstaller>=6.22",
+]
+# The Windows interface, installable on a Mac so it can be run there for review: uv sync --group qt
+qt = [
+    "PySide6-Essentials>=6.10",
+    "PySide6-Addons>=6.10",
 ]
 
 [tool.uv.extra-build-variables]

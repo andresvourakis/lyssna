@@ -40,7 +40,7 @@ from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from .events import Point, spawn
+from .gestures import Point, spawn
 
 log = logging.getLogger("lyssna.selection")
 

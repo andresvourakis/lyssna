@@ -1,26 +1,27 @@
 from __future__ import annotations
 
-from .. import policy
+from .. import host, policy
 from .base import Audio, Provider, ProviderError
 from .cartesia import CartesiaProvider
 from .elevenlabs import ElevenLabsProvider
 from .inworld import InworldFlashProvider, InworldProvider
 from .kokoro import KokoroProvider
-from .macos import MacOSSayProvider
 from .openai import OpenAIProvider
 
-REGISTRY: dict[str, type[Provider]] = {
-    p.name: p
-    for p in (
-        InworldProvider,
-        InworldFlashProvider,
-        CartesiaProvider,
-        ElevenLabsProvider,
-        OpenAIProvider,
-        KokoroProvider,
-        MacOSSayProvider,
-    )
-}
+_PROVIDERS: list[type[Provider]] = [
+    InworldProvider,
+    InworldFlashProvider,
+    CartesiaProvider,
+    ElevenLabsProvider,
+    OpenAIProvider,
+    KokoroProvider,
+]
+if host.IS_MAC:  # the built-in `say` voice exists only on the Mac
+    from .macos import MacOSSayProvider
+
+    _PROVIDERS.append(MacOSSayProvider)
+
+REGISTRY: dict[str, type[Provider]] = {p.name: p for p in _PROVIDERS}
 
 
 def get_provider(name: str, config: dict) -> Provider:
@@ -46,7 +47,9 @@ def allowed(name: str, config: dict) -> bool:
 def local_fallback() -> str:
     """The engine to land on when the chosen one cannot be used: the free Kokoro voice on
     this Mac, or the built-in macOS `say` when Kokoro cannot run in this install."""
-    return KokoroProvider.name if KokoroProvider.can_run() else MacOSSayProvider.name
+    if KokoroProvider.can_run() or "say" not in REGISTRY:
+        return KokoroProvider.name
+    return "say"
 
 
 def effective_provider(config: dict, wait: bool = True) -> str:

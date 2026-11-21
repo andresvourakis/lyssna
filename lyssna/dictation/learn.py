@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .. import capture
+from ..host import capture  # lyssna.capture on the Mac, lyssna.win.capture on Windows
 
 log = logging.getLogger("lyssna.dictation.learn")
 

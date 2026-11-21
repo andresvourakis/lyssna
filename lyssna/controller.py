@@ -16,18 +16,18 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import subprocess
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import capture, config, keychain, migrate, policy, usage
+from . import config, host, keychain, migrate, policy, usage
 from .cache import AudioCache, cache_enabled
 from .dictation import cleaners, transcribers
 from .dictation import models as dictation_models
 from .dictation.session import DictationSession
 from .dictation.types import DictationResult, DictationStatus
+from .host import capture  # lyssna.capture on the Mac, lyssna.win.capture on Windows
 from .menu import dictation_privacy
 from .player import Reader, Status
 from .providers import REGISTRY, allowed, effective_provider, get_provider, kokoro, local_fallback
@@ -39,7 +39,7 @@ SPEED_STEP = 0.1
 
 DICTATING = ("recording", "locked", "working")
 _RECORDING = ("recording", "locked")
-MIC_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+MIC_SETTINGS_URL = host.MIC_SETTINGS_URL
 KEYBOARD_SETTINGS_URL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension"
 GLOBE_MARKER = "globe-key-hint-shown"  # in STATE_DIR, like the `welcomed` marker
 
@@ -73,8 +73,7 @@ def key_sections() -> list[str]:
 
 def open_url(url: str) -> None:
     """Open a System Settings pane (or any URL) without touching our stdio."""
-    subprocess.run(["open", url], check=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
+    host.open_target(url)
 
 
 class Controller:

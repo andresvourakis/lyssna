@@ -27,7 +27,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from . import config, server
+from . import config, host, server
 
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "io.github.andresvourakis.lyssna.plist"
 
@@ -124,8 +124,9 @@ def cmd_speak(text: str, force_standalone: bool = False) -> int:
 
 
 def cmd_doctor() -> int:
-    from .events import accessibility_trusted
     from .providers import REGISTRY, get_provider
+
+    accessibility_trusted = host.events.accessibility_trusted
 
     cfg = _local_only_guard(config.load())
     print(f"config:   {config.CONFIG_PATH}")
@@ -149,6 +150,14 @@ def cmd_doctor() -> int:
 
 
 def cmd_autostart(enable: bool) -> int:
+    if host.autostart_impl is not None:  # Windows: the registry Run key, as the app's own switch uses
+        from . import autostart
+
+        if not autostart.set_enabled(enable):
+            print("Could not change start at login. See the log for details.", file=sys.stderr)
+            return 1
+        print("Lyssna starts at login." if enable else "Autostart removed.")
+        return 0
     exe = shutil.which("lyssna") or str(Path(sys.argv[0]).resolve())
     if enable:
         plist = {
@@ -360,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ns.args
 
     if not args or args == ["app"]:
-        from .app import run
+        run = host.app.run  # lyssna.app on the Mac, lyssna.win.app on Windows
         run()
         return 0
 

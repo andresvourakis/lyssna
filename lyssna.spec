@@ -48,7 +48,9 @@ a = Analysis(
         ("LICENSE", "."),
         ("THIRD_PARTY_NOTICES.md", "."),
     ],
-    hiddenimports=["Security"],  # the Keychain module imports it lazily
+    # The Keychain module imports Security lazily, and lyssna.host loads the Mac modules by name
+    # (the app, playback and the hotkey tables), so the analysis cannot see them by itself.
+    hiddenimports=["Security", "lyssna.app", "lyssna.audio_mac", "lyssna.hotkeys_mac"],
     excludes=[],
     noarchive=False,
 )
