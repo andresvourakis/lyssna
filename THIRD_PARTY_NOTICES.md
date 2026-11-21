@@ -77,3 +77,14 @@ the first time dictation on this Mac is used:
 | anyio | 4.15.1 | MIT |
 | idna | 3.19 | BSD-3-Clause |
 | certifi | 2026.7.22 | MPL-2.0 |
+
+## Fonts (the Windows app)
+
+The Mac app draws with Apple's system fonts. Apple's fonts may not be used on
+Windows, so the Windows app bundles these free fonts, shipped unchanged with
+their licences in `lyssna/ui/assets/fonts/`.
+
+| Component | Version | License | Notes |
+|---|---|---|---|
+| Inter (Regular, Medium, SemiBold, Bold, Italic; hinted TrueType) | 4.1 | SIL Open Font License 1.1 | Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter). The full licence is in `Inter-LICENSE.txt` |
+| Literata 36pt SemiBold | 3.103 | SIL Open Font License 1.1 | Copyright 2017 The Literata Project Authors (https://github.com/googlefonts/literata). The full licence is in `Literata-LICENSE.txt` |

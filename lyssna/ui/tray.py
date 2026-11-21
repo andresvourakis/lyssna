@@ -1,40 +1,39 @@
-"""The tray icon and its menu, the Windows twin of MenuBar in lyssna/legacy/app.py.
+"""The menu bar item (the tray icon on Windows) and its menu: the Qt twin of MenuBar in
+lyssna/legacy/app.py, which is its specification, on both systems.
 
-The menu is built item for item like the Mac one and asks the same pure rules in lyssna/menu.py
-what to show and what to call things. It reads state from the controller on a 0.4 s timer and
-never owns state itself, exactly as MenuBar does; the handlers below port MenuBar's rules
-(the provider checks, keys going to setup, the local-only block, the remove-key confirmation).
+The menu is built item for item like the legacy one and asks the same pure rules in
+lyssna/menu.py what to show and what to call things. It reads state from the controller on a
+0.4 s timer and never owns state itself, exactly as MenuBar does; the handlers below port
+MenuBar's rules (the provider checks, keys going to setup, the local-only block, the
+remove-key confirmation).
 
-What Windows does differently:
-- A tray icon cannot show text beside it, so what the Mac shows as the menu bar title goes into
-  the tooltip ("Lyssna: Reading 2 of 5").
-- Left click and right click both open the menu.
-- Hotkeys appear at the right of their items as text after a tab. They are not QAction
-  shortcuts: the global keyboard hook owns the keys.
-- Section headers are greyed-out lines in a small semibold font: Windows menus have no native
-  header item.
-- There is no Accessibility permission. When the keyboard and mouse hooks could not start, the
-  first item says so, opens setup, and the icon carries a small warning dot.
-- The Dictate section waits behind `features["dictate"]` (and History behind
-  `features["history"]`), both off for the first Windows release.
-- About is a small Lyssna-styled dialog, since Windows has no standard About panel."""
+What differs between the systems comes from host, never from a test of the system:
+- host.STATUS_TEXT_BESIDE_ICON: the Mac shows the legacy title beside the icon ("2/5",
+  "⏸ 2/5", "…", a download line, a short message, ⚠︎). Windows cannot, so its tooltip says it
+  in words ("Lyssna: Reading 2 of 5").
+- host.NEEDS_ACCESSIBILITY: the warning row asks for the Accessibility permission (the legacy
+  "Allow Accessibility Access…"), or says the keyboard shortcuts could not start.
+- host.statusbar (lyssna/mac/statusbar.py, lyssna/win/statusbar.py) shows the title, sets the
+  icon (a template image on the Mac, tinted for the taskbar on Windows), makes the section
+  headers (native on the Mac, a dim semibold row on Windows), writes the shortcut after an
+  item's tab (native ⌃⌥S on the Mac, "Ctrl+Alt+S" on Windows; never a live Qt shortcut, since
+  the global key tap owns the keys) and opens the config file in a plain text editor.
+- A left click on the Windows tray icon opens the same menu a right click does.
+- About is one Qt dialog on both systems, with what the legacy About panel shows."""
 
 from __future__ import annotations
 
 import logging
-import subprocess
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QPainter, QPalette
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMenu, QMessageBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 from .. import __version__, config, host, support, whatsnew
 from ..controller import Notice
 from ..dictation import cleaners, transcribers
-from ..hotkeys import pretty
 from ..menu import (
     DICTATE_HEADER,
     KEY_MENU_LABELS,
@@ -64,22 +63,44 @@ from .mark import MarkView
 
 log = logging.getLogger("lyssna.ui.tray")
 
-ICON_PATH = Path(__file__).resolve().parent / "assets" / "menubar.png"
-ICON_SIZES = (16, 20, 24, 32)  # 100, 125, 150 and 200 percent scaling
-ICON_CROP = (2.0, 2.0, 36.0, 36.0)  # the part of menubar.png the tray icon shows
 TICK_MS = 400
-WARNING_TITLE = "Lyssna could not start its keyboard shortcuts"
+HOOKS_WARNING_TITLE = "Lyssna could not start its keyboard shortcuts"
+ACCESSIBILITY_WARNING_TITLE = "Allow Accessibility Access…"  # the legacy menu's row
+STATE_TEXT = {"loading": "…", "playing": "", "paused": "⏸ "}  # the legacy menu bar title, before "2/5"
+WARNING_MARK = "⚠︎"  # beside the icon while the permission is missing
+TITLE_MAX = 60  # characters of a message beside the icon, as the legacy app
 NOW_PLAYING_MAX = 80  # characters of the sentence in the now-playing line; the Mac caps a message at the same
 MENU_ICON = 16.0      # privacy, warning and heart icons in the menu
-WARNING_DOT = (255, 185, 0)  # the dot on the tray icon when the hooks did not start
-TASKBAR_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+CREDITS_PT = 11       # the About panel's credits, as show_about in lyssna/legacy/app.py sets them
 
 
 # -- pure helpers ------------------------------------------------------------------------------
 
 
+def warning_title() -> str:
+    """The row at the top of the menu when the keyboard and selection access is missing."""
+    return ACCESSIBILITY_WARNING_TITLE if host.NEEDS_ACCESSIBILITY else HOOKS_WARNING_TITLE
+
+
+def menubar_title(player: str, index: int, total: int, *, dictating: bool = False, download: str = "",
+                  message: str = "", warning: bool = False) -> str:
+    """What the legacy app shows beside the menu bar icon (_tick in lyssna/legacy/app.py):
+    nothing while a dictation records or works (the pill is the indicator), else the download
+    line, else a message, else "…" loading, "2/5" reading, "⏸ 2/5" paused. ⚠︎ when there is
+    nothing else to show and the permission is missing."""
+    if dictating:
+        return ""
+    if download:
+        return download
+    if message:
+        return message[:TITLE_MAX]
+    if player in STATE_TEXT:
+        return "…" if player == "loading" else f"{STATE_TEXT[player]}{index}/{total}"
+    return WARNING_MARK if warning else ""
+
+
 def status_line(player: str, index: int, total: int) -> str:
-    """What the Mac shows as the menu bar title while reading, in words: "Reading 2 of 5"."""
+    """The menu bar title in words, for the tooltip: "Reading 2 of 5"."""
     if player == "loading":
         return "Loading"
     if player in ("playing", "paused"):
@@ -88,69 +109,15 @@ def status_line(player: str, index: int, total: int) -> str:
 
 
 def tooltip_text(line: str, warning: bool = False) -> str:
-    """The tray icon's tooltip: "Lyssna", or "Lyssna: " and what the Mac menu bar title says."""
+    """The icon's tooltip where nothing shows beside it: "Lyssna", or "Lyssna: " and what the
+    Mac's title says, in words."""
     if line:
         return f"Lyssna: {line}"
-    return WARNING_TITLE if warning else "Lyssna"
+    return warning_title() if warning else "Lyssna"
 
 
 def short(text: str, limit: int = NOW_PLAYING_MAX) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
-
-
-def taskbar_is_dark() -> bool:
-    """Is the Windows taskbar dark? It follows "Choose your default Windows mode", which can
-    differ from the apps' mode. Off Windows, the interface's own scheme answers."""
-    if host.IS_WINDOWS:
-        try:
-            import winreg
-
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, TASKBAR_KEY) as key:
-                value, _ = winreg.QueryValueEx(key, "SystemUsesLightTheme")
-            return int(value) == 0
-        except OSError:
-            log.debug("could not read the taskbar theme", exc_info=True)
-            return True  # Windows 11's default taskbar is dark
-    return theme.is_dark()
-
-
-def tray_pixmap(size: int, dark_taskbar: bool, warning: bool = False) -> QPixmap:
-    """The logo `size` pixels square, white on a dark taskbar and near-black on a light one,
-    with a small amber dot in the corner when `warning`."""
-    src = QImage(str(ICON_PATH)).convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
-    img = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
-    img.fill(Qt.GlobalColor.transparent)
-    p = QPainter(img)
-    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    if not src.isNull():
-        # The asset is a 40 px square with room around the glyph for the Mac menu bar; a tray
-        # icon fills its square, so draw the middle 36 px of it.
-        p.drawImage(QRectF(0, 0, size, size), src, QRectF(*ICON_CROP))
-    # Tint: keep the glyph's alpha, replace its colour.
-    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    p.fillRect(QRectF(0, 0, size, size), QColor(255, 255, 255) if dark_taskbar else QColor(0x1C, 0x1C, 0x1C))
-    if warning:
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        d = max(4.0, size * 0.34)
-        ring = max(1.0, size / 16)
-        x, y = size - d, size - d
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        p.drawEllipse(QRectF(x - ring, y - ring, d + 2 * ring, d + 2 * ring))  # a gap around the dot
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        p.setBrush(QColor(*WARNING_DOT))
-        p.drawEllipse(QRectF(x, y, d, d))
-    p.end()
-    return QPixmap.fromImage(img)
-
-
-def tray_icon(dark_taskbar: bool, warning: bool = False) -> QIcon:
-    """The tray icon at every size Windows asks for, each drawn at that size so none is blurred."""
-    icon = QIcon()
-    for n in ICON_SIZES:
-        icon.addPixmap(tray_pixmap(n, dark_taskbar, warning))
-    return icon
 
 
 def label_of(action: QAction) -> str:
@@ -166,17 +133,6 @@ def tidy_separators(menu: QMenu) -> None:
     for sep, show in zip(separators, separators_shown(rows), strict=True):
         if sep.isVisible() != show:
             sep.setVisible(show)
-
-
-def open_config_file(path: Path) -> None:
-    """In Notepad on Windows (a .toml file usually has no app of its own there); in a text
-    editor elsewhere."""
-    if host.IS_WINDOWS:
-        subprocess.Popen(["notepad.exe", str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    else:
-        subprocess.run(["open", "-t", str(path)], check=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
 
 
 def confirm(title: str, message: str, ok: str, cancel: str = "Cancel") -> bool:
@@ -199,8 +155,9 @@ def confirm(title: str, message: str, ok: str, cancel: str = "Cancel") -> bool:
 
 
 class AboutDialog(QDialog):
-    """Name, version, license and a link to the source, on the brand surface (the twin of the
-    Mac's standard About panel as show_about in lyssna/legacy/app.py fills it)."""
+    """Name, version, license and a link to the source, on the brand surface: the one About on
+    both systems, with what the Mac's standard About panel shows as show_about in
+    lyssna/legacy/app.py fills it (the credits, the sentence and the link, at its 11 points)."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -222,11 +179,11 @@ class AboutDialog(QDialog):
         col.addWidget(self.version, 0, Qt.AlignmentFlag.AlignHCenter)
         col.addSpacing(14)
         self.license = QLabel("Free and open source, GPL-3.0", self)
-        self.license.setFont(theme.ui_font(12))
+        self.license.setFont(theme.ui_font(CREDITS_PT))
         col.addWidget(self.license, 0, Qt.AlignmentFlag.AlignHCenter)
         col.addSpacing(2)
         self.link = QLabel(self)
-        self.link.setFont(theme.ui_font(12))
+        self.link.setFont(theme.ui_font(CREDITS_PT))
         self.link.setTextFormat(Qt.TextFormat.RichText)
         self.link.setOpenExternalLinks(False)
         self.link.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
@@ -274,25 +231,29 @@ class Tray:
 
     The menu, top to bottom (optional rows in brackets; lyssna.menu has the rules):
 
-        [Lyssna could not start its keyboard shortcuts]
+        [Allow Accessibility Access... / Lyssna could not start its keyboard shortcuts]
         Listen (a section header)
           Read Selection, Read Clipboard, [now playing],
           [Pause / Resume, Stop, Previous Sentence, Next Sentence] (only while reading),
           Speed >, [Voice >], Voice Provider >, where the text goes
         [Dictate (a section header)
           Start Dictation, [History...], Transcription >, Cleanup >, where speech goes]
+          (on unless features["dictate"] is False; History unless features["history"] is)
         [What's New in 0.3.0...], [usage this month], Settings >, Setup..., About Lyssna,
         [Support Lyssna]
-        Quit Lyssna
+        Quit Lyssna (⌘Q on the Mac)
 
     with a separator after each section and before Quit, hidden when the rows around them are."""
 
-    key_text: Callable[[str], str] = staticmethod(pretty)  # how a hotkey spec is written at the right of an item
+    # How a hotkey spec is written after an item's tab, and how a header row is styled. Class
+    # attributes so a preview can show the other system's way.
+    key_text: Callable[[str], str] = staticmethod(lambda spec: host.statusbar.shortcut_text(spec))
+    style_header: Callable[[QAction, QMenu], None] = staticmethod(lambda a, menu: host.statusbar.style_header(a, menu))
 
     def __init__(self, ctl, features: dict | None = None):
         self.ctl = ctl
         self.hk = ctl.cfg.get("hotkeys", {})
-        self.features: dict = {"dictate": False, "history": False, **(features or {})}
+        self.features: dict = {"dictate": True, "history": True, **(features or {})}
         self.on_quit: Callable[[], None] | None = None
         self.on_setup: Callable[[str | None], None] = lambda engine: None  # opens the setup window; set by the app
         self.on_setup_dictation: Callable[[str], None] = lambda engine: None  # ...at its dictation keys
@@ -301,10 +262,11 @@ class Tray:
         self.on_wave: Callable[[bool], None] = lambda on: None
         self.on_whats_new: Callable[[], None] = lambda: None
         self.whats_new_pending = False  # an update's note is waiting; set by the app at launch
-        self.warning = False  # the keyboard and mouse hooks did not start
-        self.title = ""  # what the Mac menu bar title would say; the tooltip shows it
+        self.warning = False  # the keyboard and selection access is missing
+        self.title = ""  # what the legacy app shows beside the icon now
+        self.line = ""  # the same, in words, for the tooltip
         self._downloading = False
-        self._dark_taskbar: bool | None = None
+        self._header_titles: set[str] = set()  # every section header's title, made native where the system can
         self._engine_groups: list[tuple[QAction, list[QAction]]] = []  # header, its rows
         self._privacy_symbols: dict[str, str] = {}  # "reading" / "dictation": the symbol shown now
         self._icons: dict[QAction, str] = {}  # menu items with an icon, re-tinted when the scheme flips
@@ -320,6 +282,9 @@ class Tray:
         self.tray.setToolTip(tooltip_text(""))
         self._refresh_checks()
         self.menu.aboutToShow.connect(self._tick)  # never shows a stale row
+        # Native headers go on the native items, which exist once a menu has opened.
+        for menu in (self.menu, self.provider_menu, self.transcription_menu, self.cleanup_menu):
+            menu.aboutToShow.connect(self._mark_headers)
         self._unsubscribe = theme.on_scheme_change(self._scheme_changed)
         # The saved keys are read in the background at launch; until then the menu shows
         # engines as set up. When they land, the menu catches up with the real state.
@@ -333,7 +298,7 @@ class Tray:
 
     def _build(self) -> None:
         m = self.menu
-        self.item_warning = self._action(m, WARNING_TITLE, lambda: self.on_setup(None))
+        self.item_warning = self._action(m, warning_title(), lambda: self.on_setup(None))
         self._set_icon(self.item_warning, "exclamationmark.triangle")
         self.item_warning.setVisible(False)
         self.header_listen = self._header(m, LISTEN_HEADER)
@@ -346,14 +311,17 @@ class Tray:
         m.addSeparator()
         self._build_app(m)
         m.addSeparator()
-        self.item_quit = self._action(m, "Quit Lyssna", self.quit)
+        self.item_quit = self._action(m, "Quit Lyssna", self.quit, spec=host.statusbar.QUIT_SHORTCUT)
 
     def _action(self, menu: QMenu, title: str, fn: Callable[[], None] | None = None, hotkey: str = "",
-                checkable: bool = False) -> QAction:
-        """An item running `fn`, showing the configured shortcut for `hotkey` if given. Without
-        `fn` it is a greyed-out, non-clickable line, as an item without a callback is on the Mac."""
-        spec = str(self.hk.get(hotkey, "")) if hotkey else ""
-        a = QAction(f"{title}\t{self.key_text(spec)}" if spec else title, menu)
+                checkable: bool = False, spec: str = "") -> QAction:
+        """An item running `fn`, showing the configured shortcut for `hotkey` (or the hotkey
+        `spec`) if given. Without `fn` it is a greyed-out, non-clickable line, as an item without
+        a callback is on the Mac."""
+        spec = str(self.hk.get(hotkey, "")) if hotkey else spec
+        keys = self.key_text(spec) if spec else ""
+        a = QAction(f"{title}\t{keys}" if keys else title, menu)
+        a.setMenuRole(QAction.MenuRole.NoRole)  # never moved to a Mac application menu by its title
         a.setCheckable(checkable)
         if fn is None:
             a.setEnabled(False)
@@ -363,23 +331,20 @@ class Tray:
         return a
 
     def _header(self, menu: QMenu, title: str) -> QAction:
-        """A titled section of a menu: a greyed-out line in a small semibold font."""
+        """A titled section of a menu (section_header in the legacy app): a disabled row that
+        host.statusbar makes a native header (Mac) or styles as one (Windows)."""
         a = QAction(title, menu)
+        a.setMenuRole(QAction.MenuRole.NoRole)
         a.setEnabled(False)
-        font = QFont(menu.font())
-        size = font.pointSizeF()
-        if size > 0:
-            font.setPointSizeF(max(1.0, size - 1.0))
-        else:
-            font.setPixelSize(max(1, font.pixelSize() - 1))
-        font.setWeight(QFont.Weight.DemiBold)
-        a.setFont(font)
         a.setData("header")
+        self.style_header(a, menu)
+        self._header_titles.add(title)
         menu.addAction(a)
         return a
 
     def _submenu(self, parent: QMenu, title: str) -> QMenu:
         sub = QMenu(title, parent)
+        sub.menuAction().setMenuRole(QAction.MenuRole.NoRole)
         parent.addMenu(sub)
         return sub
 
@@ -469,7 +434,7 @@ class Tray:
         self.item_local = self._action(s, local_only_title(False), self._toggle_local_only, checkable=True)
         self._build_api_keys(s)
         s.addSeparator()
-        self._action(s, "Edit Config File…", lambda: open_config_file(config.CONFIG_PATH))
+        self._action(s, "Edit Config File…", lambda: host.statusbar.open_text_file(config.CONFIG_PATH))
         self._action(s, "Open Log", lambda: host.open_target(str(config.LOG_DIR / "lyssna.log")))
         self._action(s, "Clear Audio Cache", lambda: self.ctl.reader.cache.clear())
 
@@ -494,9 +459,12 @@ class Tray:
         return self.menu.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText)
 
     def _set_icon(self, action: QAction, symbol: str) -> None:
-        """Show an icon in the menu's text colour in front of an item's title."""
+        """Show an icon in the menu's text colour in front of an item's title. It is a mask too,
+        so a native Mac menu draws it as a template image, as set_symbol does in the legacy app."""
         self._icons[action] = symbol
-        action.setIcon(QIcon(icons.icon_pixmap(symbol, MENU_ICON, self._icon_color(), "regular")))
+        icon = QIcon(icons.icon_pixmap(symbol, MENU_ICON, self._icon_color(), "regular"))
+        icon.setIsMask(True)
+        action.setIcon(icon)
 
     def _scheme_changed(self) -> None:
         for action, symbol in list(self._icons.items()):
@@ -504,17 +472,24 @@ class Tray:
         self._update_icon(force=True)
 
     def _update_icon(self, force: bool = False) -> None:
-        """Re-tint the tray icon when the taskbar's mode changes (or the warning comes on)."""
-        dark = taskbar_is_dark()
-        if force or dark != self._dark_taskbar:
-            self._dark_taskbar = dark
-            self.tray.setIcon(tray_icon(dark, self.warning))
+        """The icon: a template image on the Mac, re-tinted on Windows when the taskbar's mode
+        changes or the warning comes on (host.statusbar decides, and redraws only on a change)."""
+        host.statusbar.set_icon(self.tray, self.warning, force)
+
+    def _mark_headers(self) -> None:
+        host.statusbar.mark_headers(self.tray, self._header_titles)
+
+    def _show_status(self) -> None:
+        """The title beside the icon where the system can show it, else the tooltip in words."""
+        title = self.title if host.STATUS_TEXT_BESIDE_ICON else ""
+        host.statusbar.show_status(self.tray, title, tooltip_text(self.line, self.warning))
 
     # -- actions ---------------------------------------------------------------------------
 
     def _activated(self, reason) -> None:
-        """A left click opens the same menu a right click does."""
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+        """A left click opens the same menu a right click does, where the system does not
+        already (on the Mac it does, and a second popup would open the menu twice)."""
+        if reason == QSystemTrayIcon.ActivationReason.Trigger and not host.statusbar.CLICK_OPENS_MENU:
             self.menu.popup(QCursor.pos())
 
     def _set_speed(self, speed: float) -> None:
@@ -644,15 +619,17 @@ class Tray:
             self.item_login.setChecked(host.autostart.is_enabled())
 
     def show_permission_warning(self) -> None:
-        """The keyboard and mouse hooks did not start: say so at the top of the menu (it opens
-        setup) and put a warning dot on the icon."""
+        """The keyboard and selection access is missing: say so at the top of the menu (it
+        opens setup), and beside the icon (⚠︎) or with a warning dot on it."""
         self.warning = True
         self.item_warning.setVisible(True)
         self._update_icon(force=True)
-        self.tray.setToolTip(tooltip_text(self.title, self.warning))
+        self._tick()
 
     def show(self) -> None:
         self.tray.show()
+        self._show_status()
+        self._mark_headers()
 
     def quit(self) -> None:
         """Call the app's quit, then end the Qt loop. exit(0), not quit(): Qt 6 lets a window
@@ -800,22 +777,23 @@ class Tray:
         dictating = not menubar_text_allowed(MenuState(dictation=self.ctl.dictation.state))
         if self.item_dictate.text() != self._dictate_title():
             self.item_dictate.setText(self._dictate_title())
+        line = download_line(what, download) if download is not None else ""
+        self.title = menubar_title(st.state, st.index, st.total, dictating=dictating, download=line,
+                                   message=self.ctl.message, warning=self.warning)
         if dictating:  # the pill is the indicator
-            self.title = ""
-        elif download is not None:  # a reading asked for meanwhile starts once this finishes
-            self.title = download_line(what, download)
-            self.item_now.setText(self.title)
+            self.line = ""
+        elif line:  # a reading asked for meanwhile starts once this finishes
+            self.line = line
+            self.item_now.setText(line)
         elif self.ctl.message:
-            self.title = self.ctl.message[:60]
-            self.item_now.setText(self.ctl.message[:80])
+            self.line = self.ctl.message[:TITLE_MAX]
+            self.item_now.setText(self.ctl.message[:NOW_PLAYING_MAX])
         elif st.state == "idle":
-            self.title = ""
+            self.line = ""
         else:
-            self.title = status_line(st.state, st.index, st.total)
+            self.line = status_line(st.state, st.index, st.total)
             self.item_now.setText(short(now_playing(st.state, st.index, st.total, st.text)))
-        tip = tooltip_text(self.title, self.warning)
-        if self.tray.toolTip() != tip:
-            self.tray.setToolTip(tip)
+        self._show_status()
         self._update_icon()
         if self.item_button.isChecked() != bool(self.ctl.selection_button_enabled):
             self._refresh_checks()
@@ -950,28 +928,89 @@ def _preview_palette(menu: QMenu) -> None:
     menu.setPalette(pal)
 
 
-def _preview_tray(open_menu: str = "", warning: bool = False, features: dict | None = None, **state) -> QWidget:
-    """The menu (and one open submenu) side by side on a stage, as Windows would draw them."""
-    from ..hotkeys import tokens
-    from ..win import hotkeys as win_hotkeys
+def _preview_keys(style: str) -> Callable[[str], str]:
+    """How a hotkey shows at the right of an item in `style` ("mac" or "windows"), on any
+    computer: the Mac's tab text as the glyphs its native menu draws, Windows' as written."""
+    from PySide6.QtGui import QKeySequence
+
+    from ..mac import statusbar as mac_statusbar
+    from ..win import statusbar as win_statusbar
+
+    if style == "mac":
+        return lambda spec: QKeySequence.fromString(mac_statusbar.shortcut_text(spec)).toString(
+            QKeySequence.SequenceFormat.NativeText) if spec else ""
+    return win_statusbar.shortcut_text
+
+
+class _StatusStrip(QWidget):
+    """A strip standing in for the menu bar (Mac) or the tooltip (Windows) above a preview menu:
+    the icon and what shows beside it, or the tooltip's text."""
+
+    HEIGHT = 28
+
+    def __init__(self, text: str, beside_icon: bool, parent: QWidget):
+        super().__init__(parent)
+        self.text, self.beside_icon = text, beside_icon
+        self.setFixedHeight(self.HEIGHT)
+
+    def paintEvent(self, ev) -> None:
+        from ..win.statusbar import tray_pixmap
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.fillRect(self.rect(), theme.surface())
+        p.setFont(theme.ui_font(13))
+        p.setPen(theme.content())
+        x = 10.0
+        if self.beside_icon:
+            dpr = p.device().devicePixelRatioF()
+            pm = tray_pixmap(round(18 * dpr), theme.is_dark())
+            pm.setDevicePixelRatio(dpr)
+            p.drawPixmap(round(x), (self.HEIGHT - 18) // 2, pm)
+            x += 22
+            text = self.text
+        else:
+            text = f"Tooltip: {self.text}"
+        p.drawText(QRectF(x, 0, self.width() - x, self.HEIGHT), int(Qt.AlignmentFlag.AlignVCenter), text)
+        p.end()
+
+
+def _preview_tray(open_menu: str = "", warning: bool = False, features: dict | None = None, style: str = "",
+                  **state) -> QWidget:
+    """The menu (and one open submenu) side by side on a stage, drawn by Qt (the Mac's is drawn
+    natively, so its rows only approximate it), under a strip showing what the icon shows. `style`
+    forces "mac" or "windows" shortcuts, warning row and status; by default this computer's."""
+    from ..win import statusbar as win_statusbar
+
+    style = style or ("mac" if host.STATUS_TEXT_BESIDE_ICON else "windows")
 
     class PreviewTray(Tray):
-        key_text = staticmethod(lambda spec: win_hotkeys.pretty(tokens(spec)))
+        key_text = staticmethod(_preview_keys(style))
+        style_header = staticmethod(win_statusbar.style_header)  # the native Mac header is a dim bold row too
 
     tray = PreviewTray(_PreviewController(**state), features)
     tray.timer.stop()
     tray.whats_new_pending = state.get("whats_new", False)
+    tray.item_quit.setText(f"Quit Lyssna\t{_preview_keys(style)('cmd+q')}" if style == "mac" else "Quit Lyssna")
     if warning:
         tray.show_permission_warning()
+        tray.item_warning.setText(ACCESSIBILITY_WARNING_TITLE if style == "mac" else HOOKS_WARNING_TITLE)
     tray._tick()
     if state.get("support"):  # hidden until the website has an address; shown here to review the heart
         tray.item_support.setVisible(True)
         tidy_separators(tray.menu)
     menus = [tray.menu, *{"provider": [tray.provider_menu], "settings": [tray.settings_menu],
                           "keys": [tray.settings_menu, tray.key_menu], "speed": [tray.speed_menu],
-                          "voice": [tray.voice_menu]}.get(open_menu, [])]
+                          "voice": [tray.voice_menu], "transcription": [tray.transcription_menu],
+                          "cleanup": [tray.cleanup_menu]}.get(open_menu, [])]
     stage = QWidget()
-    x, y, h = 0, 0, 0
+    if style == "mac":
+        status = _StatusStrip(tray.title or "(the icon alone)", True, stage)
+    else:
+        tip = tooltip_text(tray.line) if tray.line or not tray.warning else HOOKS_WARNING_TITLE
+        status = _StatusStrip(tip, False, stage)
+    top = _StatusStrip.HEIGHT + 6
+    x, y, h = 0, top, top
     for i, menu in enumerate(menus):
         _preview_palette(menu)
         if i:  # line each submenu up with its row in the menu before it
@@ -980,19 +1019,23 @@ def _preview_tray(open_menu: str = "", warning: bool = False, features: dict | N
             if a in tray._icons:
                 tray._set_icon(a, tray._icons[a])
         menu.ensurePolished()
-        menu.adjustSize()  # lays out the rows, so the next submenu can find its own
+        menu.resize(menu.sizeHint())  # lays out the rows, so the next submenu can find its own; adjustSize
+        # would cap a wide menu at two thirds of the screen
         menu.setParent(stage, Qt.WindowType.Widget)
         menu.move(x, y)
         menu.show()
         x += menu.width() - 4
         h = max(h, y + menu.height())
-    stage.resize(x + 4, h)
+    stage.resize(max(x + 4, 260), h)
+    status.setGeometry(0, 0, stage.width(), _StatusStrip.HEIGHT)
     stage._tray = tray  # keeps the menus' owner alive as long as the preview
     return stage
 
 
 def _preview_icons() -> QWidget:
-    """The tray icon at 16, 24 and 32 px on a dark and a light taskbar, with and without the dot."""
+    """The Windows tray icon at 16, 24 and 32 px on a dark and a light taskbar, with and without the dot."""
+    from ..win.statusbar import tray_pixmap
+
     sizes = (16, 24, 32)
 
     class Icons(QWidget):
@@ -1024,16 +1067,23 @@ def _preview_about() -> QWidget:
     return d
 
 
+_READING = Status(state="playing", index=2, total=5, text="Select any text, press the shortcut, and I will read it to you.")
+
 PREVIEWS = {
     "tray.menu.idle": lambda: _preview_tray(),
-    "tray.menu.reading": lambda: _preview_tray(status=Status(state="playing", index=2, total=5,
-                                                             text="Select any text, press the shortcut, and I will read it to you.")),
+    "tray.menu.reading": lambda: _preview_tray(status=_READING),
+    "tray.menu.reading.mac": lambda: _preview_tray(style="mac", status=_READING),
+    "tray.menu.reading.windows": lambda: _preview_tray(style="windows", status=_READING),
+    "tray.menu.paused.mac": lambda: _preview_tray(style="mac", status=Status(state="paused", index=2, total=5, text="Hello.")),
+    "tray.menu.nodictate": lambda: _preview_tray(features={"dictate": False}),
     "tray.menu.provider": lambda: _preview_tray("provider", keys=("cartesia",)),
+    "tray.menu.transcription": lambda: _preview_tray("transcription"),
+    "tray.menu.cleanup": lambda: _preview_tray("cleanup"),
     "tray.menu.settings": lambda: _preview_tray("settings", keys=("cartesia",), usage="This month: 2k characters, about $0.10"),
     "tray.menu.keys": lambda: _preview_tray("keys", keys=("cartesia",)),
     "tray.menu.managed": lambda: _preview_tray("settings", managed=True),
-    "tray.menu.warning": lambda: _preview_tray(warning=True, whats_new=True, support=True),
-    "tray.menu.dictate": lambda: _preview_tray(features={"dictate": True, "history": True}),
+    "tray.menu.warning.mac": lambda: _preview_tray(style="mac", warning=True, whats_new=True, support=True),
+    "tray.menu.warning.windows": lambda: _preview_tray(style="windows", warning=True, whats_new=True, support=True),
     "tray.icons": _preview_icons,
     "tray.about": _preview_about,
 }

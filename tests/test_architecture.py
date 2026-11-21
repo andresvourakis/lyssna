@@ -234,7 +234,8 @@ def test_both_twins_define_what_the_shared_code_uses():
     paired = {name: pair for name, pair in host.MODULES.items() if all(pair)}
     checked = {name: attrs for name, attrs in used.items() if name in paired}
     # Every pair the shared code reaches is seen here, so the scan itself is not silently empty.
-    assert {"capture", "audio", "hotkey_table", "credentials", "policy", "autostart", "ipc", "events", "app", "instance"} <= set(checked)
+    assert {"capture", "audio", "hotkey_table", "credentials", "policy", "autostart", "ipc", "events", "app", "instance",
+            "window"} <= set(checked)
     missing = []
     for name, attrs in sorted(checked.items()):
         for module in paired[name]:

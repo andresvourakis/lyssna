@@ -5,6 +5,7 @@ reviewed on any computer (a Mac included) side by side with the Mac app.
     python -m lyssna.ui.preview --list        the preview names
     python -m lyssna.ui.preview <name>        one preview, live
     python -m lyssna.ui.preview --dark        force dark mode (or --light)
+    python -m lyssna.ui.preview --fonts windows   draw with Windows's fonts (or mac) on any computer
     python -m lyssna.ui.preview --shots DIR   every preview in both schemes to DIR/<name>-light.png
                                                  and DIR/<name>-dark.png, at 2x, then exit
 
@@ -243,11 +244,14 @@ def main(argv: list[str] | None = None) -> int:
     scheme.add_argument("--dark", action="store_true", help="force dark mode")
     scheme.add_argument("--light", action="store_true", help="force light mode")
     ap.add_argument("--shots", metavar="DIR", help="save every preview in both schemes as PNG files and exit")
+    ap.add_argument("--fonts", choices=sorted(theme.FONT_SETS), help="draw with this system's fonts instead of this computer's")
     args = ap.parse_args(argv)
 
     if (args.shots or args.list) and QApplication.instance() is None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # no windows flash up
     app = _app()
+    if args.fonts:
+        theme.use_fonts(args.fonts)
     previews = discover()
 
     if args.list:

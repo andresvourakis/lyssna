@@ -66,6 +66,24 @@ SCRIPT = textwrap.dedent(
         home = "lyssna.app" if name == "app" else "lyssna.win."  # the one app, and the Windows plumbing
         assert (module is None) if windows is None else (module.__name__ == windows and windows.startswith(home)), name
     assert host.interface() == "new"
+    import inspect
+    from lyssna.mac import appearance as mac_appearance  # its AppKit loads only inside its functions
+
+    def functions(module):
+        return {n for n, f in vars(module).items() if inspect.isfunction(f) and not n.startswith("_")}
+
+    assert host.appearance.__name__ == "lyssna.win.appearance"
+    assert functions(host.appearance) == functions(mac_appearance) == {"font_files", "tracking", "reduce_motion"}
+    assert host.appearance.TEXT_FAMILY == "Inter" and host.appearance.reduce_motion() is False
+    assert all(p.is_file() for p in host.appearance.font_files())
+    import inspect
+    from lyssna.mac import window as mac_window
+
+    def public_functions(module):
+        return {n for n, f in vars(module).items() if inspect.isfunction(f) and f.__module__ == module.__name__ and not n.startswith("_")}
+    assert host.window.__name__ == "lyssna.win.window"
+    assert public_functions(host.window) == public_functions(mac_window), (public_functions(host.window), public_functions(mac_window))
+    assert host.window.POINTS_ARE_PHYSICAL is True and mac_window.POINTS_ARE_PHYSICAL is False
     for name in ("mic", "insert", "field_probe", "globe", "launch_agent", "speechy"):
         try:
             host.require(name)

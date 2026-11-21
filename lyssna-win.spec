@@ -139,6 +139,7 @@ a = Analysis(
     binaries=[*collect_dynamic_libs("espeakng_loader"), *ffmpeg_dlls()],
     datas=[
         ("lyssna/ui/assets/menubar.png", "lyssna/ui/assets"),
+        ("lyssna/ui/assets/fonts", "lyssna/ui/assets/fonts"),  # Inter and Literata, with their licences
         *collect_data_files("kokoro_onnx"),
         *copy_metadata("kokoro-onnx"),  # kokoro_onnx reads its own version at import
         (espeakng_loader.get_data_path(), "espeak-ng-data"),

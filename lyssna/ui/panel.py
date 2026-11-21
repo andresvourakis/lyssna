@@ -4,8 +4,11 @@ legacy/ui/panel.py.
 
 Never taking focus is the point. The play button and the player sit over other apps while the
 user's text stays selected there, so showing or clicking one must not activate it: Qt's Tool,
-frameless, stay-on-top and does-not-accept-focus flags plus WA_ShowWithoutActivating, and on
-Windows WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW (no taskbar button) on the native window.
+frameless, stay-on-top and does-not-accept-focus flags plus WA_ShowWithoutActivating, and the
+native settings Qt cannot express, which the platform twin applies (host.window.make_floating:
+on a Mac a non-activating NSPanel on every Space and above full-screen apps, on Windows
+WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW). Qt resets some of those settings when a window flag
+changes, so every flag change goes through _set_window_flag, which re-applies them.
 
 As on the Mac, FloatingPanel owns its window (`self.panel`, a PanelWindow) instead of being one,
 so subclasses keep plain attributes like `width` and read like their Mac twins. Subclasses lay
@@ -22,17 +25,18 @@ Dragging follows DragPanel.sendEvent_: only when `draggable`; widgets marked
 `consumes_mouse = True` (the scrub bar) get their own events; a press that travels less than
 layout.panel.DRAG_SLOP is a click, delivered to the button under the mouse or else to clicked().
 
-The Mac panel also repairs itself after a macOS window-server quirk; Windows has no such quirk,
-so that part is not ported."""
+The legacy Mac panel also rebuilds itself when the window server drops it from every Space (a
+quirk seen with AppKit panels). That is not ported: order_front only asks, a moment after
+showing, whether the window server lists the window as on screen, and logs a warning when it
+does not, so the side-by-side stage can see whether the quirk exists under Qt too."""
 
 from __future__ import annotations
 
 import logging
-import sys
 import weakref
 from collections.abc import Callable
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QVariantAnimation
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -43,6 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import host
 from . import coords, theme
 from .layout.panel import DRAG_SLOP
 
@@ -56,61 +61,10 @@ SHADOW_LAYERS = (  # (blur radius, y offset, alpha)
     (3.0, 0.5, 0.14),
 )
 FRAME_SECS = 0.25  # NSAnimationContext's default, for animated set_frame
-
-# Windows extended styles.
-GWL_EXSTYLE = -20
-WS_EX_TRANSPARENT = 0x00000020
-WS_EX_TOOLWINDOW = 0x00000080
-WS_EX_NOACTIVATE = 0x08000000
-SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0004, 0x0010
-SWP_FRAMECHANGED, SWP_SHOWWINDOW = 0x0020, 0x0040
-HWND_TOPMOST = -1
+VERIFY_SECS = 0.25  # after an order-front, when to ask whether the window is on screen (the legacy VERIFY_DELAY)
 
 WINDOW_FLAGS = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
                 | Qt.WindowType.WindowDoesNotAcceptFocus | Qt.WindowType.NoDropShadowWindowHint)
-
-
-# -- Windows native styles ---------------------------------------------------------------------
-
-
-def _user32():
-    import ctypes
-    from ctypes import wintypes
-
-    u = ctypes.windll.user32
-    long_ptr = ctypes.c_ssize_t
-    u.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
-    u.GetWindowLongPtrW.restype = long_ptr
-    u.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, long_ptr]
-    u.SetWindowLongPtrW.restype = long_ptr
-    u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
-    u.SetWindowPos.restype = wintypes.BOOL
-    return u
-
-
-def set_ex_style(win_id: int, add: int, remove: int = 0) -> None:
-    """OR `add` into (and clear `remove` from) a native window's extended style. Windows only."""
-    if sys.platform != "win32":
-        return
-    try:
-        u = _user32()
-        hwnd = int(win_id)
-        style = u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
-        new = (style | add) & ~remove
-        if new != style:
-            u.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new)
-            u.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
-    except Exception:
-        log.warning("could not set the window's extended style", exc_info=True)
-
-
-def _bring_to_top(win_id: int) -> None:
-    """Topmost and shown, without activating. Windows only."""
-    try:
-        u = _user32()
-        u.SetWindowPos(int(win_id), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
-    except Exception:
-        log.warning("could not bring the window to the top", exc_info=True)
 
 
 # -- the shadow --------------------------------------------------------------------------------
@@ -453,10 +407,22 @@ class FloatingPanel:
         """Show above everything without taking focus."""
         if not self.panel.isVisible():
             self.panel.show()
-        if sys.platform == "win32":
-            _bring_to_top(self.panel.winId())
-        else:
-            self.panel.raise_()
+        host.window.bring_to_top(self.panel)
+        ref = weakref.ref(self)
+
+        def check() -> None:
+            me = ref()
+            if me is not None:
+                me._check_on_screen()
+        QTimer.singleShot(round(VERIFY_SECS * 1000), self.panel, check)  # dropped if the window goes first
+
+    def _check_on_screen(self) -> None:
+        """Log when the window server does not list the shown window as on screen (see the
+        module docstring). Only a log line: nothing is rebuilt."""
+        if not self.panel.isVisible():
+            return
+        if host.window.is_on_screen(self.panel) is False:
+            log.warning("%s window not on screen after order-front", type(self).__name__)
 
     def hide(self) -> None:
         if self._frame_anim is not None:
@@ -492,10 +458,7 @@ class FloatingPanel:
         """Let every click fall through to the window below (the tip, the drop-zone hint)."""
         self._click_through = bool(on)
         self.panel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, self._click_through)
-        handle = self.panel.windowHandle()
-        if handle is not None:
-            handle.setFlag(Qt.WindowType.WindowTransparentForInput, self._click_through)
-        self._apply_native_styles()
+        self._set_window_flag(Qt.WindowType.WindowTransparentForInput, self._click_through)
 
     def click_through(self) -> bool:
         return self._click_through
@@ -543,17 +506,20 @@ class FloatingPanel:
     # -- native styles --------------------------------------------------------------------------
 
     def _apply_native_styles(self) -> None:
-        """Windows: no activation, no taskbar button, and click-through when asked. Qt may
-        rebuild the native window or its styles, so this runs again on show and on a new winId."""
-        if sys.platform != "win32":
-            return
-        add = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
-        remove = 0
-        if self._click_through:
-            add |= WS_EX_TRANSPARENT
-        else:
-            remove = WS_EX_TRANSPARENT
-        set_ex_style(self.panel.winId(), add, remove)
+        """The platform's floating-panel settings and the click-through state, on the native
+        window. Qt may rebuild the native window or its styles, so this runs again on show, on a
+        new winId and after every window flag change."""
+        host.window.make_floating(self.panel)
+        host.window.set_click_through(self.panel, self._click_through)
+
+    def _set_window_flag(self, flag: Qt.WindowType, on: bool) -> None:
+        """The one place the panel changes a Qt window flag. Qt re-applies its own window styles
+        when a flag changes (on a Mac it resets the style mask and the level), so the native
+        settings go back on straight after."""
+        handle = self.panel.windowHandle()
+        if handle is not None:
+            handle.setFlag(flag, on)
+        self._apply_native_styles()
 
     # -- dragging -------------------------------------------------------------------------------
 

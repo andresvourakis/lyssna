@@ -7,17 +7,24 @@ call them inside paintEvent, never at construction, and a widget follows a light
 as soon as it repaints. on_scheme_change tells you when to repaint (FloatingPanel already does).
 
 Every number comes from layout/tokens.py. Sizes are logical pixels: 13 pt on the Mac is 13 px
-here, which is why the fonts use setPixelSize."""
+here, which is why the fonts use setPixelSize.
+
+The fonts come from host.appearance: Apple's on the Mac, tuned to AppKit's widths, and the
+bundled free matches (Inter, Literata) on Windows, tuned to the Mac's. use_fonts() forces one
+set, so the preview on a Mac can show what Windows will draw."""
 
 from __future__ import annotations
 
+import importlib
 import logging
-import sys
 from collections.abc import Callable
+from types import ModuleType
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication
+from PySide6.QtCore import QObject, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QGuiApplication, QPainter
+from PySide6.QtWidgets import QWidget
 
+from .. import host
 from .layout.tokens import (
     CLEAR_GLOW_ALPHA,
     CONTENT_DIM_ALPHA,
@@ -171,6 +178,9 @@ def panel_border() -> QColor:
 
 
 # -- fonts -------------------------------------------------------------------------------------
+#
+# A text style is (kind, pixel size, weight). kind is "text" (the system font), "italic", "digits"
+# (tabular figures, the twin of the Mac's monospacedDigitSystemFont) or "serif" (the headlines).
 
 _WEIGHTS = {
     "regular": QFont.Weight.Normal,
@@ -179,16 +189,35 @@ _WEIGHTS = {
     "bold": QFont.Weight.Bold,
 }
 
-_families: dict[str, str | None] = {}
+# Every text style the app uses, from the AppKit interface (lyssna/legacy/ui): the setup and
+# history windows, the player, the toasts and What's new. The Windows twin's spacing table is
+# measured for exactly these, and a test holds the two together; a new style goes here first.
+TEXT_STYLES: tuple[tuple[str, int, str], ...] = (
+    ("text", 11, "regular"), ("text", 11, "semibold"),
+    ("text", 12, "regular"), ("text", 12, "medium"), ("text", 12, "semibold"),
+    ("text", 13, "regular"), ("text", 13, "medium"), ("text", 13, "semibold"), ("text", 13, "bold"),
+    ("text", 14, "regular"), ("text", 14, "medium"), ("text", 14, "semibold"),
+    ("italic", 12, "regular"),
+    ("digits", 11, "regular"), ("digits", 11, "medium"), ("digits", 12, "regular"), ("digits", 12, "semibold"),
+    ("digits", 28, "semibold"),
+    ("serif", 20, "semibold"), ("serif", 22, "semibold"),
+)
+
+FONT_SETS = {"mac": "lyssna.mac.appearance", "windows": "lyssna.win.appearance"}
+
+_forced: ModuleType | None = None  # the font set use_fonts() chose, None for this computer's
+_loaded: set[ModuleType] = set()  # the font sets whose files are in Qt's font database
+_fonts: dict[tuple[ModuleType, str, int, str], QFont] = {}
 
 
-def _first_family(names: tuple[str, ...]) -> str | None:
-    """The first of `names` the font database has, or None."""
-    key = "|".join(names)
-    if key not in _families:
-        have = set(QFontDatabase.families())
-        _families[key] = next((n for n in names if n in have), None)
-    return _families[key]
+def use_fonts(name: str | None) -> None:
+    """Draw with the "mac" or "windows" font set whatever the computer (the preview and tests),
+    or None for this computer's own."""
+    global _forced
+    if name is not None and name not in FONT_SETS:
+        raise ValueError(f"unknown font set {name!r}")
+    _forced = importlib.import_module(FONT_SETS[name]) if name else None
+    _fonts.clear()
 
 
 def _weight(weight: str) -> QFont.Weight:
@@ -198,67 +227,112 @@ def _weight(weight: str) -> QFont.Weight:
         raise ValueError(f"unknown font weight {weight!r}") from None
 
 
-def ui_font(size: float, weight: str = "regular") -> QFont:
-    """The system interface font at `size` logical pixels: Segoe UI Variable Text (or Segoe UI)
-    on Windows, the platform's own elsewhere so the preview on a Mac looks native too."""
-    if sys.platform == "win32":
-        family = _first_family(("Segoe UI Variable Text", "Segoe UI"))
-    else:
-        # The platform's own; the offscreen platform (shots, tests) names a generic family that
-        # does not exist, so on a Mac fall back to the system font by its real name.
-        system = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
-        family = _first_family((system, ".AppleSystemUIFont", "Helvetica Neue"))
-    font = QFont(family) if family else QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
-    font.setPixelSize(max(1, round(size)))
-    font.setWeight(_weight(weight))
-    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-    return font
+def _load(fonts: ModuleType) -> None:
+    """Add the font set's files to Qt's font database, once, when there is an application."""
+    if fonts in _loaded or QGuiApplication.instance() is None:
+        return
+    _loaded.add(fonts)
+    for path in fonts.font_files():
+        if QFontDatabase.addApplicationFont(str(path)) < 0:
+            log.warning("could not load the font %s", path)
+
+
+def _font(kind: str, size: float, weight: str) -> QFont:
+    fonts = _forced or host.appearance
+    px = max(1, round(size))
+    key = (fonts, kind, px, weight)
+    if key not in _fonts:
+        _weight(weight)  # an unknown weight fails here, before anything is measured
+        _load(fonts)
+        font = QFont(fonts.SERIF_FAMILY if kind == "serif" else fonts.TEXT_FAMILY)
+        font.setPixelSize(px)
+        font.setWeight(_weight(weight))
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        font.setItalic(kind == "italic")
+        if kind == "digits":
+            font.setFeature(QFont.Tag("tnum"), 1)
+        gap = fonts.tracking(kind, px, weight, QFontMetricsF(font).horizontalAdvance)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, gap)
+        _fonts[key] = font
+    return QFont(_fonts[key])
+
+
+def ui_font(size: float, weight: str = "regular", *, italic: bool = False) -> QFont:
+    """The interface font at `size` logical pixels: San Francisco on the Mac (as AppKit draws
+    it), Inter on Windows. `italic` is the history's original-transcript style."""
+    return _font("italic" if italic else "text", size, weight)
 
 
 def digits_font(size: float, weight: str = "regular") -> QFont:
     """ui_font with tabular figures, so times and speeds do not jiggle as they count (the twin
     of the Mac's monospacedDigitSystemFont)."""
-    font = ui_font(size, weight)
-    try:
-        font.setFeature(QFont.Tag("tnum"), 1)
-    except (AttributeError, TypeError):  # older Qt: Segoe UI's figures are tabular anyway
-        pass
-    return font
+    return _font("digits", size, weight)
 
 
 def serif_font(size: float, weight: str = "semibold") -> QFont:
-    """The window headline serif: Georgia on Windows. The Mac uses its system serif, New York;
-    in the preview on a Mac we use New York when Qt can see it, else Georgia."""
-    names = ("Georgia", "Times New Roman") if sys.platform == "win32" else ("New York", "Georgia", "Times New Roman")
-    family = _first_family(names)
-    font = QFont(family) if family else ui_font(size, weight)
-    font.setPixelSize(max(1, round(size)))
-    font.setWeight(_weight(weight))
-    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-    return font
+    """The window headline serif: New York on the Mac, Literata on Windows."""
+    return _font("serif", size, weight)
+
+
+def _style_font(kind: str, size: int, weight: str) -> QFont:
+    if kind == "serif":
+        return serif_font(size, weight)
+    if kind == "digits":
+        return digits_font(size, weight)
+    return ui_font(size, weight, italic=kind == "italic")
 
 
 # -- motion ------------------------------------------------------------------------------------
 
-SPI_GETCLIENTAREAANIMATION = 0x1042
-
 
 def reduce_motion() -> bool:
-    """Has the user turned animations off (Windows: Settings > Accessibility > Visual effects >
-    Animation effects)? Always False off Windows."""
-    if sys.platform != "win32":
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
+    """Has the user asked the system for less motion? Animations then jump to their end."""
+    return host.appearance.reduce_motion()
 
-        fn = ctypes.windll.user32.SystemParametersInfoW
-        fn.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
-        fn.restype = wintypes.BOOL
-        on = wintypes.BOOL(True)
-        if not fn(SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(on), 0):
-            return False
-        return not bool(on.value)
-    except Exception:
-        log.debug("could not read the animation setting", exc_info=True)
-        return False
+
+# -- previews (python -m lyssna.ui.preview) ----------------------------------------------------
+
+_SAMPLES = {
+    "text": "Select text in any app and press",
+    "italic": "The original transcript, as it was heard",
+    "digits": "0:00  1:11 / 10:08  -0:42  1.25×  1,204",
+    "serif": "Welcome to Lyssna",
+}
+
+
+class _FontSheet(QWidget):
+    """Every text style: its name, a line of the app's wording, and digits."""
+
+    ROW_GAP = 10.0
+    LABEL_W = 150.0
+
+    def __init__(self):
+        super().__init__()
+        rows = sum(max(18.0, size * 1.5) + self.ROW_GAP for _kind, size, _weight in TEXT_STYLES)
+        self.setFixedSize(760, round(rows + 52))
+
+    def paintEvent(self, ev) -> None:
+        fonts = _forced or host.appearance
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.fillRect(self.rect(), surface())
+        p.setPen(content_dim())
+        p.setFont(ui_font(11))
+        p.drawText(QRectF(16, 12, 720, 18), int(Qt.AlignmentFlag.AlignVCenter),
+                   f"{fonts.TEXT_FAMILY} and {fonts.SERIF_FAMILY}")
+        y = 40.0
+        for kind, size, weight in TEXT_STYLES:
+            h = max(18.0, size * 1.5)
+            p.setPen(content_dim())
+            p.setFont(ui_font(11))
+            p.drawText(QRectF(16, y, self.LABEL_W, h), int(Qt.AlignmentFlag.AlignVCenter), f"{kind} {size} {weight}")
+            p.setPen(content())
+            font = _style_font(kind, size, weight)
+            p.setFont(font)
+            sample = _SAMPLES[kind] if kind == "digits" else f"{_SAMPLES[kind]}  0123456789"
+            p.drawText(QRectF(16 + self.LABEL_W, y, 760 - self.LABEL_W - 24, h), int(Qt.AlignmentFlag.AlignVCenter), sample)
+            y += h + self.ROW_GAP
+        p.end()
+
+
+PREVIEWS = {"fonts": _FontSheet}

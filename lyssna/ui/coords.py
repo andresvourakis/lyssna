@@ -19,11 +19,12 @@ below them ask Qt about the screens and the cursor."""
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterable, Sequence
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF
 from PySide6.QtGui import QCursor, QGuiApplication, QScreen
+
+from .. import host
 
 Rect = tuple[float, float, float, float]
 
@@ -170,24 +171,25 @@ def _screen_table() -> list[tuple[Rect, float]]:
 
 
 def physical_to_logical(x: float, y: float) -> tuple[float, float]:
-    """A point from the Windows hooks or UI Automation (physical pixels) in Qt logical
-    coordinates. Off Windows the hooks already speak logical units, so the point comes back
-    unchanged (the preview and the tests run on a Mac)."""
-    if sys.platform != "win32":
+    """A point from the system's hooks or UI Automation in Qt logical coordinates. Only where
+    those report physical pixels (host.window.POINTS_ARE_PHYSICAL: Windows) is there anything to
+    convert; the Mac's event taps already speak logical units, so the point comes back unchanged."""
+    if not host.window.POINTS_ARE_PHYSICAL:
         return (float(x), float(y))
     return map_physical_to_logical(float(x), float(y), _screen_table())
 
 
 def logical_to_physical(x: float, y: float) -> tuple[float, float]:
-    """A Qt logical point in physical pixels (unchanged off Windows)."""
-    if sys.platform != "win32":
+    """A Qt logical point in the hooks' pixels (unchanged where those are logical)."""
+    if not host.window.POINTS_ARE_PHYSICAL:
         return (float(x), float(y))
     return map_logical_to_physical(float(x), float(y), _screen_table())
 
 
 def physical_rect_to_logical(rect) -> Rect:
-    """A physical rect (ax_selection bounds) in Qt logical coordinates (unchanged off Windows)."""
-    if sys.platform != "win32":
+    """A rect from UI Automation (ax_selection bounds) in Qt logical coordinates (unchanged
+    where the system already reports logical units)."""
+    if not host.window.POINTS_ARE_PHYSICAL:
         return as_rect(rect)
     return map_physical_rect_to_logical(rect, _screen_table())
 

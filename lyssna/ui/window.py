@@ -9,20 +9,21 @@ edits answer Ctrl+X/C/V/A/Z by themselves, so nothing like the Mac EditingWindow
 is needed here; Escape and Ctrl+W close the window.
 
 Colours are theme.py's functions, read at paint time. Labels keep their colour as a function
-too and take it again when light and dark mode flip. On Windows the title bar is asked to go
-dark with the theme (DwmSetWindowAttribute), so it matches the surface below it."""
+too and take it again when light and dark mode flip. The title bar is asked to go dark with the
+theme through the platform twin (host.window.set_dark_title_bar: DwmSetWindowAttribute on
+Windows; the Mac does it by itself), so it matches the surface below it."""
 
 from __future__ import annotations
 
 import html
 import logging
-import sys
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFontMetricsF, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QLabel, QWidget
 
+from .. import host
 from . import coords, icons, theme
 from .layout.setup import SCREEN_GAP
 from .layout.tokens import CREAM, INK
@@ -33,7 +34,6 @@ log = logging.getLogger("lyssna.ui.window")
 
 MIN_H = 320.0       # the smallest a window gets on a short screen (the Mac setup window's floor)
 LIFT = 0.08         # how far above the middle a window opens, as a share of the screen's height
-DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 SYMBOL_SMALLER = 2.0  # a symbol in front of a text button is this much smaller than the text (as on the Mac)
 TEXT_DISABLED_ALPHA = 0.30
 
@@ -244,26 +244,6 @@ def app_icon() -> QIcon:
     return icon
 
 
-def set_dark_title_bar(widget: QWidget, dark: bool) -> bool:
-    """Ask Windows to draw this window's title bar dark (or light again). Windows 10 20H1 and
-    later honour it; older ones ignore it. Does nothing elsewhere. Returns whether it took."""
-    if sys.platform != "win32":
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        fn = ctypes.windll.dwmapi.DwmSetWindowAttribute
-        fn.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
-        fn.restype = ctypes.c_long
-        value = ctypes.c_int(1 if dark else 0)
-        return fn(wintypes.HWND(int(widget.winId())), DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value),
-                  ctypes.sizeof(value)) == 0
-    except Exception:
-        log.debug("could not set the title bar colour", exc_info=True)
-        return False
-
-
 class LyssnaWindow(QWidget):
     """A normal titled window with a close button only, on the brand surface. Subclasses lay
     out their own children and call fit_height() with the height they need; restyle() is
@@ -298,10 +278,10 @@ class LyssnaWindow(QWidget):
             child.update()
         self.update()
         if self.isVisible():
-            set_dark_title_bar(self, theme.is_dark())
+            host.window.set_dark_title_bar(self, theme.is_dark())
 
     def showEvent(self, ev) -> None:
-        set_dark_title_bar(self, theme.is_dark())
+        host.window.set_dark_title_bar(self, theme.is_dark())
         super().showEvent(ev)
 
     # -- size and place ----------------------------------------------------------------------
@@ -322,7 +302,8 @@ class LyssnaWindow(QWidget):
 
     def show_centered(self) -> None:
         """Bring the window up: centred on the screen under the mouse a little above the middle
-        the first time it opens, then raised and given the keyboard."""
+        the first time it opens, then raised and given the keyboard, with the app brought to
+        the front (on a Mac an app with no Dock icon does not come forward by itself)."""
         if not self.isVisible():
             x, y, w, h = coords.visible_frame(coords.screen_under_mouse())
             if w and h:
@@ -332,6 +313,7 @@ class LyssnaWindow(QWidget):
         self.setVisible(True)
         self.raise_()
         self.activateWindow()
+        host.window.activate_app()
 
     # -- closing -----------------------------------------------------------------------------
 

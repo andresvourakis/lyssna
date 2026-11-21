@@ -167,11 +167,11 @@ def test_fonts_use_logical_pixels(qapp):
         theme.ui_font(13, "black")
 
 
-def test_reduce_motion_is_off_away_from_windows():
+def test_reduce_motion_reads_the_system_setting():
+    from lyssna import host
     from lyssna.ui import theme
 
-    if sys.platform != "win32":
-        assert theme.reduce_motion() is False
+    assert theme.reduce_motion() is host.appearance.reduce_motion()  # the twin's answer; tests/test_ui_fonts.py fakes it
 
 
 # -- mainthread --------------------------------------------------------------------------------

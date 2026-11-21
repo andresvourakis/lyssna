@@ -103,7 +103,10 @@ MODULES: dict[str, tuple[str | None, str | None]] = {
     "policy": ("lyssna.mac.policy", "lyssna.win.policy"),       # read_preference(key): the managed settings
     "autostart": ("lyssna.mac.autostart", "lyssna.win.autostart"),  # is_enabled(), set_enabled(on): start at login
     "ipc": ("lyssna.mac.ipc", "lyssna.win.ipc"),                # ControlServer, send(): the CLI's channel to the app
-    "mic": ("lyssna.mac.mic", None),                            # the microphone and its permission
+    "window": ("lyssna.mac.window", "lyssna.win.window"),       # floating panels that never take focus, Dock icon, title bar
+    "statusbar": ("lyssna.mac.statusbar", "lyssna.win.statusbar"),  # the menu bar or tray item: title, icon, headers, shortcuts
+    "appearance": ("lyssna.mac.appearance", "lyssna.win.appearance"),  # the fonts, their tracking, reduce_motion()
+    "mic": ("lyssna.mac.mic", None),                          # the microphone and its permission
     "insert": ("lyssna.mac.insert", None),                      # the paste pieces dictation uses
     "field_probe": ("lyssna.mac.fieldprobe", None),             # FieldProbe: reads the text field a dictation went into
     "globe": ("lyssna.mac.globe", None),                        # globe_key_action(): the system's Globe key setting
