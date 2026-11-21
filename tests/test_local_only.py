@@ -2,6 +2,8 @@
 launch fallback) and a managed preference can force it on. The defaults domain is the
 in-memory fake from conftest; nothing reads the real one."""
 
+import sys
+
 import pytest
 
 from lyssna import cli, config, policy
@@ -34,6 +36,7 @@ def test_filtering(ctl):
     assert set(ONLINE) == {"inworld", "inworld-flash", "cartesia", "elevenlabs", "openai"}
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_set_provider_refuses_online_engines(ctl):
     ctl.set_local_only(True)
     with pytest.raises(ValueError, match="Keep Everything on This Mac"):
@@ -43,6 +46,7 @@ def test_set_provider_refuses_online_engines(ctl):
     assert ctl.cfg["provider"] == "say"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_turning_it_on_leaves_an_online_engine(ctl):
     ctl.set_provider("inworld")
     ctl.set_local_only(True)
@@ -102,6 +106,7 @@ def test_managed_false_leaves_the_choice_to_the_user(ctl, managed_prefs):
     assert not ctl.local_only()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="CoreFoundation preferences")
 def test_real_reader_reads_our_domain(monkeypatch):
     seen = []
     import CoreFoundation
@@ -123,6 +128,7 @@ def no_app(monkeypatch):
     return played
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_cli_provider_flag_refuses_online_engines(no_app, capsys, monkeypatch):
     config.ensure_dirs()
     config.CONFIG_PATH.write_text(config.TEMPLATE.replace("local_only = false", "local_only = true"))

@@ -4,7 +4,7 @@ be used as set up falls back to the one on this Mac."""
 
 from __future__ import annotations
 
-from ... import policy
+from ... import host, policy
 from .base import Transcriber, TranscriberError
 from .inworld import InworldTranscriber
 from .openai import OpenAITranscriber
@@ -49,7 +49,7 @@ def effective_transcriber(config: dict, wait: bool = True) -> str:
 def refusal(label: str) -> str:
     """The message shown when someone asks for an online engine while local-only mode is on."""
     by = " (set by your organization)" if policy.managed_local_only() else ""
-    return f"{label} sends your voice to an online service, and local-only mode is on{by}. Use the engine on this Mac instead."
+    return f"{label} sends your voice to an online service, and local-only mode is on{by}. Use the engine on this {host.DEVICE} instead."
 
 
 __all__ = ["LOCAL", "REGISTRY", "Transcriber", "TranscriberError", "allowed", "effective_transcriber",

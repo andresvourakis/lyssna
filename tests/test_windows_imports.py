@@ -67,6 +67,20 @@ SCRIPT = textwrap.dedent(
     assert type(keychain._backend).__name__ == "CredentialBackend"
     assert server.send({"cmd": "status"}) is None
     assert "say" not in providers.REGISTRY and providers.local_fallback() == "kokoro"
+
+    import tomllib
+    from lyssna import menu, policy
+    from lyssna.dictation import session
+    assert "This PC" in menu.local_only_title(False)
+    assert "this PC" in providers.REGISTRY["kokoro"].label
+    assert "Ctrl+V" in session.COPIED
+    assert "PC" in policy.refusal("X")
+    assert "Credential Manager" in config.TEMPLATE
+    assert "Library/Caches" not in config.TEMPLATE and "Keychain" not in config.TEMPLATE
+    assert "[say]" not in config.TEMPLATE and tomllib.loads(config.TEMPLATE)["provider"] == "kokoro"
+    for text in (menu.local_only_title(True), menu.LOCAL_HEADER, *menu.KEY_NAMES.values(), providers.REGISTRY["kokoro"].label,
+                 session.COPIED, session.NO_MIC, policy.refusal("X"), config.TEMPLATE):
+        assert "Mac" not in text and "⌘" not in text, text
     blocked = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED)
     assert not blocked, blocked
     print("imported", len(sys.argv) - 1, "modules")

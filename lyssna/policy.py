@@ -52,5 +52,5 @@ def local_only(cfg: dict) -> bool:
 def refusal(label: str) -> str:
     """The message shown when someone asks for an online engine while local-only mode is on."""
     by = " (set by your organization)" if managed_local_only() else ""
-    return (f"{label} sends text to an online service, and \"Keep Everything on This Mac\" is on{by}. "
-            f"Use a voice on this Mac instead.")
+    return (f"{label} sends text to an online service, and \"Keep Everything on This {host.DEVICE}\" is on{by}. "
+            f"Use a voice on this {host.DEVICE} instead.")

@@ -1,6 +1,7 @@
 """Voice picker: per-engine voice lists, persisting the choice, and restarting a reading
 mid-way with the new voice. No real synthesis: providers here are fakes."""
 
+import sys
 import tomllib
 
 import pytest
@@ -35,6 +36,7 @@ def ctl(tmp_path, monkeypatch):
     return c
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_voice_lists_per_provider():
     ids = [v for v, _ in REGISTRY["inworld"].voices]
     assert ids == ["Sarah", "Jason", "Nate", "Luna", "Sofia"]
@@ -73,6 +75,7 @@ def test_unknown_voice_rejected(ctl):
     assert ctl.current_voice() == "Sarah"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_engine_without_voices_has_no_picker(ctl):
     ctl.set_provider("say")
     assert ctl.voices() == []

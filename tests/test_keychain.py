@@ -3,6 +3,7 @@ order, saving from the menu, and the one-time move out of the config file. The K
 the in-memory fake from conftest; nothing here touches the real one or the network."""
 
 import logging
+import sys
 
 import pytest
 
@@ -103,6 +104,7 @@ def test_inworld_engines_share_one_keychain_entry(fake_keychain):
     assert not get_provider("cartesia", {}).configured()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_engines_without_keys_never_ask_the_keychain(fake_keychain):
     get_provider("say", {}).configured()
     get_provider("kokoro", {}).configured()  # depends on the voice files being downloaded, not on a key
@@ -132,6 +134,7 @@ def test_save_puts_the_key_in_the_keychain_and_blanks_the_file(fake_keychain):
     assert get_provider("cartesia", config.load()).api_key == "new-key"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the log names the Keychain")
 def test_save_falls_back_to_the_file_when_the_keychain_fails(fake_keychain, caplog):
     config.load()
     fake_keychain.fail_set = -25308
@@ -193,6 +196,7 @@ def test_migration_runs_once(fake_keychain):
     assert "openai" not in fake_keychain.items
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the Speechy migration runs on the Mac only")
 def test_migration_never_touches_the_old_speechy_config(fake_keychain):
     migrate.OLD_CONFIG_PATH.parent.mkdir(parents=True)
     migrate.OLD_CONFIG_PATH.write_text('[cartesia]\napi_key = "old"\n')

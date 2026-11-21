@@ -1,7 +1,8 @@
 """The reading engine: chunk text, synthesize a few chunks ahead, play them back to back.
 
-Playback uses AVAudioPlayer so pause/resume/speed are native and instant (speed is
-time-stretched with pitch preserved, so faster reading keeps the voice at its natural pitch)."""
+Playback goes through the player host.audio makes for this computer (AVAudioPlayer on the Mac), so
+pause/resume/speed are instant (speed is time-stretched with pitch preserved, so faster reading keeps
+the voice at its natural pitch)."""
 
 from __future__ import annotations
 

@@ -46,7 +46,8 @@ def allowed(name: str, config: dict) -> bool:
 
 def local_fallback() -> str:
     """The engine to land on when the chosen one cannot be used: the free Kokoro voice on
-    this Mac, or the built-in macOS `say` when Kokoro cannot run in this install."""
+    this computer. On the Mac, the built-in `say` when Kokoro cannot run in this install;
+    elsewhere Kokoro even then (there is no system voice to fall back to yet)."""
     if KokoroProvider.can_run() or "say" not in REGISTRY:
         return KokoroProvider.name
     return "say"

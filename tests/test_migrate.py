@@ -1,7 +1,12 @@
 import logging
 import stat
+import sys
+
+import pytest
 
 from lyssna import config, migrate
+
+pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="the Speechy migration runs on the Mac only")
 
 OLD_CONFIG = 'provider = "cartesia"\n\n[cartesia]\napi_key = "secret"\n'
 

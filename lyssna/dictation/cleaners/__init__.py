@@ -4,7 +4,7 @@ be used as set up falls back to the one on this Mac, then to none (rules only)."
 
 from __future__ import annotations
 
-from ... import policy
+from ... import host, policy
 from .base import Cleaner
 from .haiku import HaikuCleaner
 from .s1mini import S1MiniCleaner
@@ -54,7 +54,7 @@ def effective_cleaner(config: dict, wait: bool = True) -> str:
 
 def refusal(label: str) -> str:
     by = " (set by your organization)" if policy.managed_local_only() else ""
-    return f"{label} sends your text to an online service, and local-only mode is on{by}. Use cleanup on this Mac instead."
+    return f"{label} sends your text to an online service, and local-only mode is on{by}. Use cleanup on this {host.DEVICE} instead."
 
 
 __all__ = ["LOCAL", "REGISTRY", "RULES", "Cleaner", "allowed", "cleanup_on", "effective_cleaner", "get_cleaner", "refusal"]

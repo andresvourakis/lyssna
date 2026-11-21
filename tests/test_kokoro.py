@@ -6,6 +6,7 @@ here touches the network or loads onnxruntime."""
 import hashlib
 import io
 import shutil
+import sys
 import tempfile
 import threading
 import wave
@@ -274,6 +275,7 @@ def short_data_dir(monkeypatch):
     shutil.rmtree(d, ignore_errors=True)
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="a short temp dir under /tmp")
 def test_long_espeak_path_is_copied_somewhere_short(tmp_path, short_data_dir):
     deep = tmp_path / ("d" * 160) / "espeak-ng-data"
     deep.mkdir(parents=True)
@@ -288,6 +290,7 @@ def test_long_espeak_path_is_copied_somewhere_short(tmp_path, short_data_dir):
     assert (kokoro.DATA_DIR / "espeak-ng-data" / "phontab").read_bytes() == b"data"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="paths past the Windows MAX_PATH limit")
 def test_espeak_path_still_too_long_raises_instead_of_crashing(tmp_path, monkeypatch):
     monkeypatch.setattr(kokoro, "DATA_DIR", tmp_path / ("h" * 200))
     deep = tmp_path / ("d" * 160)
@@ -297,6 +300,7 @@ def test_espeak_path_still_too_long_raises_instead_of_crashing(tmp_path, monkeyp
     assert not kokoro.DATA_DIR.exists()  # refused before copying anything
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the Mac app bundle's layout")
 def test_frozen_app_uses_the_bundled_espeak(monkeypatch):
     monkeypatch.setattr(kokoro.sys, "_MEIPASS", "/Applications/Lyssna.app/Contents/Frameworks", raising=False)
     lib, data = kokoro._bundled_espeak()
@@ -308,7 +312,9 @@ def test_frozen_app_uses_the_bundled_espeak(monkeypatch):
 
 
 @pytest.mark.parametrize(("name", "off_device"), [
-    ("kokoro", False), ("say", False), ("inworld", True), ("inworld-flash", True),
+    ("kokoro", False),
+    pytest.param("say", False, marks=pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")),
+    ("inworld", True), ("inworld-flash", True),
     ("cartesia", True), ("elevenlabs", True), ("openai", True),
 ])
 def test_privacy_flag_per_engine(name, off_device):
@@ -323,6 +329,7 @@ def ctl(monkeypatch):
     return Controller()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_privacy_note(ctl, fake_keychain):
     assert ctl.cfg["provider"] == "kokoro"
     assert ctl.privacy_note() == "Text stays on this Mac"
@@ -352,6 +359,7 @@ def test_existing_key_user_is_unchanged(fake_keychain, monkeypatch):
     assert c.cfg["provider"] == "cartesia" and c.fell_back_to == ""
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_picking_kokoro_starts_the_download(ctl, small_files, server):
     server.bodies.update(small_files)
     ctl.set_provider("say")

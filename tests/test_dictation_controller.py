@@ -3,6 +3,7 @@ microphone, the speech model, the Globe key), local-only mode, the toasts, the s
 and shutdown. The session runs with a fake pipeline, microphone and paste; the reader is a
 fake; nothing records, plays, pastes, downloads or opens System Settings."""
 
+import sys
 import threading
 import time
 
@@ -243,6 +244,7 @@ def test_cancel_offers_undo_in_a_toast(ctl):
     assert texts(ctl).count("Transcript cancelled") == 1  # one toast per notice, not per status update
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_copied_notice_becomes_a_toast(ctl):
     ctl.dictation.inserter = lambda text: "copied"
     ctl.dictation_start()
@@ -402,6 +404,7 @@ def test_no_globe_hint_when_set_right_or_not_fn(ctl, monkeypatch):
 # -- local-only mode and engine choice -------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_local_only_moves_dictation_to_this_mac(ctl, fake_keychain):
     fake_keychain.items.update({"openai": "k", "anthropic": "k"})
     keychain.clear_cache()  # the launch read found none

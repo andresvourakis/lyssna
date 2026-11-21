@@ -25,6 +25,7 @@ from collections.abc import Callable
 
 import numpy as np
 
+from .. import host
 from . import recorder as recorder_mod
 from .types import DictationError, DictationResult, DictationStatus, Pipeline
 
@@ -36,9 +37,12 @@ UNDO_SECONDS = 5.0     # how long a cancelled recording can be brought back
 NOTICE_SECONDS = 3.0   # how long other notices stay
 
 CANCELLED = "Transcript cancelled"
-COPIED = "Copied. Press ⌘V to paste"
+COPIED = "Copied. Press Ctrl+V to paste" if host.IS_WINDOWS else "Copied. Press ⌘V to paste"
 FAILED = "Dictation failed. Try again."
-NO_MIC = "Lyssna can't use the microphone. Allow it in System Settings > Privacy & Security > Microphone."
+NO_MIC = (
+    "Lyssna can't use the microphone. Allow it in Settings > Privacy & security > Microphone." if host.IS_WINDOWS
+    else "Lyssna can't use the microphone. Allow it in System Settings > Privacy & Security > Microphone."
+)
 ASK_MIC = "Allow the microphone, then dictate again."
 
 _RECORDING = ("recording", "locked")

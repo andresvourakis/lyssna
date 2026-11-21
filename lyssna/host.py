@@ -21,6 +21,10 @@ IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 DEVICE = "Mac" if IS_MAC else "PC"
 
+# Wording that names a place on the computer. On the Mac each is the text the app always used.
+KEY_STORE = "Windows Credential Manager" if IS_WINDOWS else "the Keychain"  # where API keys are saved
+MENU_PLACE = "the Lyssna icon by the clock" if IS_WINDOWS else "the menu bar"  # where Lyssna's menu opens
+
 MIC_SETTINGS_URL = (
     "ms-settings:privacy-microphone" if IS_WINDOWS
     else "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"

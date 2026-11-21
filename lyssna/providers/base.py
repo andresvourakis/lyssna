@@ -6,7 +6,7 @@ from typing import ClassVar
 
 import httpx
 
-from .. import keychain
+from .. import host, keychain
 
 
 @dataclass
@@ -115,7 +115,7 @@ class Provider:
         key = self.api_key
         if not key:
             raise ProviderError(
-                f"No API key for {self.label}. Add one from the menu bar (Settings > API Keys), "
+                f"No API key for {self.label}. Add one from {host.MENU_PLACE} (Settings > API Keys), "
                 f"or set {self.section().upper()}_API_KEY. An api_key under [{self.section()}] in the "
                 f"config file also works."
             )

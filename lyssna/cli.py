@@ -348,7 +348,8 @@ def main(argv: list[str] | None = None) -> int:
     if head is not None and argv[head] in _SUBCOMMANDS:
         return _SUBCOMMANDS[argv[head]](argv[:head] + argv[head + 1 :])
 
-    parser = argparse.ArgumentParser(prog="lyssna", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    usage = __doc__.replace("launch the menu bar app", "launch the app") if host.IS_WINDOWS else __doc__
+    parser = argparse.ArgumentParser(prog="lyssna", description=usage, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--standalone", action="store_true", help="play in this process even if the app is running")
     parser.add_argument("-p", "--provider", help=f"override the voice provider for this run ({', '.join(REGISTRY)})")

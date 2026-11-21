@@ -5,6 +5,7 @@ tests; none come from a recording."""
 import json
 import os
 import stat
+import sys
 
 import pytest
 
@@ -196,6 +197,7 @@ def test_deleted_term_is_not_learned_again():
 # -- storage, hints, use counts ---------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="POSIX file permissions")
 def test_file_is_owner_only_and_round_trips(vocab):
     path = V.default_path()
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600

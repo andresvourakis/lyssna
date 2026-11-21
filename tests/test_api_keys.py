@@ -2,6 +2,7 @@
 is replaced), then it is saved to the (fake) Keychain and the engine is switched. Also the
 "Get a key" links every key-needing engine offers."""
 
+import sys
 from urllib.parse import urlsplit
 
 import httpx
@@ -53,6 +54,7 @@ def test_malformed_key_never_reaches_the_network(ctl, posts, key):
     assert posts == []
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_local_only_refuses_before_any_request(ctl, posts, fake_keychain):
     ctl.set_local_only(True)
     assert "Keep Everything on This Mac" in ctl.add_api_key("cartesia", "good")

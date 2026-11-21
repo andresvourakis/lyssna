@@ -258,7 +258,7 @@ class KokoroProvider(Provider):
     M-series CPU; the model is loaded once and shared."""
 
     name = "kokoro"
-    label = "On this Mac (Kokoro)"
+    label = f"On this {host.DEVICE} (Kokoro)"
     needs_key = False
     sends_text_off_device = False
     setup_hint = "140 MB download"

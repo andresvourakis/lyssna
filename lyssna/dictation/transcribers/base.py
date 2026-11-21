@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 
 import httpx
 
-from ... import keychain
+from ... import host, keychain
 from ...providers.base import error_summary
 
 log = logging.getLogger("lyssna.dictation")
@@ -114,7 +114,7 @@ class Transcriber:
         key = self.api_key
         if not key:
             raise TranscriberError(
-                f"No API key for {self.label}. Add one from the menu bar (Settings > API Keys), "
+                f"No API key for {self.label}. Add one from {host.MENU_PLACE} (Settings > API Keys), "
                 f"or set {self.section().upper()}_API_KEY."
             )
         return key

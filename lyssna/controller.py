@@ -262,7 +262,7 @@ class Controller:
     def set_local_only(self, enabled: bool) -> None:
         """Turn local-only mode on or off (persisted). Turning it on moves off an online engine."""
         if not enabled and self.local_only_managed():
-            raise ValueError("\"Keep Everything on This Mac\" is set by your organization")
+            raise ValueError(f"\"Keep Everything on This {host.DEVICE}\" is set by your organization")
         self.cfg = config.update(local_only=bool(enabled))
         log.info("local-only mode %s", "on" if enabled else "off")
         self._keep_local()
@@ -289,7 +289,7 @@ class Controller:
         if name in cleaners.REGISTRY and not cleaners.allowed(name, self.cfg):
             changes["dictation.cleaner"] = cleaners.LOCAL
         if changes:
-            log.info("local-only mode: dictation moves to the engines on this Mac (%s)", ", ".join(changes))
+            log.info("local-only mode: dictation moves to the engines on this %s (%s)", host.DEVICE, ", ".join(changes))
             self.cfg = config.update(**changes)
 
     def voice_download_progress(self) -> float | None:
@@ -308,7 +308,7 @@ class Controller:
         """One line for the menu saying where the text goes with the current engine."""
         cls = REGISTRY.get(self.cfg.get("provider"))
         if cls is None or not cls.sends_text_off_device:
-            return "Text stays on this Mac"
+            return f"Text stays on this {host.DEVICE}"
         return f"Text is sent to {get_provider(cls.name, self.cfg).recipient()}"
 
     def dictation_privacy_note(self) -> str:
@@ -382,7 +382,7 @@ class Controller:
         except Exception as e:
             log.warning("new %s key rejected: %s", name, error_summary(e))
             return f"That key didn't work. {e}"
-        where = "the Keychain" if config.save_api_key(section, key) else "the config file"
+        where = host.KEY_STORE if config.save_api_key(section, key) else "the config file"
         log.info("saved a new %s API key in %s", section, where)
         self.set_provider(name)
         return ""
@@ -419,7 +419,7 @@ class Controller:
         if error:
             log.warning("new %s key for dictation rejected (%d chars of detail, not logged)", section, len(error))
             return error
-        where = "the Keychain" if config.save_api_key(section, key) else "the config file"
+        where = host.KEY_STORE if config.save_api_key(section, key) else "the config file"
         log.info("saved a new %s API key in %s", section, where)
         use(name)
         return ""

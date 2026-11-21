@@ -5,6 +5,7 @@ written for the tests; none come from a recording."""
 import json
 import os
 import stat
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -245,6 +246,7 @@ def test_week_keys_sort_by_date():
 # -- the file ----------------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="POSIX file permissions")
 def test_file_is_owner_only_and_written_atomically(store):
     store.add(result())
     path = H.default_path()

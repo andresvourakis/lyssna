@@ -1,4 +1,5 @@
-"""Config lives at ~/.config/lyssna/config.toml. Missing keys fall back to DEFAULTS."""
+"""Config lives in config.toml in CONFIG_DIR: ~/.config/lyssna on the Mac, Lyssna under %APPDATA% on
+Windows (host.paths()). Missing keys fall back to DEFAULTS."""
 
 from __future__ import annotations
 
@@ -165,6 +166,47 @@ voice = ""                       # empty = best installed system voice (Premium 
 model = "v2"                     # v2 (English) or v3 (also Spanish, Swedish and other European languages)
 """
 
+if host.IS_WINDOWS:  # the same file, with the Windows places and without the Mac's own voice
+    for _mac, _windows in [
+        ("""# Which voice provider to use: kokoro | inworld | inworld-flash | cartesia | elevenlabs | openai | say
+# kokoro is free and runs on this Mac: your text never leaves it. It downloads its voice once
+# (about 140 MB) the first time it reads. say is the macOS system voice, also on this Mac. The
+# others are online services that need an API key; add one from the menu bar (Setup… or
+# Settings > API Keys). If the chosen provider has no key, Lyssna switches to kokoro automatically.""",
+         """# Which voice provider to use: kokoro | inworld | inworld-flash | cartesia | elevenlabs | openai
+# kokoro is free and runs on this PC: your text never leaves it. It downloads its voice once
+# (about 140 MB) the first time it reads. The others are online services that need an API key;
+# add one from the Lyssna icon by the clock (Setup… or Settings > API Keys). If the chosen
+# provider has no key, Lyssna switches to kokoro automatically."""),
+        ("Change it live from the menu bar or with", "Change it live from the Lyssna icon by the clock or with"),
+        ("""# Size limit for the audio cache in ~/Library/Caches/Lyssna, in MB. Past it, the audio you
+# played longest ago is deleted first. 0 = no limit.""",
+         f"""# Size limit for the audio cache, in MB. Past it, the audio you played longest ago is deleted
+# first. 0 = no limit. The cache is in {CACHE_DIR}"""),
+        ("""# true = never use an online service: only Kokoro and the macOS voice for reading, and only the
+# engines on this Mac for dictation, so your text and voice stay on this Mac.
+# The same as Settings > Keep Everything on This Mac in the menu.""",
+         """# true = never use an online service: only Kokoro for reading, and only the engines on this PC
+# for dictation, so your text and voice stay on this PC.
+# The same as Settings > Keep Everything on This PC in the menu."""),
+        ("parakeet runs on this Mac", "parakeet runs on this PC"),
+        ("s1-mini runs on this Mac", "s1-mini runs on this PC"),
+        ("""# API keys: add them from the menu bar (Setup… or Settings > API Keys). They are stored in your macOS
+# Keychain, not in this file. You can also set them in the environment (INWORLD_API_KEY,
+# CARTESIA_API_KEY, ...) or write one into api_key below. A key in the Keychain wins over this
+# file, and this file wins over the environment. Keys that were already here when Lyssna first
+# started using the Keychain were moved there once.""",
+         """# API keys: add them from the Lyssna icon by the clock (Setup… or Settings > API Keys). They are
+# stored in Windows Credential Manager, not in this file. You can also set them in the environment
+# (INWORLD_API_KEY, CARTESIA_API_KEY, ...) or write one into api_key below. A key in Windows
+# Credential Manager wins over this file, and this file wins over the environment."""),
+        ("""[say]
+voice = ""                       # empty = best installed system voice (Premium voices win)
+
+""", ""),
+    ]:
+        TEMPLATE = TEMPLATE.replace(_mac, _windows)
+
 
 def _merge(base: dict, override: dict) -> dict:
     out = copy.deepcopy(base)
@@ -282,7 +324,7 @@ def save_api_key(section: str, key: str) -> bool:
         if file_api_key(section):
             update(**{f"{section}.api_key": ""})
         return True
-    log.warning("could not store the %s API key in the Keychain; saving it in %s instead", section, CONFIG_PATH)
+    log.warning("could not store the %s API key in %s; saving it in %s instead", section, host.KEY_STORE, CONFIG_PATH)
     update(**{f"{section}.api_key": key})
     return False
 

@@ -3,6 +3,7 @@ stubbed, so nothing talks to a running app or plays audio."""
 
 import io
 import os
+import sys
 
 import pytest
 
@@ -83,6 +84,7 @@ def test_app_not_running_falls_back_to_standalone(monkeypatch):
     assert cli.main(["status"]) == 1  # control commands need the app
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_provider_flag_forces_standalone_with_that_engine(monkeypatch):
     played = []
     monkeypatch.setattr(cli.server, "send", lambda req, timeout=5.0: pytest.fail("must not use the app"))

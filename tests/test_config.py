@@ -1,4 +1,7 @@
+import sys
 import tomllib
+
+import pytest
 
 from lyssna import config
 
@@ -61,6 +64,7 @@ def test_effective_provider_falls_back_to_kokoro_without_a_key(monkeypatch):
     assert effective_provider({"provider": "inworld", "inworld": {"api_key": ""}}) == "kokoro"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_effective_provider_falls_back_to_say_when_kokoro_cannot_run(monkeypatch):
     from lyssna.providers import KokoroProvider, effective_provider
 
@@ -89,12 +93,14 @@ def test_effective_provider_keeps_a_provider_with_a_key(monkeypatch):
     assert effective_provider({"provider": "inworld-flash", "inworld": {"api_key": "k"}}) == "inworld-flash"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_effective_provider_leaves_say_alone():
     from lyssna.providers import effective_provider
 
     assert effective_provider({"provider": "say", "say": {"voice": ""}}) == "say"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="POSIX file permissions")
 def test_update_writes_config_owner_only(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
     path.write_text(config.TEMPLATE)

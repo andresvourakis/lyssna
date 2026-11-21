@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-LOCAL_ONLY_TITLE = "Keep Everything on This Mac"
+from . import host
+
+LOCAL_ONLY_TITLE = f"Keep Everything on This {host.DEVICE}"
 LOCAL_ONLY_MANAGED_TITLE = f"{LOCAL_ONLY_TITLE} (Set by Your Organization)"
 KEY_MENU_LABELS = {"inworld": "Inworld"}  # providers sharing a config section get one key entry
 REPO_URL = "https://github.com/andresvourakis/lyssna"
@@ -14,11 +16,14 @@ CLEANUP_OFF = "Off"
 # Section headers: the menu's two features, and the two kinds of engine inside each picker.
 LISTEN_HEADER = "Listen"
 DICTATE_HEADER = "Dictate"
-LOCAL_HEADER = "On this Mac"
+LOCAL_HEADER = f"On this {host.DEVICE}"
 ONLINE_HEADER = "Online, with your API key"
 _LOCAL_PREFIX = f"{LOCAL_HEADER} ("
 # How each dictation key is written in menus, tooltips and the pill.
-KEY_NAMES = {"fn": "fn", "right_option": "right ⌥", "right_command": "right ⌘", "right_control": "right ⌃"}
+KEY_NAMES = (
+    {"fn": "fn", "right_option": "right Alt", "right_command": "right Win", "right_control": "right Ctrl"} if host.IS_WINDOWS
+    else {"fn": "fn", "right_option": "right ⌥", "right_command": "right ⌘", "right_control": "right ⌃"}
+)
 
 
 @dataclass(frozen=True)
@@ -85,7 +90,7 @@ def dictation_title(hotkey: str, recording: bool) -> str:
 
 def dictation_privacy(speech_to: str, text_to: str) -> str:
     """Where dictation sends things. Each argument is the recipient, "" for this Mac."""
-    line = f"Speech is sent to {speech_to}" if speech_to else "Speech stays on this Mac"
+    line = f"Speech is sent to {speech_to}" if speech_to else f"Speech stays on this {host.DEVICE}"
     return f"{line}, text is sent to {text_to}" if text_to else line
 
 

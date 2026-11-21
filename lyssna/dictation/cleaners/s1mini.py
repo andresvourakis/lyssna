@@ -29,6 +29,7 @@ import time
 from collections.abc import Callable, Sequence
 from functools import lru_cache
 
+from ... import host
 from ...providers.base import error_summary
 from ..models import S1_MINI
 from .base import Cleaner
@@ -243,7 +244,7 @@ def split_pieces(text: str, count: Callable[[str], int], limit: int = MAX_PIECE_
 
 class S1MiniCleaner(Cleaner):
     name = "s1-mini"
-    label = "On this Mac (S1-mini by Superwhisper)"
+    label = f"On this {host.DEVICE} (S1-mini by Superwhisper)"
     needs_key = False
     setup_hint = "460 MB download"
     config_section = "s1-mini"
@@ -259,7 +260,7 @@ class S1MiniCleaner(Cleaner):
         return S1_MINI.present()
 
     def recipient(self) -> str:
-        return "this Mac"
+        return f"this {host.DEVICE}"
 
     def prepare(self, on_error: Callable[[str], None] | None = None) -> None:
         if not S1_MINI.present() and self.can_run():

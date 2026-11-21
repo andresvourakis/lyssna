@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Sequence
 from functools import lru_cache
 
+from ... import host
 from ..models import PARAKEET_V2, PARAKEET_V3, ModelSet
 from .base import SAMPLE_RATE, Transcriber, TranscriberError, audio_seconds, check_samples
 
@@ -75,7 +76,7 @@ def _get_model(model: ModelSet):
 
 class ParakeetTranscriber(Transcriber):
     name = "parakeet"
-    label = "On this Mac (Parakeet)"
+    label = f"On this {host.DEVICE} (Parakeet)"
     needs_key = False
     sends_audio_off_device = False
     setup_hint = "630 MB download"
@@ -95,7 +96,7 @@ class ParakeetTranscriber(Transcriber):
         return self.model().present()
 
     def recipient(self) -> str:
-        return "this Mac"
+        return f"this {host.DEVICE}"
 
     def prepare(self, on_error: Callable[[str], None] | None = None) -> None:
         model = self.model()

@@ -11,11 +11,20 @@ online engine, and the key checks) refuse unless a test fakes them. Tests that n
 The browser is never opened: the website has no address unless a test gives it one, and the
 call that would open a page refuses unless a test fakes it."""
 
+import sys
+
 import httpx
 import pytest
 
 from lyssna import cache, cli, config, download, keychain, migrate, policy, server, support, usage
 from lyssna.providers import kokoro
+
+# These files need AppKit, Quartz or the Mac-only modules (lyssna.ui, app, capture, events), so they cannot run off macOS.
+collect_ignore = [] if sys.platform == "darwin" else [
+    "test_capture_ax_gate.py", "test_clipboard.py", "test_dictation_insert.py", "test_events.py", "test_dictation_app.py",
+    "test_player.py", "test_keychain_launch.py", "test_menu.py", "test_setup_window.py", "test_history_window.py",
+    "test_dictation_pill.py", "test_panel.py", "test_theme.py", "test_whats_new_window.py", "test_selection.py", "test_host.py",
+]
 
 
 class FakeKeychain:
