@@ -39,8 +39,9 @@ dependencies = [
     "numpy>=1.26",
     # The local speech model (Parakeet TDT 0.6B) runs through onnx-asr on the onnxruntime above.
     "onnx-asr>=0.12,<0.13",
-    # The local cleanup model (S1-mini by Superwhisper) runs through llama.cpp with Metal, Apple
-    # silicon only; on Intel Macs dictation cleans up with rules alone. PyPI ships this version as
+    # The local cleanup model (S1-mini by Superwhisper) runs through llama.cpp: with Metal on Apple
+    # silicon, on the CPU on Windows x64; on Intel Macs dictation cleans up with rules alone.
+    # Apple silicon: PyPI ships this version as
     # source only, so it is built on install, with Metal on and the deployment target at macOS 14
     # (a build on a newer macOS otherwise stamps every dylib with that version as its minimum and
     # the app would not load on macOS 14 or 15). The build settings are in
@@ -48,6 +49,11 @@ dependencies = [
     #   MACOSX_DEPLOYMENT_TARGET=14.0 CMAKE_ARGS="-DGGML_METAL=on -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0" \
     #     uv pip install --no-binary llama-cpp-python "llama-cpp-python==0.3.37"
     "llama-cpp-python==0.3.37; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Windows x64: the prebuilt CPU wheel from llama-cpp-python's own index (PyPI has no Windows
+    # wheel, and a source build needs a compiler the build machine should not depend on). That
+    # index has wheels only, so Windows never builds it from source; 0.3.36 is its newest Windows
+    # wheel. The index is set in [tool.uv.sources] below. jinja2 arrives with it.
+    "llama-cpp-python==0.3.36; sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
 
 [project.scripts]
@@ -70,3 +76,13 @@ build = [
 
 [tool.uv.extra-build-variables]
 llama-cpp-python = { MACOSX_DEPLOYMENT_TARGET = "14.0", CMAKE_ARGS = "-DGGML_METAL=on -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0" }
+
+# Only llama-cpp-python on Windows comes from this index (explicit: nothing else is looked up
+# there); on the Mac it comes from PyPI and is built with the variables above.
+[[tool.uv.index]]
+name = "llama-cpp-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = [{ index = "llama-cpp-cpu", marker = "sys_platform == 'win32'" }]

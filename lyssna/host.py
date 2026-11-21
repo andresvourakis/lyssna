@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import platform
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -45,6 +46,14 @@ FAST_INT8 = not IS_WINDOWS  # 8-bit model maths is fast here (Apple silicon); x8
 SYSTEM_VOICE: str | None = "sapi" if IS_WINDOWS else "say" if IS_MAC else None  # the built-in voice's provider name
 DICTATION_KEY_DEFAULT = "ctrl+win" if IS_WINDOWS else "fn"  # [dictation] hotkey: the key held to dictate
 DICTATION_DOUBLE_TAP_DEFAULT = IS_WINDOWS  # [dictation] double_tap: two quick taps of that key start hands-free
+
+# How this computer runs the local cleanup model (S1-mini through llama.cpp): "gpu" with Metal on
+# Apple silicon, "cpu" on a PC, None where it does not run and dictation cleans up with rules.
+# Measured: a 2-core cloud PC fits the cleanup budget up to about 90 words on the CPU, and an
+# M3 Pro on the CPU with 4 threads cleans 180 words in 1.77 s. Intel Macs stay on rules for now;
+# turning the CPU route on there is one change, `"cpu" if IS_WINDOWS or IS_MAC`, plus installing
+# llama-cpp-python for them in pyproject.toml.
+LOCAL_CLEANUP: str | None = "gpu" if IS_MAC and platform.machine() == "arm64" else "cpu" if IS_WINDOWS else None
 
 # Settings pages the app opens. None where the system has no such page.
 MIC_SETTINGS_URL = (
@@ -112,6 +121,7 @@ MODULES: dict[str, tuple[str | None, str | None]] = {
     "insert": ("lyssna.mac.insert", "lyssna.win.insert"),       # the paste pieces dictation uses
     "field_probe": ("lyssna.mac.fieldprobe", "lyssna.win.fieldprobe"),  # FieldProbe: reads the text field a dictation went into
     "pushtotalk": ("lyssna.mac.pushtotalk", "lyssna.win.pushtotalk"),  # attach(): the dictation key, hold to talk
+    "cpu": ("lyssna.mac.cpu", "lyssna.win.cpu"),                # physical_cores(): for the cleanup model's thread count
     "globe": ("lyssna.mac.globe", None),                        # globe_key_action(): the system's Globe key setting
     "launch_agent": ("lyssna.mac.launch_agent", None),          # start at login from source, for the command line
     "speechy": ("lyssna.mac.speechy", None),                    # the carry-over from the app's old name

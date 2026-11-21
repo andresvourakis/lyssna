@@ -379,8 +379,9 @@ class LyssnaApp:
 
     def _ui_state(self, req: dict) -> dict:
         """Debug/introspection for the CLI and tests: where the floating panels are (Mac-style
-        rects, as on the Mac), and whether the dictation keys are attached and dictation's
-        system pieces load (the built app's smoke test reads this). With "show": "setup" it
+        rects, as on the Mac), whether the dictation keys are attached, whether dictation's
+        system pieces load and whether the local cleanup model can run (the built app's smoke
+        test reads this). With "show": "setup" it
         also opens the setup window, which is how a second launch brings this copy forward;
         "shown" in the reply says it did (the legacy Mac app does not)."""
         reply: dict = {"ok": True}
@@ -395,7 +396,8 @@ class LyssnaApp:
             return {"x": x, "y": y, "w": w, "h": h}
         return {**reply, "selection_button": frame(self.selection_button), "mini_player": frame(self.mini_player),
                 "dock": self.mini_player.dock if self.mini_player else "",
-                "dictation": {"keys": self.ctl.push_to_talk is not None, "pieces": _dictation_pieces()}}
+                "dictation": {"keys": self.ctl.push_to_talk is not None, "pieces": _dictation_pieces(),
+                              "cleanup_model": _cleanup_model()}}
 
     # -- running and stopping ------------------------------------------------------------------
 
@@ -507,6 +509,26 @@ def _dictation_pieces() -> dict[str, str]:
         except Exception as e:
             pieces[name] = f"missing: {type(e).__name__}: {e}"
     return pieces
+
+
+def _cleanup_model() -> dict:
+    """Whether the local cleanup model can run in this app: how this computer runs it
+    (host.LOCAL_CLEANUP), can_run(), and whether llama_cpp imports. Importing it loads its
+    native libraries, so in a built app a missing DLL shows here as an import error. No model is
+    loaded."""
+    from .dictation.cleaners.s1mini import S1MiniCleaner
+
+    out: dict = {"route": host.LOCAL_CLEANUP, "can_run": S1MiniCleaner.can_run()}
+    if host.LOCAL_CLEANUP is None:
+        out["llama_cpp"] = "not used on this computer"
+        return out
+    try:
+        import llama_cpp
+
+        out["llama_cpp"] = f"imported {getattr(llama_cpp, '__version__', '?')}"
+    except Exception as e:
+        out["llama_cpp"] = f"missing: {type(e).__name__}: {e}"
+    return out
 
 
 def _ask_running_copy_to_show() -> None:

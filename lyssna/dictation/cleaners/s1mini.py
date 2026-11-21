@@ -1,6 +1,7 @@
-"""S1-mini by Superwhisper on this Mac: a 0.6B model trained only to clean up dictation
-(fillers, false starts, self-corrections, punctuation, lists), run through llama.cpp with Metal.
-About 0.1 to 0.3 s per dictation on an M3 Pro, and the text never leaves the Mac.
+"""S1-mini by Superwhisper on this computer: a 0.6B model trained only to clean up dictation
+(fillers, false starts, self-corrections, punctuation, lists), run through llama.cpp, with Metal
+on Apple silicon and on the CPU on a PC (host.LOCAL_CLEANUP says which). About 0.1 to 0.3 s per
+dictation on an M3 Pro, and the text never leaves the computer.
 
 How it is prompted, as its model card requires and as measured in the bake-off: its own system
 prompt verbatim, a control line `[Styling: semi-formal] [Structure: lists] [Context: general]`,
@@ -14,7 +15,8 @@ restores that state and evaluates only the transcript. Inputs longer than about 
 cleaned in pieces split at sentence ends.
 
 The model loads in the background when a recording starts (warm_up) and is unloaded after ten
-idle minutes. Apple silicon only: on Intel Macs can_run() is False and dictation uses the rules."""
+idle minutes. Where host.LOCAL_CLEANUP is None (Intel Macs) can_run() is False and dictation uses
+the rules."""
 
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ import atexit
 import ctypes
 import importlib.util
 import logging
-import platform
+import os
 import re
 import threading
 import time
@@ -55,8 +57,53 @@ def packages_installed() -> bool:
     return all(importlib.util.find_spec(m) is not None for m in ("llama_cpp", "jinja2"))
 
 
-def apple_silicon() -> bool:
-    return platform.machine() == "arm64"
+# On the CPU, llama.cpp runs with one thread per physical core, at least 2 and at most 4. Measured
+# on S1-mini: on a 2-core, 4-thread cloud PC (AMD EPYC) 4 threads and 2 threads were within about
+# 20% of each other at every length (90 words: 2.42 s with 4, 2.18 s with 2; 180 words: 4.72 s
+# with 4, 5.36 s with 2), and an M3 Pro on the CPU cleaned 180 words in
+# 1.77 s with 4 threads but took 27 s for 8 words with a thread on each of its 11 cores. So the
+# count is set explicitly and kept low.
+MIN_CPU_THREADS = 2
+MAX_CPU_THREADS = 4
+
+
+def cpu_threads(physical_cores: int | None) -> int:
+    """The thread count for the CPU route. When the system cannot say how many physical cores
+    it has, half the logical processors stands in for it (most PCs run two per core)."""
+    cores = physical_cores or (os.cpu_count() or MIN_CPU_THREADS) // 2
+    return max(MIN_CPU_THREADS, min(MAX_CPU_THREADS, cores))
+
+
+def llama_settings(route: str | None, physical_cores: int | None = None) -> dict:
+    """The Llama() keyword arguments that differ between the routes in host.LOCAL_CLEANUP.
+    "gpu" (Metal) offloads every layer and leaves the threads to llama.cpp, as the Mac always
+    did; "cpu" keeps every layer on the CPU with an explicit thread count for both generation
+    and the prompt batch."""
+    if route == "gpu":
+        return {"n_gpu_layers": -1}
+    if route == "cpu":
+        threads = cpu_threads(physical_cores)
+        return {"n_gpu_layers": 0, "n_threads": threads, "n_threads_batch": threads}
+    raise ValueError(f"the local cleanup model does not run here (route {route!r})")
+
+
+def load_llama(model_path: str):
+    """The Llama model for this computer's route. On the CPU, a build that cannot load the model
+    with flash attention is tried once without it (the Windows benchmark did the same); on Metal
+    the load is exactly as it always was."""
+    from llama_cpp import Llama
+
+    route = host.LOCAL_CLEANUP
+    settings = llama_settings(route, host.require("cpu").physical_cores() if route == "cpu" else None)
+    if route == "cpu":
+        log.info("loading S1-mini on the CPU with %d threads", settings["n_threads"])
+    try:
+        return Llama(model_path=model_path, **settings, n_ctx=N_CTX, flash_attn=True, verbose=False)
+    except Exception as e:
+        if route != "cpu":
+            raise
+        log.warning("S1-mini could not load with flash attention (%s); loading it without", error_summary(e))
+        return Llama(model_path=model_path, **settings, n_ctx=N_CTX, flash_attn=False, verbose=False)
 
 
 def messages(transcript: str) -> list[dict]:
@@ -82,9 +129,7 @@ class Runner:
     """The loaded model with its saved prompt prefix. One cleanup at a time."""
 
     def __init__(self, model_path: str):
-        from llama_cpp import Llama
-
-        self.llm = Llama(model_path=model_path, n_gpu_layers=-1, n_ctx=N_CTX, flash_attn=True, verbose=False)
+        self.llm = load_llama(model_path)
         template = self.llm.metadata["tokenizer.chat_template"]
         prefix, self._suffix = render_chat(template, messages(_MARKER)).split(_MARKER)
         self._prefix_tokens = self.llm.tokenize(prefix.encode("utf-8"), add_bos=True, special=True)
@@ -254,7 +299,7 @@ class S1MiniCleaner(Cleaner):
 
     @classmethod
     def can_run(cls) -> bool:
-        return apple_silicon() and packages_installed()
+        return host.LOCAL_CLEANUP is not None and packages_installed()
 
     def configured(self, wait: bool = True) -> bool:
         return S1_MINI.present()

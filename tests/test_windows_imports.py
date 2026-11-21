@@ -184,6 +184,14 @@ SCRIPT = textwrap.dedent(
         menu.key_name("ctrl+win"), menu.key_name("right_control"))
     assert menu.dictation_title("ctrl+win", recording=False) == "Start Dictation · hold Ctrl+Win", (
         menu.dictation_title("ctrl+win", recording=False))
+    # The local cleanup model runs on the CPU here, with 2 to 4 threads.
+    from lyssna.dictation.cleaners import s1mini
+    assert host.LOCAL_CLEANUP == "cpu" and host.cpu.__name__ == "lyssna.win.cpu", (host.LOCAL_CLEANUP, host.cpu.__name__)
+    cores = host.cpu.physical_cores()
+    assert (isinstance(cores, int) and cores > 0) if REAL_WINDOWS else cores is None, cores
+    settings = s1mini.llama_settings(host.LOCAL_CLEANUP, cores)
+    assert settings["n_gpu_layers"] == 0 and 2 <= settings["n_threads"] == settings["n_threads_batch"] <= 4, settings
+    assert "Apple silicon" not in config.TEMPLATE and "S1-mini by Superwhisper, about 460 MB)" in config.TEMPLATE, config.TEMPLATE
     blocked = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED)
     assert not blocked, blocked
     print("imported", len(sys.argv) - 1, "modules")

@@ -198,6 +198,7 @@ if host.IS_WINDOWS:  # the same file, with the Windows places and without the Ma
          ""),
         ("parakeet runs on this Mac", "parakeet runs on this PC"),
         ("s1-mini runs on this Mac", "s1-mini runs on this PC"),
+        ("(S1-mini by Superwhisper, about 460 MB, Apple silicon only)", "(S1-mini by Superwhisper, about 460 MB)"),
         ("""# API keys: add them from the menu bar (Setup… or Settings > API Keys). They are stored in your macOS
 # Keychain, not in this file. You can also set them in the environment (INWORLD_API_KEY,
 # CARTESIA_API_KEY, ...) or write one into api_key below. A key in the Keychain wins over this

@@ -408,6 +408,9 @@ def test_the_ui_command_says_whether_dictation_is_ready(lyssna):
     pieces = reply["dictation"]["pieces"]
     assert set(pieces) == {"mic", "insert", "field_probe", "pushtotalk"}
     assert all(name.startswith(("lyssna.mac.", "lyssna.win.")) for name in pieces.values()), pieces
+    cleanup = reply["dictation"]["cleanup_model"]
+    assert cleanup["route"] == host.LOCAL_CLEANUP and isinstance(cleanup["can_run"], bool), cleanup
+    assert cleanup["llama_cpp"].startswith(("imported ", "missing: ", "not used")), cleanup
     assert "shown" not in reply
     assert lyssna.ctl.dispatch({"cmd": "ui", "show": "setup"})["shown"] == "setup"
 

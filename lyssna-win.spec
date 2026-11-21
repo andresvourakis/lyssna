@@ -8,7 +8,8 @@
 #                   Lyssna.exe and returns; otherwise it talks to the running app over the pipe.
 # The approach (espeak data, comtypes wrappers made at build time, Qt Multimedia's FFmpeg DLLs,
 # hidden imports for the modules lyssna/host.py loads by name) is the one lyssna-probe.spec
-# proved on GitHub's Windows machine.
+# proved on GitHub's Windows machine. llama.cpp's DLLs for the cleanup model are bundled as
+# lyssna.spec does on the Mac (see llama_libs()).
 import ast
 import glob
 import os
@@ -71,6 +72,31 @@ def ffmpeg_dlls():
     found = [(path, "PySide6") for pattern in names for path in glob.glob(os.path.join(root, pattern))]
     print(f"lyssna-win.spec: bundling {len(found)} FFmpeg DLLs: {', '.join(os.path.basename(p) for p, _ in found)}")
     return found
+
+
+def llama_libs():
+    """llama.cpp for the local cleanup model, run on the CPU. llama_cpp opens llama.dll and
+    ggml.dll from its own lib folder by name, and those load the other ggml DLLs next to them,
+    so every DLL in that folder is bundled there, read from the folder at build time rather than
+    named here (a new wheel may add or rename one). mtmd (images, never used here) stays out, as
+    in lyssna.spec. Without llama_cpp installed the build goes on and dictation falls back to
+    rules; scripts/smoke_win.py then fails the run."""
+    try:
+        import llama_cpp
+    except Exception as e:
+        print(f"lyssna-win.spec: WARNING llama_cpp does not import ({type(e).__name__}: {e}); "
+              "the cleanup model is NOT bundled")
+        return []
+    lib = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
+    dlls = sorted(glob.glob(os.path.join(lib, "*.dll")))
+    kept = [p for p in dlls if "mtmd" not in os.path.basename(p).lower()]
+    left = [os.path.basename(p) for p in dlls if p not in kept]
+    print(f"lyssna-win.spec: llama-cpp-python {getattr(llama_cpp, '__version__', '?')} from {lib}")
+    print(f"lyssna-win.spec: bundling {len(kept)} llama.cpp DLLs: {', '.join(os.path.basename(p) for p in kept)}")
+    print(f"lyssna-win.spec: left out: {', '.join(left) or '(none)'}")
+    if not any(os.path.basename(p).lower() == "llama.dll" for p in kept):
+        print("lyssna-win.spec: WARNING llama.dll is not in that folder; the cleanup model will not load")
+    return [(p, "llama_cpp/lib") for p in kept]
 
 
 def version_file(name: str, original: str) -> str:
@@ -160,7 +186,8 @@ a = Analysis(
     pathex=[".", "scripts"],
     # Kokoro speaks through espeak-ng; its library and data ship inside, at a short path
     # (espeak-ng exits the process when its data path is too long).
-    binaries=[*collect_dynamic_libs("espeakng_loader"), *ffmpeg_dlls()],
+    # llama.cpp's DLLs run the local cleanup model (S1-mini) on the CPU.
+    binaries=[*collect_dynamic_libs("espeakng_loader"), *ffmpeg_dlls(), *llama_libs()],
     datas=[
         ("lyssna/ui/assets/menubar.png", "lyssna/ui/assets"),
         ("lyssna/ui/assets/fonts", "lyssna/ui/assets/fonts"),  # Inter and Literata, with their licences
@@ -183,11 +210,12 @@ a = Analysis(
         *LYSSNA_QT,
         "lyssna.providers.windows",
         "lyssna.providers.kokoro",
+        "llama_cpp",  # the cleanup model imports it inside functions
         "PySide6.QtMultimedia",
         *collect_submodules("comtypes", filter=lambda name: ".test" not in name),
         *pregenerate_comtypes(),
     ],
-    excludes=["llama_cpp", "rumps", "AppKit", "Quartz", "objc", "Foundation", "tkinter", *QT_UNUSED],
+    excludes=["rumps", "AppKit", "Quartz", "objc", "Foundation", "tkinter", *QT_UNUSED],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

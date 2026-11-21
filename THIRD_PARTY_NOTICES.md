@@ -36,11 +36,11 @@ the first time the voice is used.
 | Component | Version | License | Notes |
 |---|---|---|---|
 | onnx-asr | 0.12.0 | MIT | Runs the Parakeet speech model on the onnxruntime above |
-| llama-cpp-python | 0.3.37 | MIT | Runs the S1-mini cleanup model. Apple Silicon builds only |
-| llama.cpp and ggml (built into llama-cpp-python) | as vendored by llama-cpp-python 0.3.37 | MIT | Copyright (c) 2023-2026 The ggml authors; license from the llama.cpp source |
-| Jinja2 | 3.1.6 | BSD-3-Clause | Used by llama-cpp-python. Apple Silicon builds only |
-| MarkupSafe | 3.0.4 | BSD-3-Clause | Used by Jinja2. Apple Silicon builds only |
-| diskcache | 5.6.3 | Apache-2.0 | Used by llama-cpp-python. Apple Silicon builds only |
+| llama-cpp-python | 0.3.37 (Apple Silicon, built with Metal), 0.3.36 (Windows, the prebuilt CPU wheel) | MIT | Runs the S1-mini cleanup model. Apple Silicon and Windows builds; not in the Intel Mac build |
+| llama.cpp and ggml (built into llama-cpp-python) | as vendored by llama-cpp-python 0.3.37 (Mac) and 0.3.36 (Windows) | MIT | Copyright (c) 2023-2026 The ggml authors; license from the llama.cpp source |
+| Jinja2 | 3.1.6 | BSD-3-Clause | Used by llama-cpp-python. Apple Silicon and Windows builds |
+| MarkupSafe | 3.0.4 | BSD-3-Clause | Used by Jinja2. Apple Silicon and Windows builds |
+| diskcache | 5.6.3 | Apache-2.0 | Used by llama-cpp-python. Apple Silicon and Windows builds |
 | Common English words list (`lyssna/dictation/data/common_words.txt`) | generated 2026-11-17 | ESDB (SCOWL) permissive license | Made with https://app.aspell.net/create from the English Speller Database, Copyright 2000-2026 by Kevin Atkinson. The full notice is in `lyssna/dictation/data/common_words.LICENSE` |
 
 numpy (listed above) is also used directly: dictation records and processes
@@ -62,7 +62,8 @@ the first time dictation on this Mac is used:
   the GGUF file `s1-mini-q4_k_m.gguf`, licensed "Apache-2.0 with an additional
   naming term": the model must always be identified as "S1-mini" by
   "Superwhisper", with that exact capitalization. Its LICENSE and NOTICE files
-  are downloaded next to the weights. Apple Silicon only.
+  are downloaded next to the weights. Apple Silicon Macs and Windows; not on
+  Intel Macs.
 
 ## The app
 

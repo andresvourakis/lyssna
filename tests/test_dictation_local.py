@@ -4,12 +4,16 @@ prompt and piece splitting, idle unload, and the pinned files with their license
 
 import hashlib
 import re
+import struct
+import sys
+from types import SimpleNamespace
+from typing import ClassVar
 
 import httpx
 import numpy as np
 import pytest
 
-from lyssna import download
+from lyssna import download, host
 from lyssna.dictation import models
 from lyssna.dictation.cleaners import s1mini
 from lyssna.dictation.models import PARAKEET_V2, PARAKEET_V3, S1_MINI, ModelFile, ModelSet
@@ -232,9 +236,101 @@ def test_s1_idle_timer_is_pushed_back_on_use(fake_s1, monkeypatch):
 
 
 def test_s1_cannot_run_on_intel(monkeypatch):
-    monkeypatch.setattr(s1mini.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(host, "LOCAL_CLEANUP", None)
     assert not s1mini.S1MiniCleaner.can_run()
     assert s1mini.S1MiniCleaner({}).clean("send it", [], 2.5) is None
+
+
+@pytest.mark.parametrize(("route", "installed", "expected"), [
+    ("gpu", True, True), ("cpu", True, True), (None, True, False), ("gpu", False, False), ("cpu", False, False),
+])
+def test_s1_can_run_follows_the_host_capability(monkeypatch, route, installed, expected):
+    monkeypatch.setattr(host, "LOCAL_CLEANUP", route)
+    monkeypatch.setattr(s1mini, "packages_installed", lambda: installed)
+    assert s1mini.S1MiniCleaner.can_run() is expected
+
+
+@pytest.mark.parametrize(("cores", "threads"), [(1, 2), (2, 2), (4, 4), (8, 4), (16, 4)])
+def test_s1_cpu_settings_use_the_physical_cores_within_two_to_four(cores, threads):
+    assert s1mini.llama_settings("cpu", cores) == {"n_gpu_layers": 0, "n_threads": threads, "n_threads_batch": threads}
+
+
+def test_s1_cpu_threads_fall_back_to_half_the_logical_processors(monkeypatch):
+    monkeypatch.setattr(s1mini.os, "cpu_count", lambda: 12)
+    assert s1mini.cpu_threads(None) == 4
+    monkeypatch.setattr(s1mini.os, "cpu_count", lambda: 4)
+    assert s1mini.cpu_threads(None) == 2
+    monkeypatch.setattr(s1mini.os, "cpu_count", lambda: None)
+    assert s1mini.cpu_threads(None) == 2
+
+
+def test_s1_has_no_settings_where_it_does_not_run():
+    with pytest.raises(ValueError):
+        s1mini.llama_settings(None)
+
+
+class FakeLlama:
+    """Stands in for llama_cpp.Llama: records each call's keyword arguments; refuses flash
+    attention when `refuse_flash` is set."""
+
+    calls: ClassVar[list] = []
+    refuse_flash = False
+
+    def __init__(self, **kwargs):
+        FakeLlama.calls.append(kwargs)
+        if kwargs.get("flash_attn") and FakeLlama.refuse_flash:
+            raise ValueError("Failed to create llama_context")
+
+
+@pytest.fixture
+def fake_llama(monkeypatch):
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(Llama=FakeLlama))
+    monkeypatch.setattr(FakeLlama, "calls", [])
+    monkeypatch.setattr(FakeLlama, "refuse_flash", False)
+    monkeypatch.setattr(host, "cpu", SimpleNamespace(physical_cores=lambda: 8), raising=False)
+    return FakeLlama
+
+
+def test_s1_on_apple_silicon_loads_with_metal_exactly_as_before(fake_llama, monkeypatch):
+    monkeypatch.setattr(host, "LOCAL_CLEANUP", "gpu")
+    s1mini.load_llama("m.gguf")
+    assert fake_llama.calls == [{"model_path": "m.gguf", "n_gpu_layers": -1, "n_ctx": 4096, "flash_attn": True, "verbose": False}]
+
+
+def test_s1_on_apple_silicon_does_not_retry_without_flash_attention(fake_llama, monkeypatch):
+    monkeypatch.setattr(host, "LOCAL_CLEANUP", "gpu")
+    fake_llama.refuse_flash = True
+    with pytest.raises(ValueError):
+        s1mini.load_llama("m.gguf")
+    assert len(fake_llama.calls) == 1
+
+
+def test_s1_on_the_cpu_loads_with_explicit_threads(fake_llama, monkeypatch):
+    monkeypatch.setattr(host, "LOCAL_CLEANUP", "cpu")
+    s1mini.load_llama("m.gguf")
+    assert fake_llama.calls == [{"model_path": "m.gguf", "n_gpu_layers": 0, "n_threads": 4, "n_threads_batch": 4,
+                                 "n_ctx": 4096, "flash_attn": True, "verbose": False}]
+
+
+def test_s1_on_the_cpu_retries_once_without_flash_attention(fake_llama, monkeypatch, caplog):
+    monkeypatch.setattr(host, "LOCAL_CLEANUP", "cpu")
+    fake_llama.refuse_flash = True
+    with caplog.at_level("WARNING", logger="lyssna.dictation"):
+        assert isinstance(s1mini.load_llama("m.gguf"), FakeLlama)
+    assert [c["flash_attn"] for c in fake_llama.calls] == [True, False]
+    assert all(c["n_gpu_layers"] == 0 and c["n_threads"] == 4 for c in fake_llama.calls)
+    assert "without" in caplog.text
+
+
+def test_windows_physical_cores_are_counted_from_the_processor_entries():
+    from lyssna.win import cpu
+
+    def entry(relationship, size):
+        return struct.pack("<II", relationship, size) + bytes(size - 8)
+
+    raw = entry(0, 48) + entry(0, 48) + entry(2, 80) + entry(0, 48)  # three cores and one cache entry
+    assert cpu.count_cores(raw) == 3
+    assert cpu.count_cores(b"") == 0
 
 
 def test_s1_without_files_starts_the_download(monkeypatch):
@@ -261,3 +357,11 @@ def test_s1_template_runs_in_a_sandbox():
 
     with pytest.raises(SecurityError):
         s1mini.render_chat("{{ messages.__class__.__mro__ }}{{ ''.__class__.__subclasses__() }}", [])
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads the Mac's sysctl")
+def test_mac_physical_cores_come_from_sysctl():
+    from lyssna.mac import cpu
+
+    cores = cpu.physical_cores()
+    assert isinstance(cores, int) and cores > 0

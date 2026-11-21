@@ -10,7 +10,10 @@ The profile: APPDATA and LOCALAPPDATA of the child processes point into a temp f
 finds its files through lyssna.host.paths()), and config.toml there picks the built-in Windows
 voice (provider = "sapi"), so nothing is downloaded. The start at login round trip is not run:
 it would write the real Run key of this account. Dictation is on in the app, but nothing here
-records or sends keys: its check only asks the running app whether its pieces loaded."""
+records or sends keys: its check only asks the running app whether its pieces loaded. The local
+cleanup model is not downloaded and nothing is cleaned: its check asks the running app whether
+llama_cpp imports there (a DLL left out of the build shows up as an import error) and fails the
+run when it does not, unless --without-cleanup-model says this build leaves it out."""
 
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ CONFIG_TOML = 'provider = "sapi"\n'
 READ_TEXT = "This sentence is read by the built app."
 STATUS_STATES = ("idle", "loading", "playing", "paused")
 DICTATION_PIECES = ("mic", "insert", "field_probe", "pushtotalk")  # what lyssna.app reports under "dictation"
+LLAMA_LIB = Path("_internal") / "llama_cpp" / "lib"  # where lyssna-win.spec puts llama.cpp's DLLs, under the app folder
 
 
 # -- pure helpers (checked by --self-check) ------------------------------------------------------
@@ -84,6 +88,18 @@ def dictation_lines(ui_reply: dict | None, status_reply: dict | None) -> tuple[b
     return ok, lines
 
 
+def cleanup_model_lines(ui_reply: dict | None, bundled: list[str]) -> tuple[bool, list[str]]:
+    """Whether the running app can run the local cleanup model (can_run() and llama_cpp
+    imported), from its `ui` reply, and one line per fact, with the DLLs found in the build."""
+    cleanup = ((ui_reply or {}).get("dictation") or {}).get("cleanup_model") or {}
+    lines = [f"route (host.LOCAL_CLEANUP): {cleanup.get('route', '(not reported)')}",
+             f"can_run: {cleanup.get('can_run', '(not reported)')}",
+             f"llama_cpp in the app: {cleanup.get('llama_cpp', '(not reported)')}",
+             f"llama.cpp DLLs in the build ({LLAMA_LIB}): {', '.join(bundled) or '(none)'}"]
+    ok = cleanup.get("can_run") is True and str(cleanup.get("llama_cpp", "")).startswith("imported ")
+    return ok, lines
+
+
 def summary(checks: list[Check]) -> str:
     failed = [c for c in checks if c.failed()]
     if failed:
@@ -119,6 +135,14 @@ def self_check() -> int:
     assert not ok and "mic: missing: ImportError: x" in lines
     assert dictation_lines(None, None) == (False, ["dictation keys attached: no", *(f"{n}: (not reported)" for n in DICTATION_PIECES),
                                                    "dictation state: (not reported)"])
+    cleanup = {"route": "cpu", "can_run": True, "llama_cpp": "imported 0.3.36"}
+    ok, lines = cleanup_model_lines({"dictation": {"cleanup_model": cleanup}}, ["ggml.dll", "llama.dll"])
+    assert ok and lines[2] == "llama_cpp in the app: imported 0.3.36" and lines[3].endswith("ggml.dll, llama.dll")
+    missing = {"route": "cpu", "can_run": True, "llama_cpp": "missing: FileNotFoundError: ggml-cpu.dll"}
+    assert not cleanup_model_lines({"dictation": {"cleanup_model": missing}}, [])[0]
+    assert not cleanup_model_lines({"dictation": {"cleanup_model": {**cleanup, "can_run": False}}}, [])[0]
+    ok, lines = cleanup_model_lines(None, [])
+    assert not ok and lines[0] == "route (host.LOCAL_CLEANUP): (not reported)" and lines[3].endswith("(none)")
     a = Check(1, "a", True, "PASS")
     b = Check(2, "b", False, "INFO")
     assert summary([a, b]).startswith("SMOKE PASSED")
@@ -141,8 +165,9 @@ def self_check() -> int:
 
 
 class Smoke:
-    def __init__(self, dist: Path, out: Path):
+    def __init__(self, dist: Path, out: Path, cleanup_model: bool = True):
         self.dist = dist.resolve()
+        self.cleanup_model = cleanup_model  # the build is meant to include the local cleanup model
         self.out = out.resolve()
         self.app_exe = self.dist / "Lyssna.exe"
         self.cli_exe = self.dist / "lyssna-cli.exe"
@@ -260,6 +285,8 @@ class Smoke:
             f"cli:      {self.cli_exe}",
             f"profile:  {self.base}",
             f"config:   {self.paths['config']} ({CONFIG_TOML.strip()})",
+            f"cleanup model: {'expected in this build' if self.cleanup_model else 'not expected (--without-cleanup-model)'}; "
+            f"llama-cpp-python in the build environment: {_build_llama_version()}",
             f"started:  {time.strftime('%Y-%m-%d %H:%M:%S')}",
         ]
         for h in header:
@@ -346,8 +373,18 @@ class Smoke:
         else:
             self.done(c, "SKIP", "the app is not running")
 
-        # 6. reading a sentence
-        c = self.check(6, "lyssna-cli.exe reads a sentence through the app (screenshot 02-reading.png)", False)
+        # 6. the local cleanup model's library, asked of the running app (no model is downloaded or run)
+        c = self.check(6, "the built app can import llama_cpp for the local cleanup model", self.cleanup_model)
+        if app_up:
+            lib = self.dist / LLAMA_LIB
+            bundled = sorted(p.name for p in lib.iterdir()) if lib.is_dir() else []
+            ok, lines = cleanup_model_lines(self.ipc({"cmd": "ui"}), bundled)
+            self.done(c, "PASS" if ok else "FAIL" if self.cleanup_model else "INFO", *lines)
+        else:
+            self.done(c, "FAIL" if self.cleanup_model else "SKIP", "skipped because the app is not running")
+
+        # 7. reading a sentence
+        c = self.check(7, "lyssna-cli.exe reads a sentence through the app (screenshot 02-reading.png)", False)
         if app_up:
             code, out, err = self.cli(READ_TEXT)
             details = [f"speak: exit {code} {out.strip()} {err.strip()[-400:]}".rstrip()]
@@ -378,8 +415,8 @@ class Smoke:
         else:
             self.done(c, "SKIP", "the app is not running")
 
-        # 7. pause and stop
-        c = self.check(7, "lyssna-cli.exe pause and stop are answered", True)
+        # 8. pause and stop
+        c = self.check(8, "lyssna-cli.exe pause and stop are answered", True)
         if app_up:
             results = []
             for cmd in ("pause", "stop"):
@@ -390,8 +427,8 @@ class Smoke:
         else:
             self.done(c, "FAIL", "skipped because the app is not running")
 
-        # 8. a second copy
-        c = self.check(8, "a second Lyssna.exe exits by itself within 10 s with code 0", True)
+        # 9. a second copy
+        c = self.check(9, "a second Lyssna.exe exits by itself within 10 s with code 0", True)
         if app_up:
             second = subprocess.Popen([str(self.app_exe)], env=self.env, cwd=str(self.dist))
             try:
@@ -408,8 +445,8 @@ class Smoke:
         else:
             self.done(c, "FAIL", "skipped because the app is not running")
 
-        # 9. quit
-        c = self.check(9, "lyssna-cli.exe quit ends the app within 10 s, the pipe marker is gone", True)
+        # 10. quit
+        c = self.check(10, "lyssna-cli.exe quit ends the app within 10 s, the pipe marker is gone", True)
         if app_up:
             code, out, err = self.cli("quit")
             details = [f"quit: exit {code}: {out.strip() or err.strip()}"]
@@ -428,8 +465,8 @@ class Smoke:
         else:
             self.done(c, "FAIL", "skipped because the app is not running")
 
-        # 10. standalone reading
-        c = self.check(10, "lyssna-cli.exe reads by itself with no app running", False)
+        # 11. standalone reading
+        c = self.check(11, "lyssna-cli.exe reads by itself with no app running", False)
         if self.first is not None and self.first.poll() is None:
             self.done(c, "SKIP", "the first copy is still running, so the reading would go to it")
         else:
@@ -439,8 +476,8 @@ class Smoke:
             ended = "did not end within 60 s" if code is None else f"exit {code} after {took:.1f} s"
             self.done(c, "INFO", ended, f"stdout: {out.strip()[-400:]}", f"stderr: {err.strip()[-1200:]}")
 
-        # 11. start at login
-        c = self.check(11, "start at login round trip", False)
+        # 12. start at login
+        c = self.check(12, "start at login round trip", False)
         self.done(c, "SKIP", "not run: it would write the real Run key of this account")
 
     def _cleanup(self) -> None:
@@ -458,6 +495,17 @@ class Smoke:
             self._qt_app = None
 
 
+def _build_llama_version() -> str:
+    """The llama-cpp-python this script's environment has (the one the app was built from),
+    read from its metadata so its DLLs are not loaded here."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("llama-cpp-python")
+    except PackageNotFoundError:
+        return "not installed"
+
+
 def _text(data) -> str:
     if data is None:
         return ""
@@ -472,13 +520,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dist", type=Path, default=ROOT / "dist" / "Lyssna", help="the built app folder (default dist\\Lyssna)")
     parser.add_argument("--out", type=Path, default=Path("smoke"), help="where smoke-report.txt and the screenshots go (default smoke)")
     parser.add_argument("--self-check", action="store_true", help="check the helpers only (any system, starts nothing)")
+    parser.add_argument("--without-cleanup-model", action="store_true",
+                        help="this build leaves the local cleanup model out, so its check only reports")
     ns = parser.parse_args(argv)
     if ns.self_check:
         return self_check()
     if sys.platform != "win32":
         print("smoke_win: this runs on Windows only (use --self-check elsewhere)", file=sys.stderr)
         return 2
-    return Smoke(ns.dist, ns.out).run()
+    return Smoke(ns.dist, ns.out, cleanup_model=not ns.without_cleanup_model).run()
 
 
 if __name__ == "__main__":
