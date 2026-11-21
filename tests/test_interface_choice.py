@@ -12,7 +12,9 @@ from lyssna import config, host
 
 @pytest.fixture
 def mac(monkeypatch):
+    """A Mac, whichever system runs the tests: the config's default is the Mac's too."""
     monkeypatch.setattr(host, "IS_WINDOWS", False)
+    monkeypatch.setitem(config.DEFAULTS["ui"], "interface", "legacy")
     monkeypatch.delenv(host.INTERFACE_ENV, raising=False)
 
 

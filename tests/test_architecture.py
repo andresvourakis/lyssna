@@ -75,10 +75,15 @@ NO_QT_NO_PLATFORM = textwrap.dedent(
                 raise ImportError(f"{name} is blocked: the layout rules must stay pure")
             return None
 
+    # Python itself loads some of these before any code runs (winreg, for its own import
+    # machinery on Windows), so only what the layout modules bring in counts.
+    already = set(sys.modules)
     sys.meta_path.insert(0, Blocked())
     for name in sys.argv[1:]:
         importlib.import_module(name)
-    loaded = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED)
+    ours = ("lyssna.mac", "lyssna.win", "lyssna.legacy")
+    loaded = sorted(m for m in set(sys.modules) - already
+                    if m.split(".")[0] in BLOCKED or any(m == p or m.startswith(p + ".") for p in ours))
     assert not loaded, loaded
     print("imported", len(sys.argv) - 1, "layout modules")
     """
@@ -135,7 +140,7 @@ def test_only_host_picks_the_legacy_interface():
     """In the package, host is the only file that even names lyssna.legacy; outside the legacy
     tests no test or script imports it."""
     outside = [p for p in PACKAGE.rglob("*.py") if not p.is_relative_to(PACKAGE / "legacy")]
-    assert sorted(str(p.relative_to(REPO)) for p in outside if _reaches_legacy(p, names=True)) == ["lyssna/host.py"]
+    assert sorted(p.relative_to(REPO).as_posix() for p in outside if _reaches_legacy(p, names=True)) == ["lyssna/host.py"]
     assert host.MODULES["app"][0] == "lyssna.legacy.app"
     others = [p for p in [*TESTS.rglob("*.py"), *(REPO / "scripts").rglob("*.py")] if not p.is_relative_to(TESTS / "legacy")]
     assert not [str(p.relative_to(REPO)) for p in others if _reaches_legacy(p)]

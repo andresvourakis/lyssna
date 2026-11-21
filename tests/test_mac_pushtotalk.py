@@ -2,10 +2,9 @@
 feeds them, give the same outcomes as before the rules moved into lyssna.dictation.hotkey.
 Pure values, so this runs on any system."""
 
-import sys
-
 import pytest
 
+from lyssna import host
 from lyssna.mac import pushtotalk
 from lyssna.mac.pushtotalk import (
     DEVICE_LEFT_OPTION,
@@ -240,14 +239,14 @@ class Tap:
     push_to_talk = None
 
 
-def test_attach_reads_the_config_and_hands_the_keys_to_the_tap():
+def test_attach_reads_the_config_and_hands_the_keys_to_the_tap(monkeypatch):
+    monkeypatch.setattr(host, "DICTATION_KEY_DEFAULT", "fn")  # the Mac's default, whichever system runs this
     tap = Tap()
     noop = lambda *a: None  # noqa: E731
     cfg = {"dictation": {"hotkey": "right_command", "hands_free": "space", "double_tap": False}}
     ptt = pushtotalk.attach(tap, cfg, noop, noop, noop, noop)
     assert tap.push_to_talk is ptt and ptt.trigger == pushtotalk.RIGHT_COMMAND and ptt.double_tap is False
-    if sys.platform == "darwin":  # the default comes from host, which is the PC's on Windows
-        assert pushtotalk.attach(Tap(), {}, noop, noop, noop, noop).trigger == FN
+    assert pushtotalk.attach(Tap(), {}, noop, noop, noop, noop).trigger == FN
     with pytest.raises(ValueError):
         pushtotalk.attach(tap := Tap(), {"dictation": {"hotkey": "caps_lock"}}, noop, noop, noop, noop)
     assert tap.push_to_talk is None
@@ -255,5 +254,5 @@ def test_attach_reads_the_config_and_hands_the_keys_to_the_tap():
 
 def test_double_tap_can_be_turned_on_in_the_config():
     noop = lambda *a: None  # noqa: E731
-    ptt = pushtotalk.attach(Tap(), {"dictation": {"double_tap": True}}, noop, noop, noop, noop)
+    ptt = pushtotalk.attach(Tap(), {"dictation": {"hotkey": "fn", "double_tap": True}}, noop, noop, noop, noop)
     assert ptt.double_tap is True

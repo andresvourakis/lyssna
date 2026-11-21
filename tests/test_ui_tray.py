@@ -133,13 +133,17 @@ def kokoro_provider_title(tray) -> str:
 
 
 def test_top_level_menu_when_idle(tray):
+    from lyssna.dictation.cleaners.s1mini import S1MiniCleaner
+
     d = host.DEVICE
+    # The cleanup model needs Apple silicon and llama.cpp; elsewhere (a PC) cleanup falls back to the rules alone.
+    cleanup = f"Cleanup: On this {d} (S1-mini by Superwhisper)" if S1MiniCleaner.can_run() else "Cleanup: Off"
     assert rows(tray.menu) == [
         LISTEN_HEADER, "Read Selection", "Read Clipboard",
         "Speed: 1.2×", "Voice: Heart", kokoro_provider_title(tray), f"Text stays on this {d}", "---",
         DICTATE_HEADER, f"Start Dictation · hold {key_name(host.DICTATION_KEY_DEFAULT)}", "History…",
         f"Transcription: On this {d} (Parakeet)",
-        f"Cleanup: On this {d} (S1-mini by Superwhisper)", f"Speech stays on this {d}", "---",
+        cleanup, f"Speech stays on this {d}", "---",
         "Settings", "Setup…", "About Lyssna", "---",
         "Quit Lyssna",
     ]
