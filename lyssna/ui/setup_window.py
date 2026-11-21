@@ -1,51 +1,71 @@
-"""The setup window on Windows, the twin of legacy/ui/setup_window.py: shown on first launch and from
-the menu (Setup…). The Mac file is the specification; this one draws the same window in Qt.
+"""The setup window, the twin of legacy/ui/setup_window.py (which is its specification): shown on
+first launch and from the menu (Setup…). Like the menu it has two sections, Listen and Dictate,
+behind a switch in the header:
 
-What differs from the Mac, on purpose:
-  * Reading needs no permission on Windows (there is no Accessibility setting), so Listen has
-    two steps, Voice and Try it. When the keyboard shortcuts could not start, one warning row
-    with Relaunch Lyssna sits above the steps instead.
-  * The first Windows release has no dictation. With features["dictate"] off there is no
-    Listen / Dictate switch and the footer speaks only for Listen. The window keeps the tab
-    idea (self.tab, the per-tab layout and status) so the Dictate tab can be added beside
-    Listen later without a rewrite.
-  * Wording that names the computer says "PC" (lyssna.host.DEVICE); key caps use the Windows
-    key names (Ctrl, Alt, S).
+    Listen   1  Permission   live Accessibility status, Open Settings, Relaunch (where needed)
+             2  Voice        the free voice on this computer (download, progress, ready)
+                             or the user's own API key (engine, Get a key, Save)
+             3  Try it       the speak shortcut and a Read a Sample button
+    Dictate  1  Permission   microphone access and, on a Globe key, its system setting
+             2  Engine       the speech models on this computer (download, progress, ready)
+                             or the user's own OpenAI and Anthropic keys (Get a key, Save)
+             3  Try it       the dictation keys
 
-Everything else is as on the Mac: the two option cards (the free voice on this computer, with
-its download, progress, Ready and error; or the user's own key, with the engine, Get a key,
-the key field and Save), Read a Sample, a fixed header and footer with only the steps
-scrolling, and Done as the primary button, default on Enter. Saving a key makes one real
-request to a paid service, so it runs on a worker thread and reports back on the GUI thread;
-nothing here waits.
+Why one window and not alerts: every step shows its state, errors appear inline, and Listen's
+Voice and Try it work before the permission is granted (the sample goes through speak_text,
+not the selection).
+
+Where the two systems differ, the window asks a capability in lyssna.host, never the system:
+  * host.NEEDS_ACCESSIBILITY: the Mac's Permission step heads Listen. Without it (Windows)
+    Listen has two steps, Voice and Try it, and when the keyboard shortcuts could not start,
+    one warning row with Relaunch Lyssna sits above them instead.
+  * host.HAS_GLOBE_KEY: Dictate's Permission step also checks the Globe key setting while
+    dictation is on fn.
+  * host.DEVICE names the computer ("Mac", "PC"), and key caps take the system's own key
+    names from host.hotkey_table ([⌃] [⌥] [S] on a Mac, [Ctrl] [Alt] [S] on a PC).
+A caller may still turn Dictate off with features["dictate"] = False: there is then no switch,
+no Dictate tab, and the footer speaks only for Listen.
+
+It is a regular titled window: it takes the keyboard (the key fields), centres on the screen
+under the mouse and closing it never quits the app. The header (mark, title, switch) and the
+footer (status and Done) stay put; only the steps between them scroll when they are taller
+than the screen allows. Saving a key makes one request to the service, so it runs on a worker
+thread and reports back on the GUI thread; the Globe key setting, which takes a `defaults`
+call to read, is read on a worker thread at most every GLOBE_POLL seconds. Nothing here waits.
 
 Controls are drawn here rather than left to the system style, whose versions take the blue
-accent colour: the radios, the option cards, the engine dropdown, the key field, the step
-icons and the key caps. All colours are read at paint time, so the window follows light and
-dark mode."""
+accent colour: the switch, the radios, the option cards, the engine dropdown, the key fields,
+the step icons and the key caps. All colours are read at paint time, so the window follows
+light and dark mode."""
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
+from types import ModuleType
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QButtonGroup, QComboBox, QFrame, QLineEdit, QRadioButton, QScrollArea, QWidget
 
-from .. import host
+from .. import config, host
+from ..dictation import cleaners, transcribers
 from ..hotkeys import tokens
 from ..menu import ONLINE_HEADER, privacy_symbol
 from ..providers import REGISTRY, allowed, get_provider, kokoro
-from ..win import hotkeys as win_keys
 from . import icons, theme
 from .layout.setup import (
     CARD_PAD,
     CARD_R,
     CARD_X,
+    DICTATE,
+    DICTATION_KEY_ENGINES,
+    DICTATION_KEYS,
     FIELD_H,
     FOOTER_H,
+    GLOBE_POLL,
     ICON,
     INDENT,
     LISTEN,
@@ -54,32 +74,59 @@ from .layout.setup import (
     POLL,
     RADIO,
     SAMPLE,
+    SEG_H,
+    SEG_PAD,
     SUB_W,
     SUB_X,
     TEXT_W,
     TEXT_X,
     W,
+    _size_text,
+    footer_status,
+    opening_tab,
     steps_left,
     tab_status,
 )
 from .mainthread import on_main
+from .mark import MarkView
 from .widgets import BAR_H, PillButton, ProgressBar, rounded
-from .window import Hairline, Header, Label, LyssnaWindow, bad, css, good
+from .window import Hairline, Label, LyssnaWindow, bad, css, good
 
 log = logging.getLogger("lyssna.ui.setup")
 
 TITLE_SIZE = 20.0    # the serif headline
-HEADER_TOP = 24.0    # the title bar to the mark
+HEADER_TOP = 8.0     # the title bar to the mark
 STEPS_TOP = 20.0     # the header to the first step
 CARD_RADIUS = 10.0
 FIELD_RADIUS = 6.0
-MIN_BUTTON_W = 84.0  # Done, Read a Sample, Save, Download, Relaunch: never narrower than this
+SEG_RADIUS = 7.0     # a chosen segment of the switch
+TRACK_RADIUS = 9.0   # the switch's track
+MIN_BUTTON_W = 84.0  # Done, Read a Sample, Save, Download, Allow, Relaunch...: never narrower than this
 TONES = {"good": good, "bad": bad}  # an inline note's colour; anything else is dim
+GLOBE_KEY = "fn"     # the dictation key that doubles as the Globe key, where the computer has one
 
 
 def card_border_on() -> QColor:
     """The chosen option card's border."""
     return theme.content(0.45)
+
+
+# -- key names ---------------------------------------------------------------------------------
+
+
+def key_caps(spec: str, table: ModuleType | None = None) -> list[str]:
+    """One cap per key of a shortcut, named by the system's key table (host.hotkey_table, the
+    one lyssna.hotkeys.pretty reads): "ctrl+alt+s" is [⌃] [⌥] [S] on a Mac, [Ctrl] [Alt] [S] on a PC."""
+    table = table or host.hotkey_table
+    return [table.pretty([part]) for part in tokens(spec)]
+
+
+def dictation_caps(hotkey: str, table: ModuleType | None = None) -> list[str]:
+    """The dictation key's caps: its name from the table's DICTATION_KEY_NAMES (what
+    menu.key_name shows: "fn", "right ⌥", "right Alt"), or one cap per key for a chord."""
+    table = table or host.hotkey_table
+    names = table.DICTATION_KEY_NAMES
+    return [names[hotkey]] if hotkey in names else key_caps(hotkey, table)
 
 
 # -- controls ----------------------------------------------------------------------------------
@@ -128,6 +175,78 @@ class Radio(QRadioButton):
         p.setPen(theme.content())
         p.setFont(self.font())
         p.drawText(QRectF(INDENT, 0, self.width() - INDENT, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
+        p.end()
+
+
+class TabButton(QRadioButton):
+    """One segment of the Listen / Dictate switch: the tab's name and a small status, on a
+    content fill with surface text when chosen, bare dim text when not. A real radio button
+    underneath (the two sit in one exclusive group, so arrow keys move between them and a
+    screen reader reads a radio group); the whole segment takes the click."""
+
+    def __init__(self, name: str, parent: QWidget):
+        super().__init__(name, parent)
+        self.name = name
+        self.status = ""
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.setAccessibleName(name)
+
+    def set_status(self, status: str) -> None:
+        if status != self.status:
+            self.status = status
+            self.setAccessibleName(f"{self.name}, {status}" if status else self.name)
+            self.update()
+
+    def _parts(self) -> tuple[str, str]:
+        return self.name, f"  {self.status}" if self.status else ""
+
+    def preferred_width(self) -> float:
+        name, status = self._parts()
+        w = QFontMetricsF(theme.ui_font(13, "medium")).horizontalAdvance(name)
+        w += QFontMetricsF(theme.ui_font(11)).horizontalAdvance(status)
+        return max(150.0, round(w) + 40.0)
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        on = self.isChecked()
+        path = rounded(QRectF(self.rect()), SEG_RADIUS)
+        if on:
+            p.fillPath(path, theme.content())
+        if self.hasFocus():
+            p.setPen(QPen(theme.content(0.45), 2.0))
+            p.drawPath(rounded(QRectF(self.rect()).adjusted(1, 1, -1, -1), SEG_RADIUS - 1))
+        name, status = self._parts()
+        big, small = theme.ui_font(13, "medium"), theme.ui_font(11)
+        fb, fs = QFontMetricsF(big), QFontMetricsF(small)
+        nw, sw = fb.horizontalAdvance(name), fs.horizontalAdvance(status)
+        x = (self.width() - nw - sw) / 2
+        base = (self.height() - fb.height()) / 2 + fb.ascent()  # one line: both runs share a baseline
+        p.setFont(big)
+        p.setPen(theme.surface() if on else theme.content_dim())
+        p.drawText(QPointF(x, base), name)
+        if status:
+            p.setFont(small)
+            p.setPen(theme.surface(0.75) if on else theme.content(0.45))
+            p.drawText(QPointF(x + nw, base), status)
+        p.end()
+
+
+class SwitchTrack(QWidget):
+    """The switch's soft rounded track behind its two segments."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAccessibleName("Setup section")
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.fillPath(rounded(QRectF(self.rect()), TRACK_RADIUS), theme.fill_soft())
         p.end()
 
 
@@ -189,12 +308,29 @@ class Tag(QWidget):
 
 
 def _draw_check_disc(p: QPainter, rect: QRectF, color: QColor) -> None:
-    """A filled disc with a check in the surface colour: the twin of checkmark.circle.fill."""
+    """A filled disc with a check in white: the twin of checkmark.circle.fill."""
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(color)
     p.drawEllipse(rect)
     s = rect.width() * 0.55
     icons.draw_icon(p, "checkmark", icons.icon_rect(rect.center().x(), rect.center().y(), s), QColor(255, 255, 255), "bold")
+
+
+def _draw_pending(p: QPainter, rect: QRectF, color: QColor) -> None:
+    """A ring with an exclamation mark: the twin of exclamationmark.circle, beside a dictation
+    check that still needs doing (a plain ring would read as a radio)."""
+    w = rect.width() * 0.09
+    p.setPen(QPen(color, w))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(rect.adjusted(w / 2, w / 2, -w / 2, -w / 2))
+    cx, top, h = rect.center().x(), rect.top(), rect.height()
+    pen = QPen(color, w * 1.1)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.drawLine(QPointF(cx, top + h * 0.27), QPointF(cx, top + h * 0.56))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawEllipse(QPointF(cx, top + h * 0.72), w * 0.75, w * 0.75)
 
 
 class StepIcon(QWidget):
@@ -229,30 +365,40 @@ class StepIcon(QWidget):
 
 
 class StatusRow(QWidget):
-    """A small icon and a few words, e.g. a green check and "Ready"."""
+    """A small icon and a few words: a green check and "Ready", or the dim pending mark and a
+    check that still needs doing."""
 
-    def __init__(self, text: str, parent: QWidget, *, kind: str = "check"):
+    def __init__(self, text: str, parent: QWidget, *, done: bool = True):
         super().__init__(parent)
-        self.kind = kind
+        self.done = done
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.label = Label(text, self, size=13, weight="medium")
-        self.set_text(text)
+        self.set(text, done)
 
-    def set_text(self, text: str) -> None:
+    def set(self, text: str, done: bool) -> None:
+        self.done = done
         self.label.set_text(text)
         w, h = self.label.fit()
         self.label.move(20, round((18 - h) / 2))
         self.resize(20 + w, 18)
+        self.update()
+
+    def set_text(self, text: str) -> None:
+        self.set(text, self.done)
 
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        _draw_check_disc(p, QRectF(1, 2, 14, 14), good())
+        rect = QRectF(1, 2, 14, 14)
+        if self.done:
+            _draw_check_disc(p, rect, good())
+        else:
+            _draw_pending(p, rect, theme.content_dim())
         p.end()
 
 
 class KeyCaps(QWidget):
-    """A shortcut as a row of key caps, e.g. [Ctrl] [Alt] [S]."""
+    """A row of key caps, one per label, e.g. [⌃] [⌥] [S] or [Ctrl] [Alt] [S]."""
 
     H, GAP, MIN_W = 24, 4, 24
 
@@ -377,7 +523,7 @@ class Dropdown(QComboBox):
 
 
 class KeyField(QLineEdit):
-    """The API key field: hidden characters in a hairline box with a radius of 6, on the surface."""
+    """An API key field: hidden characters in a hairline box with a radius of 6, on the surface."""
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
@@ -457,10 +603,27 @@ class Spinner(QWidget):
         p.end()
 
 
-def _pill(title: str, parent: QWidget, clicked: Callable[[], None], primary: bool = False) -> PillButton:
-    """A focusable pill, never narrower than MIN_BUTTON_W."""
+class WarningIcon(QWidget):
+    """The warning triangle beside the shortcuts row, in the error colour."""
+
+    SIZE = 18
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        icons.draw_icon(p, "exclamationmark.triangle", QRectF(self.rect()), bad(), "medium")
+        p.end()
+
+
+def _pill(title: str, parent: QWidget, clicked: Callable[[], None], primary: bool = False, min_w: bool = True) -> PillButton:
+    """A focusable pill, never narrower than MIN_BUTTON_W unless min_w is off."""
     b = PillButton(title, parent, primary=primary, clicked=clicked, focusable=True)
-    _min_width(b)
+    if min_w:
+        _min_width(b)
     return b
 
 
@@ -469,24 +632,27 @@ def _min_width(b: PillButton) -> None:
     b.setFixedSize(max(hint.width(), round(MIN_BUTTON_W)), hint.height())
 
 
-def footer_text(left: dict[str, int]) -> str:
-    """The footer's line for the tabs this release has, e.g. "Listen ready" or
-    "Listen: 1 step left" (with Dictate too, the Mac's shared footer_status wording)."""
-    names = {LISTEN: "Listen"}
-    parts = []
-    for tab, n in left.items():
-        name = names.get(tab, tab.capitalize())
-        parts.append(f"{name} ready" if not n else f"{name}: {tab_status(n)}")
-    return " · ".join(parts)
+def _engine_class(name: str):
+    return transcribers.REGISTRY.get(name) or cleaners.REGISTRY[name]
+
+
+class _KeyRow:
+    """One dictation engine's key: its heading, Get a key, the field, Save and the status."""
+
+    def __init__(self, name: str, job: str):
+        self.name, self.job = name, job
+        self.message = ("", "secondary")  # inline note under the field: (text, tone)
+        self.saving = False
 
 
 # -- the window --------------------------------------------------------------------------------
 
 
 class SetupWindow(LyssnaWindow):
-    """Set `ctl`, `taps_ok` (did the keyboard shortcuts start?), `relaunch` and `on_change` (the
-    menu refreshes) after construction, then call show(). `features["dictate"]` stays False in
-    the first Windows release: Listen is then the only tab and there is no switch."""
+    """Set `ctl`, `taps_ok` (did the keyboard shortcuts start?), `relaunch`, `on_change` (the
+    menu refreshes) and, if Dictate is to be left out, `features` after construction, then call
+    show(). `accessibility_trusted`, `globe_action` and `key_table` are the system's by default;
+    tests and previews replace them."""
 
     def __init__(self, ctl=None):
         super().__init__("Lyssna Setup")
@@ -494,14 +660,22 @@ class SetupWindow(LyssnaWindow):
         self.taps_ok: Callable[[], bool] = lambda: True
         self.relaunch: Callable[[], None] = lambda: None
         self.on_change: Callable[[], None] = lambda: None
-        self.features: dict = {"dictate": False}
+        self.features: dict = {"dictate": True}
+        self.accessibility_trusted: Callable[..., bool] = _accessibility_trusted
+        self.globe_action: Callable[[], str] = _globe_action  # read on a worker thread
+        self.key_table: ModuleType | None = None  # host.hotkey_table unless set
         self.built = False
-        self.tab = LISTEN  # the tab on show; the only one until the Dictate tab is added
+        self.tab = LISTEN  # the tab on show; the user's choice while the window stays open
         self.tabs = (LISTEN,)
         self._saving = False
         self._key_message = ("", "secondary")  # inline note under the key field: (text, tone)
         self._shape: dict | None = None  # what was visible at the last layout
-        self._left: dict[str, int] = {LISTEN: 0}
+        self._left = (0, 0)  # steps left on Listen and on Dictate, as of the last refresh
+        self._dictate_done = (False, False)
+        self._globe = "unknown"  # the last answer
+        self._globe_read_at = 0.0
+        self._globe_busy = False
+        self.key_rows = [_KeyRow(name, job) for name, job in DICTATION_KEYS]
         self._visible: set[QWidget] = set()
         self._timer = QTimer(self)
         self._timer.setInterval(round(POLL * 1000))
@@ -510,25 +684,36 @@ class SetupWindow(LyssnaWindow):
     # -- showing -----------------------------------------------------------------------------
 
     def show(self, engine: str | None = None, dictation: str | None = None) -> None:
-        """Bring the window up (building it the first time). `engine` opens it with that voice
-        engine preselected under "Online, with your API key", for the menu's key entries, and
-        the cursor in the key field. `dictation` is for the Dictate tab, not in this release."""
-        self.prepare(engine, dictation)
+        """Bring the window up (building it the first time). `engine` opens Listen with that
+        voice engine preselected under "Online, with your API key", for the menu's key entries;
+        `dictation` opens Dictate with the online option picked and the cursor in that engine's
+        key field."""
+        self.prepare(engine, dictation, opening=not self.isVisible())
         self.show_centered()
-        if engine is not None and self.key_field.isEnabled() and not self.key_field.isHidden():
+        row = next((r for r in self.key_rows if r.name == dictation), None) if self.dictate else None
+        if row is not None and not row.field.isHidden():
+            self.scroll_area.ensureWidgetVisible(row.field, 0, 96)
+            row.field.setFocus(Qt.FocusReason.OtherFocusReason)
+        elif engine is not None and self.key_field.isEnabled() and not self.key_field.isHidden():
             self.key_field.setFocus(Qt.FocusReason.OtherFocusReason)
         else:
             self.scroll_area.verticalScrollBar().setValue(0)
             self.done.setFocus(Qt.FocusReason.OtherFocusReason)
         self._timer.start()
 
-    def prepare(self, engine: str | None = None, dictation: str | None = None) -> None:
+    def prepare(self, engine: str | None = None, dictation: str | None = None, opening: bool = True) -> None:
         """Everything show() does short of putting the window on screen: build it if needed,
-        point the choices and read the state afresh."""
+        point the choices, read the state afresh, and pick the tab. The tab changes only when
+        the window opens or the menu asks for a key; while it stays open the tab is the user's."""
         if not self.built:
             self._build()
         self._choose_radio(engine)
+        if self.dictate:
+            self._choose_dictation(dictation)
+            self._read_globe(force=True)
         self._refresh(force=True)
+        if opening or engine is not None or dictation is not None:
+            self._select_tab(opening_tab(engine, dictation, *self._left) if self.dictate else LISTEN)
 
     def hideEvent(self, ev) -> None:
         self._timer.stop()
@@ -537,19 +722,54 @@ class SetupWindow(LyssnaWindow):
     def tick(self) -> None:
         self._refresh()
 
+    def _select_tab(self, tab: str) -> None:
+        """Show `tab`'s steps, from the top."""
+        self.tab = tab
+        if self.dictate:
+            (self.tab_listen if tab == LISTEN else self.tab_dictate).setChecked(True)
+        self._refresh(force=True)
+        self.scroll_area.verticalScrollBar().setValue(0)
+
+    def _on_tab(self, tab: str, checked: bool) -> None:
+        if checked and tab != self.tab:
+            self._select_tab(tab)
+
     # -- building ----------------------------------------------------------------------------
 
     def _build(self) -> None:
+        """Every view, once. Which steps exist follows the capabilities read here."""
         self.built = True
         self.device = host.DEVICE  # wording that names the computer: "Mac" or "PC"
-        place = host.MENU_PLACE
-        # D5 adds DICTATE here (and its switch in the header) when features["dictate"] is on.
-        self.tabs = (LISTEN,)
+        self.needs_accessibility = bool(host.NEEDS_ACCESSIBILITY)
+        self.has_globe = bool(host.HAS_GLOBE_KEY)
+        self.dictate = bool(self.features.get("dictate", True))
+        self.tabs = (LISTEN, DICTATE) if self.dictate else (LISTEN,)
+        keys = self.key_table or host.hotkey_table
+        self.key_table = keys
 
+        # Header: the mark, the welcome, and the Listen / Dictate switch
         self.header = QWidget(self)
-        self.heading = Header("Welcome to Lyssna", self.header, mark_h=MARK_H, title_size=TITLE_SIZE,
-                              subtitle=f"Lyssna reads text aloud. Two quick steps and you are set. "
-                                       f"You can come back here any time from {place}.")
+        self.mark = MarkView(MARK_H, self.header)
+        self.title = Label("Welcome to Lyssna", self.header, font=theme.serif_font(TITLE_SIZE))
+        if self.dictate:
+            subtitle = "Lyssna reads text aloud and types what you say. Set up each one below."
+        else:
+            count = "Three" if self.needs_accessibility else "Two"
+            subtitle = (f"Lyssna reads text aloud. {count} quick steps and you are set. "
+                        f"You can come back here any time from {host.MENU_PLACE}.")
+        self.subtitle = Label(subtitle, self.header, size=13, color=theme.content_dim, wrap=True)
+        self.subtitle.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.switch: SwitchTrack | None = None
+        if self.dictate:
+            self.switch = SwitchTrack(self.header)
+            self.tab_listen = TabButton("Listen", self.switch)
+            self.tab_dictate = TabButton("Dictate", self.switch)
+            self.tab_group = QButtonGroup(self)
+            self.tab_group.setExclusive(True)
+            for tab, button in ((LISTEN, self.tab_listen), (DICTATE, self.tab_dictate)):
+                self.tab_group.addButton(button)
+                button.toggled.connect(lambda checked, t=tab: self._on_tab(t, checked))
+            self.tab_listen.setChecked(True)
         self.header_line = Hairline(self.header)
 
         self.scroll_area = QScrollArea(self)
@@ -563,6 +783,7 @@ class SetupWindow(LyssnaWindow):
         self.content.setAutoFillBackground(False)  # setWidget turned it on; the window's surface shows through
         c = self.content
 
+        # Footer: where things stand, and Done
         self.footer = QWidget(self)
         self.footer_line = Hairline(self.footer)
         self.footer_status = Label("", self.footer, size=12, color=theme.content_dim)
@@ -571,17 +792,28 @@ class SetupWindow(LyssnaWindow):
         # The option cards go in first, so they sit behind the controls laid over them.
         self.card_local = OptionCard(c)
         self.card_key = OptionCard(c)
+        self.cards = [self.card_local, self.card_key]
 
-        # Above the steps, only when the keyboard shortcuts could not start
-        self.warn_icon = WarningIcon(c)
-        self.warn_text = Label("Lyssna could not start its keyboard shortcuts. Quit other tools that capture "
-                               "the keyboard, then relaunch.", c, size=13, wrap=True)
+        number = 1
         self.relaunch_btn = _pill("Relaunch Lyssna", c, lambda: self.relaunch())
-        self.sep0 = Hairline(c)
+        if self.needs_accessibility:
+            # Listen 1: Permission
+            self.icon_permission = StepIcon(number, c)
+            self.head_permission = Label("Permission", c, size=14, weight="semibold")
+            self.body_permission = Label("", c, size=12, color=theme.content_dim, wrap=True)
+            self.open_settings = _pill("Open Settings…", c, self.on_open_settings)
+            self.sep_permission = Hairline(c)
+            number += 1
+        else:
+            # Above the steps, only when the keyboard shortcuts could not start
+            self.warn_icon = WarningIcon(c)
+            self.warn_text = Label("Lyssna could not start its keyboard shortcuts. Quit other tools that capture "
+                                   "the keyboard, then relaunch.", c, size=13, wrap=True)
+            self.sep_warning = Hairline(c)
 
-        # 1 Voice
-        self.icon1 = StepIcon(1, c)
-        self.head1 = Label("Voice", c, size=14, weight="semibold")
+        # Listen: Voice
+        self.icon_voice = StepIcon(number, c)
+        self.head_voice = Label("Voice", c, size=14, weight="semibold")
         self.radio_local = Radio(f"On this {self.device}", c)
         self.local_tag = Tag("Free and private", privacy_symbol(True), c)
         self.local_note = Label(f"Your text stays on this {self.device}. One download of about {kokoro.DOWNLOAD_SIZE_TEXT}.", c, size=12,
@@ -609,7 +841,7 @@ class SetupWindow(LyssnaWindow):
         self.key_status = Label("", c, size=12, color=theme.content_dim, wrap=True)
         self.local_only_note = Label(f"Online voices are off because “Keep Everything on This {self.device}” is on.",
                                      c, size=12, color=theme.content_dim, wrap=True)
-        self.sep1 = Hairline(c)
+        self.sep_voice = Hairline(c)
 
         self.voice_group = QButtonGroup(self)
         self.voice_group.setExclusive(True)
@@ -618,27 +850,95 @@ class SetupWindow(LyssnaWindow):
             radio.clicked.connect(lambda _checked=False, r=radio: self.on_choose_voice(r))
         self.radio_local.setChecked(True)
 
-        # 2 Try it
-        self.icon2 = StepIcon(2, c)
-        self.head2 = Label("Try it", c, size=14, weight="semibold")
+        # Listen: Try it
+        self.icon_try = StepIcon(number + 1, c)
+        self.head_try = Label("Try it", c, size=14, weight="semibold")
         self.try_text = Label("Select text in any app and press", c, size=13, color=theme.content_dim)
-        self.keycap = KeyCaps(self._key_names(self.ctl.cfg["hotkeys"]["speak"]), c)
+        self.keycap = KeyCaps(key_caps(self.ctl.cfg["hotkeys"]["speak"], keys), c)
         self.sample = _pill("Read a Sample", c, self.on_sample)
+        self.try_note = Label("The shortcut works once step 1 is done. The sample works now.", c, size=12,
+                              color=theme.content_dim, wrap=True)
 
-        self.card_local.lower()
-        self.card_key.lower()
+        if self.dictate:
+            self._build_dictation(c)
+
+        for card in self.cards:
+            card.lower()
         self.restyle()
 
-    @staticmethod
-    def _key_names(spec: str) -> list[str]:
-        """One cap per key, by its Windows name: "ctrl+alt+s" -> ["Ctrl", "Alt", "S"]."""
-        return [win_keys.pretty([part]) for part in tokens(spec)]
+    def _build_dictation(self, c: QWidget) -> None:
+        """Dictate's three steps."""
+        self.card_dict_local = OptionCard(c)
+        self.card_dict_online = OptionCard(c)
+        self.cards += [self.card_dict_local, self.card_dict_online]
+
+        # Dictate 1: Permission
+        self.dicon1 = StepIcon(1, c)
+        self.dhead1 = Label("Permission", c, size=14, weight="semibold")
+        self.mic_row = StatusRow("", c, done=False)
+        self.mic_allow = _pill("Allow", c, self.on_allow_microphone)
+        self.mic_settings = _pill("Open Settings", c, self.on_open_microphone_settings, min_w=False)
+        self.globe_row = StatusRow("", c, done=False)
+        self.globe_settings = _pill("Open Keyboard Settings", c, self.on_open_keyboard_settings, min_w=False)
+        self.dsep1 = Hairline(c)
+
+        # Dictate 2: Engine
+        self.dicon2 = StepIcon(2, c)
+        self.dhead2 = Label("Engine", c, size=14, weight="semibold")
+        self.dict_local = Radio(f"On this {self.device}", c)
+        self.dict_local_tag = Tag("Free and private", privacy_symbol(True), c)
+        self.dict_local_note = Label("", c, size=12, color=theme.content_dim, wrap=True)
+        self.dict_download = _pill("Download", c, self.on_download_models)
+        self.dict_progress = ProgressBar(c)
+        self.dict_progress.resize(200, round(BAR_H))
+        self.dict_progress_text = Label("", c, font=theme.digits_font(12), color=theme.content_dim)
+        self.dict_progress_text.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.dict_ready = StatusRow("Ready", c)
+        self.dict_error = Label("", c, size=12, color=bad, wrap=True)
+        self.dict_online = Radio("Online, with your API keys", c)
+        vendors = [_engine_class(row.name).vendor for row in self.key_rows]
+        self.dict_online_tag = Tag(f"Sent to {vendors[0]} and {vendors[1]}", privacy_symbol(False), c)
+        self.dict_online_note = Label(f"Best with names and unusual words. Your voice goes to {vendors[0]} and the "
+                                      f"text to {vendors[1]} for cleanup. Each needs your own key.", c, size=12,
+                                      color=theme.content_dim, wrap=True)
+        for row in self.key_rows:
+            cls = _engine_class(row.name)
+            row.head = Label(f"{cls.vendor} ({row.job})", c, size=13, weight="medium")
+            row.get_key = IconPillButton("Get a key", "arrow.up.right", c, clicked=lambda r=row: self.on_get_dictation_key(r))
+            row.field = KeyField(c)
+            row.field.returnPressed.connect(lambda r=row: self.on_save_dictation_key(r))
+            row.save = _pill("Save", c, lambda r=row: self.on_save_dictation_key(r))
+            row.spinner = Spinner(c)
+            row.status = Label("", c, size=12, color=theme.content_dim, wrap=True)
+        self.dict_local_only_note = Label(f"Online dictation is off because “Keep Everything on This {self.device}” is on.",
+                                          c, size=12, color=theme.content_dim, wrap=True)
+        self.dsep2 = Hairline(c)
+
+        self.dict_group = QButtonGroup(self)  # their own group, apart from the voice's
+        self.dict_group.setExclusive(True)
+        for radio in (self.dict_local, self.dict_online):
+            self.dict_group.addButton(radio)
+            radio.clicked.connect(lambda _checked=False, r=radio: self.on_choose_dictation(r))
+        self.dict_local.setChecked(True)
+
+        # Dictate 3: Try it
+        self.dicon3 = StepIcon(3, c)
+        self.dhead3 = Label("Try it", c, size=14, weight="semibold")
+        self.hold_text = Label("Hold", c, size=13, color=theme.content_dim)
+        self.hold_keys = KeyCaps([], c)
+        self.hold_after = Label("and speak.", c, size=13, color=theme.content_dim)
+        self.dictate_body = Label("Lyssna types what you said, cleaned up, wherever your cursor is.", c, size=13,
+                                  color=theme.content_dim, wrap=True)
+        self.free_text = Label("Hands-free:", c, size=13, color=theme.content_dim)
+        self.free_keys = KeyCaps([], c)
+        self._set_dictation_caps()
 
     def restyle(self) -> None:
         if not self.built:
             return
         self.popup.restyle()
-        self.key_field.restyle()
+        for field in self.findChildren(KeyField):
+            field.restyle()
         self.scroll_area.verticalScrollBar().setStyleSheet(
             f"QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px 2px 2px 0; }}"
             f" QScrollBar::handle:vertical {{ background: {css(theme.content(0.25))}; border-radius: 3px; min-height: 24px; }}"
@@ -660,10 +960,77 @@ class SetupWindow(LyssnaWindow):
     def _engine(self) -> str:
         return self.engines[max(0, self.popup.currentIndex())]
 
+    def _dictation_section(self) -> dict:
+        return self.ctl.cfg.get("dictation", {})
+
+    def _dictation_hotkey(self) -> str:
+        return str(self._dictation_section().get("hotkey", config.DEFAULTS["dictation"]["hotkey"]))
+
+    def _set_dictation_caps(self) -> None:
+        """The dictation key and hands-free caps, from the config, named for this system."""
+        hold = dictation_caps(self._dictation_hotkey(), self.key_table)
+        hands_free = str(self._dictation_section().get("hands_free", config.DEFAULTS["dictation"]["hands_free"]))
+        if hold != self.hold_keys.labels:
+            self.hold_keys.set_labels(hold)
+        free = [*hold, *key_caps(hands_free, self.key_table)]
+        if free != self.free_keys.labels:
+            self.free_keys.set_labels(free)
+
+    def _dictation_online_allowed(self) -> bool:
+        return all(self._allowed(row.name) for row in self.key_rows)
+
+    def _allowed(self, name: str) -> bool:
+        cfg = self.ctl.cfg
+        return transcribers.allowed(name, cfg) if name in transcribers.REGISTRY else cleaners.allowed(name, cfg)
+
+    def _choose_dictation(self, engine: str | None) -> None:
+        """Point the dictation choice at the online option when asked for an engine's key or
+        when dictation uses an online engine now; else at the engines on this computer."""
+        section = self._dictation_section()
+        in_use = {str(section.get("transcriber", "")), str(section.get("cleaner", "")) if section.get("cleanup", True) else ""}
+        online = self._dictation_online_allowed() and (engine in DICTATION_KEY_ENGINES or bool(in_use & set(DICTATION_KEY_ENGINES)))
+        (self.dict_online if online else self.dict_local).setChecked(True)
+        if engine is not None:
+            for row in self.key_rows:
+                row.message = ("", "secondary")
+
+    def _read_globe(self, force: bool = False) -> None:
+        """Read the Globe key setting on a worker thread, at most every GLOBE_POLL seconds;
+        the next tick shows the answer."""
+        if not self.has_globe or self._globe_busy or (not force and time.monotonic() - self._globe_read_at < GLOBE_POLL):
+            return
+        self._globe_busy = True
+
+        def read() -> None:
+            try:
+                answer = self.globe_action()
+            except Exception:
+                log.debug("Globe key setting unreadable", exc_info=True)
+                answer = "unknown"
+            self._globe, self._globe_read_at, self._globe_busy = answer, time.monotonic(), False
+
+        threading.Thread(target=read, daemon=True, name="lyssna-globe-read").start()
+
     def _refresh(self, force: bool = False) -> None:
-        """Read the live state (shortcuts, download, keys) and show it."""
+        """Read the live state (permission, shortcuts, download, keys) and show it."""
         ctl = self.ctl
         taps_ok = bool(self.taps_ok())
+        trusted = bool(self.accessibility_trusted()) if self.needs_accessibility else True
+        needs_relaunch = trusted and not taps_ok
+        body = ""
+        if self.needs_accessibility:
+            if not trusted:
+                body = ("The shortcut and the play button need this to read what you select. "
+                        "Click Open Settings and turn on Lyssna. If it is not in the list, "
+                        "click + and choose Lyssna.")
+            elif needs_relaunch:
+                body = "Allowed. Relaunch Lyssna once so the shortcut starts working."
+            else:
+                body = "Allowed. The shortcut and the play button are ready."
+            self.body_permission.set_text(body)
+        permission_done = trusted and not needs_relaunch  # without the permission: the shortcuts started
+        if self.needs_accessibility:
+            self.icon_permission.set_done(permission_done)
 
         local_only = ctl.local_only()
         if local_only and self.radio_key.isChecked():
@@ -684,8 +1051,8 @@ class SetupWindow(LyssnaWindow):
 
         provider = ctl.cfg.get("provider", "")
         voice_done = provider in REGISTRY and ctl.provider_configured(provider)
-        self.icon1.set_done(voice_done)
-        self.icon2.set_done(False)
+        self.icon_voice.set_done(voice_done)
+        self.icon_try.set_done(False)
 
         engine = self._engine()
         self.key_tag.set(f"Text is sent to {get_provider(engine, ctl.cfg).recipient()}", privacy_symbol(False))
@@ -701,15 +1068,23 @@ class SetupWindow(LyssnaWindow):
         for view in (self.popup, self.key_field, self.save):
             view.setEnabled(not self._saving)
 
-        # The shortcuts are not a step on Windows, but Listen is not ready while they are down.
-        self._left = {LISTEN: steps_left((taps_ok, voice_done))}
-        self.footer_status.set_text(footer_text(self._left))
+        dictation = self._refresh_dictation() if self.dictate else None
+
+        self._left = (steps_left((permission_done, voice_done)), steps_left(self._dictate_done) if self.dictate else 0)
+        if self.dictate:
+            self.tab_listen.set_status(tab_status(self._left[0]))
+            self.tab_dictate.set_status(tab_status(self._left[1]))
+            self.footer_status.set_text(footer_status(*self._left))
+        else:
+            self.footer_status.set_text(footer_status(self._left[0], 0).split(" · ")[0])  # Listen's part alone
 
         local_chosen = self.radio_local.isChecked()
         shape = {
             "tab": self.tab,
-            "left": tuple(self._left.values()),
-            "warning": not taps_ok,
+            "left": self._left,
+            "relaunch": self.needs_accessibility and needs_relaunch,
+            "open_settings": not trusted,
+            "warning": not self.needs_accessibility and not taps_ok,
             "local_body": local_chosen,
             "download": local_chosen and progress is None and not ready and can_run,
             "progress": local_chosen and progress is not None,
@@ -719,11 +1094,90 @@ class SetupWindow(LyssnaWindow):
             "key_body": not local_only and not local_chosen,
             "key_status": not local_only and not local_chosen and bool(text),
             "local_only_note": local_only,
-            "texts": (error, text, self._saving, self.key_tag.text, self.download.text()),
+            "try_note": not trusted,
+            "texts": (body, error, text, self._saving, self.key_tag.text, self.download.text()),
+            "dictation": dictation,
         }
         if force or shape != self._shape:
             self._shape = shape
             self._layout(shape)
+
+    def _refresh_dictation(self) -> tuple:
+        """Dictate's live state (microphone, Globe key, models, keys) onto its views. Returns
+        what decides its layout, so a change re-lays the window out, and leaves which of its
+        steps are done in self._dictate_done."""
+        ctl = self.ctl
+        mic = ctl.microphone_status()
+        if mic == "granted":
+            self.mic_row.set("Microphone allowed", True)
+        elif mic == "undetermined":
+            self.mic_row.set("Allow the microphone so Lyssna can hear you", False)
+        else:
+            self.mic_row.set("Microphone access is off. Turn it on in Settings.", False)
+
+        self._set_dictation_caps()
+        on_globe = self.has_globe and self._dictation_hotkey() == GLOBE_KEY
+        globe_ok = not on_globe or self._globe == "nothing"
+        if on_globe:
+            self._read_globe()
+            if globe_ok:
+                self.globe_row.set("Globe key set to Do Nothing", True)
+            else:
+                self.globe_row.set("Set “Press Globe key to” to Do Nothing", False)
+
+        local_only = ctl.local_only()
+        if (local_only or not self._dictation_online_allowed()) and self.dict_online.isChecked():
+            self._choose_dictation(None)
+        models = ctl.local_dictation_models()
+        can_run = transcribers.REGISTRY[transcribers.LOCAL].can_run()
+        self.dict_local.setEnabled(can_run)
+        self.dict_local_note.set_text(
+            f"Your voice and text stay on this {self.device}. One download of "
+            f"{_size_text(sum(m.total_bytes for m in models))}." if can_run else "")
+        progress = ctl.dictation_download_progress()
+        ready = can_run and all(m.present() for m in models)
+        error = ""
+        if not can_run:
+            error = f"Dictation on this {self.device} is not available in this build."
+        elif progress is None and not ready:
+            error = next((m.download().error for m in models if not m.present() and m.download().error), "")
+        if progress is not None:
+            self.dict_progress.set_fraction(progress)
+            self.dict_progress_text.set_text(f"{int(progress * 100)}%")
+        self.dict_error.set_text(error)
+        self.dict_download.setText("Try Again" if error and can_run else "Download")
+        _min_width(self.dict_download)
+
+        texts = []
+        keys_saved = True
+        for row in self.key_rows:
+            state = ctl.dictation_key_state(row.name)
+            keys_saved = keys_saved and state is True
+            text, tone = row.message
+            if not text and not row.saving:
+                if state and self._in_use(row.name):
+                    text, tone = "Using your saved key.", "good"
+                elif state:
+                    text = "A key is already saved. Paste a new one to replace it."
+            row.status.set_text(text)
+            row.status.set_color(TONES.get(tone, theme.content_dim))
+            for view in (row.field, row.save):
+                view.setEnabled(not row.saving)
+            texts.append((text, row.saving))
+
+        local_chosen = self.dict_local.isChecked()
+        self._dictate_done = (mic == "granted" and globe_ok, ready if local_chosen else keys_saved)
+        self.dicon1.set_done(self._dictate_done[0])
+        self.dicon2.set_done(self._dictate_done[1])
+        self.dicon3.set_done(False)
+        return (mic, on_globe, globe_ok, local_only or not self._dictation_online_allowed(), local_chosen,
+                progress is not None, ready, error, can_run, tuple(texts), self.dict_local_note.value(),
+                self.mic_row.label.value(), tuple(self.free_keys.labels), self.dict_download.text())
+
+    def _in_use(self, name: str) -> bool:
+        if name in transcribers.REGISTRY:
+            return self.ctl.current_transcriber() == name
+        return self.ctl.current_cleaner() == name
 
     # -- layout ------------------------------------------------------------------------------
     #
@@ -742,7 +1196,7 @@ class SetupWindow(LyssnaWindow):
     def centre_row(self, views_x: list[tuple[QWidget, float]], y: float) -> float:
         """Place views on one line, vertically centred on the tallest; returns the line height.
         The views keep the size they have (fit labels first)."""
-        h =max(v.height() for v, _ in views_x)
+        h = max(v.height() for v, _ in views_x)
         for v, x in views_x:
             v.move(round(x), round(y + (h - v.height()) / 2))
             self._visible.add(v)
@@ -772,13 +1226,25 @@ class SetupWindow(LyssnaWindow):
         card.set_chosen(chosen)
         self._visible.add(card)
 
+    def _progress_row(self, bar: ProgressBar, label: Label, gap: float, y: float) -> float:
+        """A progress bar and its percentage, the label as wide as "100%" gets; returns the line height."""
+        text = label.value()
+        label.set_text("100%")  # measure the widest it gets
+        tw, th = label.fit()
+        label.set_text(text)
+        label.resize(tw, th)
+        bar.resize(round(SUB_W - tw - gap), round(BAR_H))
+        return self.centre_row([(bar, SUB_X), (label, SUB_X + SUB_W - tw)], y)
+
     def _layout(self, show: dict) -> None:
-        """Lay out the current tab's steps, then fit the window to header, steps and footer.
-        Only the steps scroll when the screen is too short."""
+        """Lay out the current tab's steps, then fit the window to header, steps and footer
+        (keeping its top edge). Only the steps scroll when the screen is too short."""
         self._visible = set()
         y = STEPS_TOP
         if self.tab == LISTEN:
             y = self._layout_listen(show, y)
+        else:
+            y = self._layout_dictation(show["dictation"], y)
         y += 20
         for view in self.content.children():
             if isinstance(view, QWidget):
@@ -787,17 +1253,30 @@ class SetupWindow(LyssnaWindow):
 
         head_h = self._layout_header()
         h = self.fit_height(W, head_h + y + FOOTER_H)
-        body_h = h - head_h - FOOTER_H
         self.header.setGeometry(0, 0, round(W), round(head_h))
-        self.header_line.setVisible(y > body_h)  # a line under the header only while the steps scroll under it
-        self.scroll_area.setGeometry(0, round(head_h), round(W), round(body_h))
+        self.scroll_area.setGeometry(0, round(head_h), round(W), round(h - head_h - FOOTER_H))
         self._layout_footer(h)
 
     def _layout_header(self) -> float:
-        """The mark, the welcome and the sentence under it; returns the header's height."""
-        hh = self.heading.fit(W - 2 * MARGIN)
-        self.heading.move(round(MARGIN), round(HEADER_TOP))
-        y = HEADER_TOP + hh + 4
+        """The mark, the welcome and the switch, centred; returns the header's height."""
+        y = HEADER_TOP
+        self.mark.move(round((W - self.mark.width()) / 2), round(y))
+        y += MARK_H + 10
+        tw, th = self.title.fit()
+        self.title.move(round((W - tw) / 2), round(y))
+        y += th + 6
+        _, sh = self.subtitle.fit(W - 2 * MARGIN)
+        self.subtitle.move(round(MARGIN), round(y))
+        y += sh + 16
+        if self.switch is not None:
+            seg_w = max(self.tab_listen.preferred_width(), self.tab_dictate.preferred_width())  # equal halves
+            self.tab_listen.setGeometry(round(SEG_PAD), round(SEG_PAD), round(seg_w), round(SEG_H))
+            self.tab_dictate.setGeometry(round(SEG_PAD + seg_w + 2), round(SEG_PAD), round(seg_w), round(SEG_H))
+            track_w = 2 * seg_w + 2 + 2 * SEG_PAD
+            self.switch.setGeometry(round((W - track_w) / 2), round(y), round(track_w), round(SEG_H + 2 * SEG_PAD))
+            y += SEG_H + 2 * SEG_PAD + 18
+        else:
+            y += 2  # no switch: the line sits as far under the sentence as it would under the switch
         self.header_line.setGeometry(0, round(y), round(W), 1)
         return y + 1
 
@@ -810,19 +1289,33 @@ class SetupWindow(LyssnaWindow):
         self.footer_status.move(round(MARGIN), round((FOOTER_H - sh) / 2))
 
     def _layout_listen(self, show: dict, y: float) -> float:
-        """Listen's steps (and the shortcuts warning above them), from y down; returns where they end."""
+        """Listen's steps (and, without a permission step, the shortcuts warning above them),
+        from y down; returns where they end."""
         put, centre_row = self.put, self.centre_row
 
-        if show["warning"]:
+        if self.needs_accessibility:
+            # Permission
+            y += self._step(self.icon_permission, self.head_permission, y) + 4
+            y += put(self.body_permission, TEXT_X, y, TEXT_W)
+            row = []
+            x = TEXT_X  # pills have no transparent inset, so their edge lines up with the text as is
+            for flag, btn in (("open_settings", self.open_settings), ("relaunch", self.relaunch_btn)):
+                if show[flag]:
+                    row.append((btn, x))
+                    x += btn.width() + 8
+            if row:
+                y += 8 + centre_row(row, y + 8)
+            y = self._sep(self.sep_permission, y)
+        elif show["warning"]:
             th = put(self.warn_text, TEXT_X, y, TEXT_W)
             self.warn_icon.move(round(MARGIN + (ICON - self.warn_icon.width()) / 2), round(y + 1))
             self._visible.add(self.warn_icon)
             y += th + 10
             y += centre_row([(self.relaunch_btn, TEXT_X)], y)
-            y = self._sep(self.sep0, y)
+            y = self._sep(self.sep_warning, y)
 
-        # 1 Voice: two option cards
-        y += self._step(self.icon1, self.head1, y) + 10
+        # Voice: two option cards
+        y += self._step(self.icon_voice, self.head_voice, y) + 10
         top = y
         y += CARD_PAD + self._option_head(self.radio_local, self.local_tag, y + CARD_PAD) + 4
         y += put(self.local_note, SUB_X, y, SUB_W)
@@ -830,13 +1323,7 @@ class SetupWindow(LyssnaWindow):
             if show["download"]:
                 y += 10 + centre_row([(self.download, SUB_X)], y + 10)
             elif show["progress"]:
-                text = self.progress_text.value()
-                self.progress_text.set_text("100%")  # measure the widest it gets
-                tw, th = self.progress_text.fit()
-                self.progress_text.set_text(text)
-                self.progress_text.resize(tw, th)
-                self.progress.resize(round(SUB_W - tw - 10), round(BAR_H))
-                y += 10 + centre_row([(self.progress, SUB_X), (self.progress_text, SUB_X + SUB_W - tw)], y + 10)
+                y += 10 + self._progress_row(self.progress, self.progress_text, 10, y + 10)
             elif show["ready"]:
                 y += 8 + centre_row([(self.ready, SUB_X)], y + 8)
             if show["local_error"]:
@@ -865,24 +1352,111 @@ class SetupWindow(LyssnaWindow):
             self._place_card(self.card_key, top, y, not show["local_body"])
         if show["local_only_note"]:
             y += 8 + put(self.local_only_note, TEXT_X, y + 8, TEXT_W)
-        y = self._sep(self.sep1, y)
+        y = self._sep(self.sep_voice, y)
 
-        # 2 Try it
-        y += self._step(self.icon2, self.head2, y) + 8
+        # Try it
+        y += self._step(self.icon_try, self.head_try, y) + 8
         tw, _ = self.try_text.fit()
         y += centre_row([(self.try_text, TEXT_X), (self.keycap, TEXT_X + tw + 8)], y) + 10
         y += centre_row([(self.sample, TEXT_X)], y)
+        if self.needs_accessibility and show["try_note"]:
+            y += 6 + put(self.try_note, TEXT_X, y + 6, TEXT_W)
+        return y
+
+    def _layout_dictation(self, state: tuple, y: float) -> float:
+        """Dictate's three steps, from y down; returns where they end."""
+        put, centre_row = self.put, self.centre_row
+        mic, on_globe, globe_ok, online_off, local_chosen, downloading, ready, error, can_run = state[:9]
+
+        # 1 Permission
+        y += self._step(self.dicon1, self.dhead1, y) + 8
+
+        def check(status_row: StatusRow, pill: PillButton | None, y: float) -> float:
+            """A status line, with its pill when something is left to do: at the right end of
+            the line when both fit, else under the words."""
+            if pill is None:
+                return y + centre_row([(status_row, TEXT_X)], y)
+            pw = pill.width()
+            if status_row.width() + 12 + pw <= TEXT_W:
+                return y + centre_row([(status_row, TEXT_X), (pill, TEXT_X + TEXT_W - pw)], y)
+            y += centre_row([(status_row, TEXT_X)], y)
+            return y + 8 + centre_row([(pill, TEXT_X + 20)], y + 8)
+
+        y = check(self.mic_row, {"undetermined": self.mic_allow, "denied": self.mic_settings}.get(mic), y)
+        if on_globe:
+            y = check(self.globe_row, None if globe_ok else self.globe_settings, y + 10)
+        y = self._sep(self.dsep1, y)
+
+        # 2 Engine: two option cards
+        y += self._step(self.dicon2, self.dhead2, y) + 10
+        top = y
+        y += CARD_PAD + self._option_head(self.dict_local, self.dict_local_tag, y + CARD_PAD)
+        if self.dict_local_note.value():
+            y += 4 + put(self.dict_local_note, SUB_X, y + 4, SUB_W)
+        if local_chosen:
+            if downloading:
+                y += 10 + self._progress_row(self.dict_progress, self.dict_progress_text, 8, y + 10)
+            elif ready:
+                y += 8 + centre_row([(self.dict_ready, SUB_X)], y + 8)
+            elif can_run:
+                y += 10 + centre_row([(self.dict_download, SUB_X)], y + 10)
+            if error:
+                y += 6 + put(self.dict_error, SUB_X, y + 6, SUB_W)
+        y += CARD_PAD
+        self._place_card(self.card_dict_local, top, y, local_chosen)
+        if online_off:
+            y += 8 + put(self.dict_local_only_note, TEXT_X, y + 8, TEXT_W)
+        else:
+            y += 8
+            top = y
+            y += CARD_PAD + self._option_head(self.dict_online, self.dict_online_tag, y + CARD_PAD) + 4
+            y += put(self.dict_online_note, SUB_X, y, SUB_W)
+            if not local_chosen:
+                for row in self.key_rows:
+                    y += 14
+                    row.head.fit()
+                    y += centre_row([(row.head, SUB_X), (row.get_key, CARD_R - row.get_key.width())], y) + 8
+                    save_w = row.save.width()
+                    row.field.setFixedWidth(round(SUB_W - save_w - 8))  # the Save pill's edge ends the row
+                    y += centre_row([(row.field, SUB_X), (row.save, CARD_R - save_w)], y)
+                    if row.status.value():
+                        shift = 24.0 if row.saving else 0.0
+                        h = put(row.status, SUB_X + shift, y + 8, SUB_W - shift)
+                        if row.saving:
+                            row.spinner.move(round(SUB_X), round(y + 8 + (h - Spinner.SIZE) / 2))
+                            self._visible.add(row.spinner)
+                        y += 8 + h
+            y += CARD_PAD
+            self._place_card(self.card_dict_online, top, y, not local_chosen)
+        y = self._sep(self.dsep2, y)
+
+        # 3 Try it: Hold [key] and speak.   Hands-free: [key] [Space]
+        y += self._step(self.dicon3, self.dhead3, y) + 8
+        row_x, x = [], TEXT_X
+        for view, gap in ((self.hold_text, 6), (self.hold_keys, 6), (self.hold_after, 0)):
+            w = view.fit()[0] if isinstance(view, Label) else view.width()
+            row_x.append((view, x))
+            x += w + gap
+        y += centre_row(row_x, y) + 6
+        y += put(self.dictate_body, TEXT_X, y, TEXT_W) + 10
+        fw, _ = self.free_text.fit()
+        y += centre_row([(self.free_text, TEXT_X), (self.free_keys, TEXT_X + fw + 6)], y)
         return y
 
     # -- actions -----------------------------------------------------------------------------
 
     def keyPressEvent(self, ev) -> None:
-        """Enter is Done, as the Mac's default button, except in the key field (Enter saves there)."""
-        if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.focusWidget() is not self.key_field:
+        """Enter is Done, as the Mac's default button, except in a key field (Enter saves there)."""
+        if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not isinstance(self.focusWidget(), KeyField):
             self.done.click()
             ev.accept()
             return
         super().keyPressEvent(ev)
+
+    def on_open_settings(self) -> None:
+        self.accessibility_trusted(prompt=True)  # puts Lyssna in the list if it is not there yet
+        if host.ACCESSIBILITY_SETTINGS_URL:
+            host.open_target(host.ACCESSIBILITY_SETTINGS_URL)
 
     def on_choose_voice(self, radio: Radio) -> None:
         local = radio is self.radio_local
@@ -956,36 +1530,143 @@ class SetupWindow(LyssnaWindow):
             self._key_message = (str(e), "bad")
         self.on_change()
 
+    # -- dictation actions -------------------------------------------------------------------
 
-class WarningIcon(QWidget):
-    """The warning triangle beside the shortcuts row, in the error colour."""
+    def on_allow_microphone(self) -> None:
+        self.ctl.request_microphone()  # the system shows its prompt; the next tick shows the answer
 
-    SIZE = 18
+    def on_open_microphone_settings(self) -> None:
+        host.open_target(host.MIC_SETTINGS_URL)
 
-    def __init__(self, parent: QWidget):
-        super().__init__(parent)
-        self.setFixedSize(self.SIZE, self.SIZE)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    def on_open_keyboard_settings(self) -> None:
+        if host.KEYBOARD_SETTINGS_URL:
+            host.open_target(host.KEYBOARD_SETTINGS_URL)
+        self._globe_read_at = 0.0  # read the setting again soon after the user changes it
 
-    def paintEvent(self, ev) -> None:
-        p = QPainter(self)
-        icons.draw_icon(p, "exclamationmark.triangle", QRectF(self.rect()), bad(), "medium")
-        p.end()
+    def on_choose_dictation(self, radio: Radio) -> None:
+        """An option switches the engines only when it can run now: the models are here, or a
+        key is saved. Otherwise Download or Save does it."""
+        local = radio is self.dict_local
+        for row in self.key_rows:
+            row.message = ("", "secondary")
+        try:
+            if local:
+                if all(m.present() for m in self.ctl.local_dictation_models()):
+                    self.ctl.use_local_dictation()
+            else:
+                for row in self.key_rows:
+                    if self.ctl.dictation_key_state(row.name) is True:
+                        self._use_dictation(row.name)
+        except ValueError as e:
+            log.info("dictation engine not switched: %s", e)
+        self.on_change()
+        self._refresh(force=True)
+        if not local:
+            self.key_rows[0].field.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def on_download_models(self) -> None:
+        try:
+            self.ctl.use_local_dictation()  # starts the downloads; the progress bar follows them
+        except ValueError as e:
+            log.info("dictation engine not switched: %s", e)
+        self.on_change()
+        self._refresh(force=True)
+
+    def _use_dictation(self, name: str) -> None:
+        if name in transcribers.REGISTRY:
+            self.ctl.set_transcriber(name)
+        else:
+            self.ctl.set_cleaner(name)
+
+    def on_get_dictation_key(self, row: _KeyRow) -> None:
+        url = _engine_class(row.name).key_url
+        if url:
+            host.open_target(url)
+
+    def on_save_dictation_key(self, row: _KeyRow) -> None:
+        if row.saving:
+            return
+        key = row.field.text()
+        if not key.strip():
+            row.message = ("Paste your API key first.", "bad")
+            self._refresh(force=True)
+            return
+        row.saving = True
+        row.message = ("Checking the key…", "secondary")
+        row.spinner.start()
+        self._refresh(force=True)
+
+        def check() -> None:
+            try:
+                error = self.ctl.add_dictation_key(row.name, key)  # one free request, then save
+            except Exception as e:  # never leave the spinner turning; the key is not logged
+                log.warning("checking a %s key failed: %s", row.name, type(e).__name__)
+                error = f"That key didn't work. {e}"
+            on_main(self._dictation_saved, row, error)
+
+        threading.Thread(target=check, daemon=True, name="lyssna-key-check").start()
+
+    def _dictation_saved(self, row: _KeyRow, error: str) -> None:
+        row.saving = False
+        row.spinner.stop()
+        if error:
+            row.message = (error[:300], "bad")
+        else:
+            row.field.clear()
+            row.message = (f"Saved. Dictation now uses {_engine_class(row.name).vendor} for {row.job}.", "good")
+            self.on_change()
+        self._refresh(force=True)
+
+
+def _accessibility_trusted(prompt: bool = False) -> bool:
+    """The system's answer: may Lyssna read the selection and watch the keys? Asked only where
+    host.NEEDS_ACCESSIBILITY."""
+    return bool(host.events.accessibility_trusted(prompt=prompt))
+
+
+def _globe_action() -> str:
+    """The system's Globe key setting ("nothing" is what dictation on fn needs). Asked only
+    where host.HAS_GLOBE_KEY."""
+    globe = host.globe
+    return globe.globe_key_action() if globe is not None else "unknown"
 
 
 # -- previews (python -m lyssna.ui.preview) -------------------------------------------------
+
+
+class _FakeModel:
+    """A dictation model as the window reads it: its size, whether it is here, its download's error."""
+
+    def __init__(self, total_bytes: int, present: bool, error: str = ""):
+        self.total_bytes = total_bytes
+        self._present = present
+        self.error = error
+
+    def present(self) -> bool:
+        return self._present
+
+    def download(self):
+        return self
 
 
 class _FakeController:
     """Just what the setup window reads, with no network and no real engine."""
 
     def __init__(self, *, provider: str = "kokoro", ready: bool = False, progress: float | None = None,
-                 keys: tuple[str, ...] = (), local_only: bool = False):
-        self.cfg = {"provider": provider, "hotkeys": {"speak": "ctrl+alt+s"}, "local_only": local_only}
+                 keys: tuple[str, ...] = (), local_only: bool = False, mic: str = "granted", models: bool = False,
+                 dict_progress: float | None = None, dict_keys: tuple[str, ...] = (), online: bool = False,
+                 hotkey: str = "fn"):
+        dictation = {"transcriber": "openai" if online else "parakeet", "cleaner": "haiku" if online else "s1-mini",
+                     "cleanup": True, "hotkey": hotkey, "hands_free": "space"}
+        self.cfg = {"provider": provider, "hotkeys": {"speak": "ctrl+alt+s"}, "local_only": local_only, "dictation": dictation}
         self.ready = ready
         self.progress = progress
         self.keys = set(keys)
         self._local_only = local_only
+        self.mic = mic
+        self.models = models
+        self.dict_progress = dict_progress
+        self.dict_keys = set(dict_keys)
 
     def local_only(self) -> bool:
         return self._local_only
@@ -1007,18 +1688,87 @@ class _FakeController:
     def speak_text(self, text: str) -> bool:
         return True
 
+    def microphone_status(self) -> str:
+        return self.mic
 
-def _preview(ctl: _FakeController, *, engine: str | None = None, taps_ok: bool = True, error: str = "",
-             message: tuple[str, str] | None = None, saving: bool = False, key: str = "") -> QWidget:
-    """A setup window built against `ctl`, worded for a PC, never put on screen."""
+    def request_microphone(self) -> None:
+        self.mic = "granted"
+
+    def local_dictation_models(self) -> list:
+        from ..dictation import models
+
+        return [_FakeModel(m.total_bytes, self.models) for m in (models.PARAKEET_V2, models.S1_MINI)]
+
+    def dictation_download_progress(self) -> float | None:
+        return self.dict_progress
+
+    def use_local_dictation(self) -> None:
+        self.cfg["dictation"].update(transcriber="parakeet", cleaner="s1-mini")
+
+    def dictation_key_state(self, name: str) -> bool:
+        return name in self.dict_keys
+
+    def add_dictation_key(self, name: str, key: str) -> str:
+        return ""
+
+    def set_transcriber(self, name: str) -> None:
+        self.cfg["dictation"]["transcriber"] = name
+
+    def set_cleaner(self, name: str) -> None:
+        self.cfg["dictation"]["cleaner"] = name
+
+    def current_transcriber(self) -> str:
+        name = self.cfg["dictation"]["transcriber"]
+        return name if name in self.dict_keys or not transcribers.REGISTRY[name].needs_key else ""
+
+    def current_cleaner(self) -> str:
+        name = self.cfg["dictation"]["cleaner"]
+        return name if name in self.dict_keys or not cleaners.REGISTRY[name].needs_key else ""
+
+
+def _key_table(system: str) -> ModuleType:
+    """The key names a preview shows: the PC's table anywhere; the Mac's where it can load
+    (it needs Quartz), else this computer's own."""
+    if system == "pc":
+        from ..win import hotkeys as win_hotkeys
+
+        return win_hotkeys
+    try:
+        from ..mac import hotkeys as mac_hotkeys
+    except ImportError:
+        return host.hotkey_table
+    return mac_hotkeys
+
+
+def _preview(ctl: _FakeController, *, system: str = "pc", tab: str = LISTEN, engine: str | None = None,
+             dictation: str | None = None, trusted: bool = True, taps_ok: bool = True, globe: str = "nothing",
+             error: str = "", message: tuple[str, str] | None = None, saving: bool = False, key: str = "",
+             dict_saving: int | None = None, dict_message: tuple[int, str, str] | None = None,
+             features: dict | None = None) -> QWidget:
+    """A setup window built against `ctl` with the capabilities of `system` ("mac" or "pc")
+    forced, never put on screen."""
     from unittest import mock
 
-    with mock.patch.object(host, "DEVICE", "PC"), mock.patch.object(host, "MENU_PLACE", "the Lyssna icon by the clock"), \
+    mac = system == "mac"
+    local = transcribers.REGISTRY[transcribers.LOCAL]
+    with mock.patch.object(host, "DEVICE", "Mac" if mac else "PC"), \
+            mock.patch.object(host, "MENU_PLACE", "the menu bar" if mac else "the Lyssna icon by the clock"), \
+            mock.patch.object(host, "NEEDS_ACCESSIBILITY", mac), mock.patch.object(host, "HAS_GLOBE_KEY", mac), \
             mock.patch.object(kokoro.KokoroProvider, "can_run", classmethod(lambda cls: True)), \
+            mock.patch.object(local, "can_run", classmethod(lambda cls: True)), \
             mock.patch.object(kokoro.DOWNLOAD, "error", error):
         w = SetupWindow(ctl)
+        w.height_limit = lambda: float("inf")  # the whole window in the shot, whatever screen renders it
+        w.key_table = _key_table(system)
+        if features is not None:
+            w.features = dict(features)
         w.taps_ok = lambda: taps_ok
-        w.prepare(engine)
+        w.accessibility_trusted = lambda prompt=False: trusted
+        w.globe_action = lambda: globe
+        w._globe = globe
+        w.prepare(engine, dictation)
+        if engine is None and dictation is None and w.dictate:
+            w._select_tab(tab)
         if key:
             w.key_field.setText(key)
         if saving:
@@ -1027,11 +1777,23 @@ def _preview(ctl: _FakeController, *, engine: str | None = None, taps_ok: bool =
             w.spinner.start()
         elif message is not None:
             w._key_message = message
+        if dict_saving is not None:
+            row = w.key_rows[dict_saving]
+            row.field.setText("sk-preview")
+            row.saving = True
+            row.message = ("Checking the key…", "secondary")
+            row.spinner.start()
+        if dict_message is not None:
+            index, text, tone = dict_message
+            w.key_rows[index].message = (text, tone)
         w._refresh(force=True)
     return w
 
 
+_DONE = {"ready": True, "mic": "granted", "models": True}  # every step done on both tabs
+
 PREVIEWS = {
+    # Listen on a PC: no permission step
     "setup.download": lambda: _preview(_FakeController()),
     "setup.downloading": lambda: _preview(_FakeController(progress=0.42)),
     "setup.ready": lambda: _preview(_FakeController(ready=True)),
@@ -1042,4 +1804,27 @@ PREVIEWS = {
                                         message=("Saved. Lyssna now reads with OpenAI TTS.", "good")),
     "setup.local-only": lambda: _preview(_FakeController(ready=True, local_only=True)),
     "setup.shortcuts-warning": lambda: _preview(_FakeController(ready=True), taps_ok=False),
+    "setup.listen-only": lambda: _preview(_FakeController(), features={"dictate": False}),
+    # Listen on a Mac: the permission step in each of its states
+    "setup.mac.not-allowed": lambda: _preview(_FakeController(), system="mac", trusted=False),
+    "setup.mac.relaunch": lambda: _preview(_FakeController(ready=True), system="mac", taps_ok=False),
+    "setup.mac.ready": lambda: _preview(_FakeController(**_DONE), system="mac"),
+    "setup.mac.listen-only": lambda: _preview(_FakeController(), system="mac", trusted=False, features={"dictate": False}),
+    # Dictate on a Mac: the microphone, the Globe key, the models, the keys
+    "setup.dictate.mic-undetermined": lambda: _preview(_FakeController(ready=True, mic="undetermined"), system="mac",
+                                                       tab=DICTATE),
+    "setup.dictate.mic-denied": lambda: _preview(_FakeController(ready=True, mic="denied"), system="mac", tab=DICTATE),
+    "setup.dictate.globe": lambda: _preview(_FakeController(ready=True), system="mac", tab=DICTATE, globe="emoji"),
+    "setup.dictate.download": lambda: _preview(_FakeController(ready=True), system="mac", tab=DICTATE),
+    "setup.dictate.downloading": lambda: _preview(_FakeController(ready=True, dict_progress=0.42), system="mac", tab=DICTATE),
+    "setup.dictate.ready": lambda: _preview(_FakeController(**_DONE), system="mac", tab=DICTATE),
+    "setup.dictate.online": lambda: _preview(_FakeController(ready=True, models=True, online=True, dict_keys=("openai",)),
+                                             system="mac", dictation="haiku", dict_saving=1),
+    "setup.dictate.local-only": lambda: _preview(_FakeController(ready=True, local_only=True), system="mac", tab=DICTATE),
+    # Dictate on a PC: no Globe key row, the PC's key names
+    "setup.pc.dictate": lambda: _preview(_FakeController(ready=True, mic="undetermined", hotkey="right_control"),
+                                         tab=DICTATE),
+    "setup.pc.dictate-online": lambda: _preview(_FakeController(ready=True, models=True, online=True,
+                                                                dict_keys=("openai", "haiku")), dictation="openai",
+                                                dict_message=(0, "Saved. Dictation now uses OpenAI for transcription.", "good")),
 }
