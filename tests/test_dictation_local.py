@@ -246,6 +246,7 @@ def test_s1_without_files_starts_the_download(monkeypatch):
 
 
 def test_s1_prompt_follows_its_model_card():
+    pytest.importorskip("jinja2")  # arrives with llama-cpp-python, which is only installed where S1-mini can run
     chat = s1mini.messages("um hello")
     assert chat[0] == {"role": "system", "content": s1mini.SYSTEM}
     assert chat[1]["content"] == "[Styling: semi-formal] [Structure: lists] [Context: general]\num hello"
@@ -255,6 +256,7 @@ def test_s1_prompt_follows_its_model_card():
 
 
 def test_s1_template_runs_in_a_sandbox():
+    pytest.importorskip("jinja2")
     from jinja2.exceptions import SecurityError
 
     with pytest.raises(SecurityError):
