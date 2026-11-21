@@ -172,3 +172,34 @@ def test_wav_info():
     assert info["valid"] and info["seconds"] == 1.0 and info["rate"] == 22050
     bad = analysis.wav_info(b"not a wav")
     assert bad["valid"] is False and "error" in bad
+
+
+# ----- synthesis speed and the processor ---------------------------------------------------
+
+
+def test_real_time_factor_and_timing_row():
+    assert analysis.real_time_factor(13.8, 4.6) == 3.0
+    assert analysis.real_time_factor(1.0, 0) is None
+    assert analysis.timing_row(0.4123, {"seconds": 4.606}) == {"synthesis_seconds": 0.412, "audio_seconds": 4.606,
+                                                                "real_time_factor": 0.09}
+
+
+def test_fastest_ignores_rows_without_a_factor():
+    rows = {"a": {"real_time_factor": 0.9}, "b": {"real_time_factor": 0.4}, "c": {"real_time_factor": None}, "d": {}}
+    assert analysis.fastest(rows) == "b"
+    assert analysis.fastest({"x": {}}) is None
+
+
+def test_count_cores_reads_the_relationship_of_each_entry():
+    def entry(relationship: int) -> bytes:
+        return struct.pack("<QI4x16x", 0xFF, relationship)
+
+    raw = entry(0) + entry(2) + entry(0) + entry(3) + entry(0)
+    assert len(entry(0)) == analysis.LOGICAL_PROCESSOR_ENTRY
+    assert analysis.count_cores(raw) == 3
+    assert analysis.count_cores(b"") == 0
+
+
+def test_avx_features():
+    assert analysis.avx_features({"AVX2": True, "AVX512F": False, "AVX512_VNNI": True, "SSE4_2": True}) == [
+        "AVX2", "AVX512_VNNI"]

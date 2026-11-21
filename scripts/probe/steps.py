@@ -342,8 +342,8 @@ def step_voice(ctx):
                 ui.set_body("The download did not finish. The report says why.")
                 yield Press("Next", skip=False)
             else:
-                audio, info = yield Work(be.kokoro_synthesize,
-                                         busy="Preparing the Lyssna voice. The first time takes a little longer.")
+                audio, info = yield Work(be.kokoro_benchmark,
+                                         busy="Preparing the Lyssna voice. This can take a minute.")
                 rec.update(info, "lyssna_voice.")
                 yield from _play_twice(ctx, audio, "lyssna_voice.")
                 ui.set_body("")

@@ -102,6 +102,12 @@ class RealBackend:
             out["espeak_data_exists"] = os.path.isdir(data)
         except Exception as e:
             out["espeak"] = f"{type(e).__name__}: {e}"
+        try:
+            from .speed import machine_details
+
+            out["machine"] = machine_details()
+        except Exception as e:
+            out["machine"] = {"error": f"{type(e).__name__}: {e}"}
         out["kokoro_packages"] = kokoro.packages_installed()
         out["kokoro_files_present"] = kokoro.files_present()
         out["kokoro_folder"] = str(kokoro.DATA_DIR)
@@ -430,18 +436,11 @@ class RealBackend:
         out["download_seconds"] = round(time.perf_counter() - start, 3)
         return out
 
-    def kokoro_synthesize(self, text: str = SENTENCE):
-        from lyssna.providers import kokoro
+    def kokoro_benchmark(self, text: str = SENTENCE):
+        """The app's Kokoro setup, timed cold and warm (see speed.py). Returns (first audio, timings)."""
+        from .speed import kokoro_benchmark
 
-        info: dict = {}
-        start = time.perf_counter()
-        kokoro._get_engine()
-        info["model_load_seconds"] = round(time.perf_counter() - start, 3)
-        start = time.perf_counter()
-        audio = kokoro.KokoroProvider({}).synthesize(text)
-        info["synthesis_seconds"] = round(time.perf_counter() - start, 3)
-        info.update(wav_info(audio.data))
-        return audio, info
+        return kokoro_benchmark(text)
 
     def temp_leftovers(self) -> dict:
         time.sleep(1.0)  # players let go of their files a moment after they stop
@@ -499,6 +498,7 @@ class FakeBackend:
     def about_system(self) -> dict:
         self._pause(0.5)
         return {"windows": {"name": "Windows 11", "build": 26100, "note": FAKE},
+                "machine": {"cpu_name": FAKE, "physical_cores": 4, "logical_processors": 8, "memory_gb": 16.0},
                 "keyboard": {"layout_id": "0000041D", "language": "sv-SE", "has_altgr": True, "altgr_characters": "@$[]{}"},
                 "dpi_awareness": FAKE, "python": sys.version.split()[0], "frozen": False, "pitch_compensation": FAKE}
 
@@ -569,9 +569,10 @@ class FakeBackend:
             self._pause(0.3)
         return {"files_present": True, "note": FAKE}
 
-    def kokoro_synthesize(self, text: str = SENTENCE):
+    def kokoro_benchmark(self, text: str = SENTENCE):
         self._pause(0.5)
-        return None, {"synthesis_seconds": 0.9, "seconds": 4.0, "note": FAKE}
+        row = {"synthesis_seconds": 0.9, "audio_seconds": 4.0, "real_time_factor": 0.225}
+        return None, {"cold": row, "warm_1": row, "warm_2": row, "seconds": 4.0, "note": FAKE}
 
     def temp_leftovers(self) -> dict:
         return {"leftover_lyssna_files": 0, "note": FAKE}

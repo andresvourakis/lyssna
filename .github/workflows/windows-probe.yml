@@ -25,7 +25,7 @@ jobs:
       - run: uv sync --group build
 
       - name: Self-test from source
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: uv run python scripts/probe_win.py --self-test --report-file selftest-source.txt
 
       - name: Build LyssnaProbe
@@ -35,7 +35,7 @@ jobs:
 
       - name: Self-test of the built app
         if: (success() || failure()) && steps.build.outcome == 'success'
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: dist\LyssnaProbe\LyssnaProbeConsole.exe --self-test --report-file selftest-frozen.txt
 
       - name: Zip the app

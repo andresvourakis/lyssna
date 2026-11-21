@@ -341,3 +341,58 @@ def office_installed() -> dict:
                 continue
         found[exe.split(".")[0].lower()] = hit
     return found
+
+
+# ----- the machine -------------------------------------------------------------------------
+
+PF_AVX2_INSTRUCTIONS_AVAILABLE = 40
+PF_AVX512F_INSTRUCTIONS_AVAILABLE = 41
+
+
+def cpu_name() -> str:
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+        return str(winreg.QueryValueEx(k, "ProcessorNameString")[0]).strip()
+
+
+def physical_cores() -> int:
+    """Physical cores, from GetLogicalProcessorInformation."""
+    from .analysis import count_cores
+
+    d = _dlls()
+    ctypes, wintypes = d["ctypes"], d["wintypes"]
+    fn = d["kernel32"].GetLogicalProcessorInformation
+    fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+    fn.restype = wintypes.BOOL
+    size = wintypes.DWORD(0)
+    fn(None, ctypes.byref(size))  # fails on purpose and reports the size it needs
+    buf = ctypes.create_string_buffer(size.value)
+    if not fn(buf, ctypes.byref(size)):
+        raise OSError(f"GetLogicalProcessorInformation failed with error {last_error()}")
+    return count_cores(buf.raw[: size.value])
+
+
+def total_memory_bytes() -> int:
+    d = _dlls()
+    ctypes, wintypes = d["ctypes"], d["wintypes"]
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = (("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong))
+
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(status)
+    if not d["kernel32"].GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise OSError(f"GlobalMemoryStatusEx failed with error {last_error()}")
+    return int(status.ullTotalPhys)
+
+
+def processor_features() -> dict:
+    fn = _dlls()["kernel32"].IsProcessorFeaturePresent
+    fn.argtypes = [_dlls()["wintypes"].DWORD]
+    fn.restype = _dlls()["wintypes"].BOOL
+    return {"avx2": bool(fn(PF_AVX2_INSTRUCTIONS_AVAILABLE)), "avx512f": bool(fn(PF_AVX512F_INSTRUCTIONS_AVAILABLE))}

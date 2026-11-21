@@ -204,9 +204,26 @@ class SelfTest:
         if not out.get("files_present"):
             out["ok"] = False
             return out
-        _audio, info = self.backend.kokoro_synthesize()
+        _audio, info = self.backend.kokoro_benchmark()
         out.update(info)
         out["ok"] = bool(info.get("valid"))
+        say(f"    real-time factor: cold {info['cold']['real_time_factor']}, warm {info['warm_1']['real_time_factor']}, "
+            f"{info['warm_2']['real_time_factor']}, short {info['short']['real_time_factor']}, "
+            f"long {info['long']['real_time_factor']}")
+        return out
+
+    def kokoro_engines(self) -> dict:
+        """Report only: other model files and session settings, side by side."""
+        from lyssna.providers import kokoro
+
+        from .speed import engine_comparison
+
+        if not kokoro.files_present():
+            return {"ok": False, "error": "the app's Kokoro files are not here; see the kokoro check"}
+        out = engine_comparison(say=say)
+        for name, factor in out["side_by_side"].items():
+            say(f"    {name}: real-time factor {factor}")
+        out["ok"] = out["fastest"] is not None
         return out
 
     def floating_window(self) -> dict:
@@ -253,6 +270,7 @@ class SelfTest:
         c("voice", "The Windows voice", "windows_voice", self.sapi, must=True)
         c("voice", "The Windows voice", "player", self.player, must=False)
         c("kokoro", "The Lyssna voice (Kokoro)", "kokoro", self.kokoro, must=False)
+        c("kokoro", "The Lyssna voice (Kokoro)", "kokoro_engines", self.kokoro_engines, must=False)
         c("window", "The floating button window", "floating_window", self.floating_window, must=False)
         c("cleanup", "Temp files", "temp_files", self.temp_files, must=False)
 

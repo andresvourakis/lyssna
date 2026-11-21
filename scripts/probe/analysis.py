@@ -196,3 +196,49 @@ def wav_info(data: bytes) -> dict:
                     "seconds": round(frames / rate, 3) if rate else 0.0, "bytes": len(data)}
     except Exception as e:
         return {"valid": False, "error": f"{type(e).__name__}: {e}", "bytes": len(data)}
+
+
+# ----- speed of speech synthesis -----------------------------------------------------------
+
+
+def real_time_factor(synthesis_seconds: float, audio_seconds: float) -> float | None:
+    """Seconds of work per second of speech: below 1 is faster than real time."""
+    if not audio_seconds or audio_seconds <= 0:
+        return None
+    return round(synthesis_seconds / audio_seconds, 3)
+
+
+def timing_row(synthesis_seconds: float, audio: dict) -> dict:
+    """One timed synthesis for the report: the time, the audio length and the real-time factor.
+    `audio` is a wav_info() result."""
+    seconds = float(audio.get("seconds") or 0.0)
+    return {"synthesis_seconds": round(synthesis_seconds, 3), "audio_seconds": seconds,
+            "real_time_factor": real_time_factor(synthesis_seconds, seconds)}
+
+
+def fastest(rows: dict[str, dict]) -> str | None:
+    """The name of the row with the lowest real-time factor, ignoring rows without one."""
+    scored = [(r["real_time_factor"], name) for name, r in rows.items() if r.get("real_time_factor") is not None]
+    return min(scored)[1] if scored else None
+
+
+# ----- the processor -----------------------------------------------------------------------
+
+LOGICAL_PROCESSOR_ENTRY = 32  # sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION) on 64-bit Windows
+RELATION_PROCESSOR_CORE = 0
+
+
+def count_cores(raw: bytes, entry_size: int = LOGICAL_PROCESSOR_ENTRY) -> int:
+    """Physical cores in a GetLogicalProcessorInformation buffer: the entries whose
+    Relationship (a 32-bit value after the 8-byte processor mask) is RelationProcessorCore."""
+    count = 0
+    for offset in range(0, len(raw) - entry_size + 1, entry_size):
+        (relationship,) = struct.unpack_from("<I", raw, offset + 8)
+        if relationship == RELATION_PROCESSOR_CORE:
+            count += 1
+    return count
+
+
+def avx_features(features: dict) -> list[str]:
+    """The AVX-family features numpy says this processor has, from its __cpu_features__ map."""
+    return sorted(name for name, present in features.items() if present and name.upper().startswith("AVX"))
