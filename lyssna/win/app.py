@@ -34,7 +34,7 @@ import sys
 import threading
 from collections.abc import Callable
 
-from .. import __version__, config, host, server, whatsnew
+from .. import __version__, config, host, whatsnew
 from ..controller import Controller, Notice
 from ..gestures import Point, SelectionGestureDetector
 from ..hotkeys import pretty
@@ -88,7 +88,7 @@ def queued(fn: Callable, *args) -> None:
 
 class LyssnaWinApp:
     """Build with the running QApplication in place. `events`, `capture` and `control_server`
-    default to the platform's (host.events, host.capture, server.ControlServer); the tests pass
+    default to the platform's (host.events, host.capture, host.ipc.ControlServer); the tests pass
     fakes."""
 
     def __init__(self, instance: SingleInstance | None = None, *, events=None, capture=None, control_server=None):
@@ -170,7 +170,7 @@ class LyssnaWinApp:
         # this one must not grab the keys.
         self.ctl.extensions["ui"] = self._ui_state
         self.ctl.extensions["quit"] = self._quit_cmd
-        self.server = (control_server or server.ControlServer)(self.ctl.dispatch)
+        self.server = (control_server or host.ipc.ControlServer)(self.ctl.dispatch)
         try:
             self.server.start()
         except OSError as e:
@@ -490,11 +490,11 @@ def _already_running(instance: SingleInstance) -> bool:
     socket and the hotkeys from it."""
     if not instance.acquire():
         return True
-    return not host.IS_WINDOWS and server.send({"cmd": "status"}, timeout=1.0) is not None
+    return not host.IS_WINDOWS and host.ipc.send({"cmd": "status"}, timeout=1.0) is not None
 
 
 def _ask_running_copy_to_show() -> None:
-    reply = server.send(dict(SHOW_REQUEST))
+    reply = host.ipc.send(dict(SHOW_REQUEST))
     log.info("Lyssna is already running; asked it to show itself (%s)", "answered" if reply else "no answer")
     if not host.IS_WINDOWS:
         print("Another Lyssna is running. Quit it first to run this one.", file=sys.stderr)

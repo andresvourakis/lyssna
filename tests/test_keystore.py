@@ -7,7 +7,8 @@ import sys
 
 import pytest
 
-from lyssna import config, keychain, migrate
+from lyssna import config, keystore, migrate
+from lyssna.mac import speechy
 from lyssna.providers import get_provider
 
 
@@ -21,60 +22,60 @@ def _config_with_keys(**keys: str) -> None:
 
 
 def test_set_get_delete_round_trip(fake_keychain):
-    assert keychain.get("cartesia") is None
-    assert keychain.set("cartesia", "ck") is True
-    assert keychain.get("cartesia") == "ck"
-    assert keychain.delete("cartesia") is True
-    assert keychain.get("cartesia") is None
-    assert keychain.delete("cartesia") is True  # already gone counts as done
+    assert keystore.get("cartesia") is None
+    assert keystore.set("cartesia", "ck") is True
+    assert keystore.get("cartesia") == "ck"
+    assert keystore.delete("cartesia") is True
+    assert keystore.get("cartesia") is None
+    assert keystore.delete("cartesia") is True  # already gone counts as done
 
 
 def test_reads_are_cached_misses_too(fake_keychain):
     fake_keychain.items["inworld"] = "ik"
     for _ in range(5):
-        assert keychain.get("inworld") == "ik"
-        assert keychain.get("openai") is None
+        assert keystore.get("inworld") == "ik"
+        assert keystore.get("openai") is None
     assert fake_keychain.calls.count(("get", "inworld")) == 1
     assert fake_keychain.calls.count(("get", "openai")) == 1
 
 
 def test_set_and_delete_invalidate_the_cache(fake_keychain):
-    assert keychain.get("openai") is None
-    keychain.set("openai", "one")
-    assert keychain.get("openai") == "one"
-    keychain.set("openai", "two")
-    assert keychain.get("openai") == "two"
-    keychain.delete("openai")
-    assert keychain.get("openai") is None
+    assert keystore.get("openai") is None
+    keystore.set("openai", "one")
+    assert keystore.get("openai") == "one"
+    keystore.set("openai", "two")
+    assert keystore.get("openai") == "two"
+    keystore.delete("openai")
+    assert keystore.get("openai") is None
 
 
 def test_failed_write_still_invalidates(fake_keychain):
     fake_keychain.items["openai"] = "old"
-    assert keychain.get("openai") == "old"
+    assert keystore.get("openai") == "old"
     fake_keychain.fail_set = -25308
-    assert keychain.set("openai", "new") is False
+    assert keystore.set("openai", "new") is False
     fake_keychain.items["openai"] = "changed elsewhere"
-    assert keychain.get("openai") == "changed elsewhere"
+    assert keystore.get("openai") == "changed elsewhere"
 
 
 @pytest.mark.parametrize("failure", [-25293, RuntimeError("boom")])
 def test_failures_never_raise(fake_keychain, failure):
     fake_keychain.fail_get = fake_keychain.fail_set = fake_keychain.fail_delete = failure
-    assert keychain.get("inworld") is None
-    assert keychain.set("inworld", "k") is False
-    assert keychain.delete("inworld") is False
+    assert keystore.get("inworld") is None
+    assert keystore.set("inworld", "k") is False
+    assert keystore.delete("inworld") is False
 
 
 def test_keys_never_reach_the_log(fake_keychain, caplog):
     secret = "sk-very-secret-value"
     with caplog.at_level(logging.DEBUG):
-        keychain.set("openai", secret)
-        keychain.get("openai")
+        keystore.set("openai", secret)
+        keystore.get("openai")
         fake_keychain.fail_set = UnicodeEncodeError("utf-8", secret, 0, 1, "bad")
-        keychain.set("openai", secret)
+        keystore.set("openai", secret)
         fake_keychain.fail_get = ValueError(secret)
-        keychain.clear_cache()
-        keychain.get("openai")
+        keystore.clear_cache()
+        keystore.get("openai")
     assert caplog.records  # the failures were logged
     assert all("secret" not in r.getMessage() and not r.exc_info for r in caplog.records)
 
@@ -87,18 +88,18 @@ def test_keychain_beats_config_file_beats_env(fake_keychain, monkeypatch):
     cfg = {"cartesia": {"api_key": "from-file"}}
     assert get_provider("cartesia", cfg).api_key == "from-file"
     assert get_provider("cartesia", {}).api_key == "from-env"
-    keychain.set("cartesia", "from-keychain")
+    keystore.set("cartesia", "from-keychain")
     assert get_provider("cartesia", cfg).api_key == "from-keychain"
 
 
 def test_trial_key_beats_the_saved_one(fake_keychain):
-    keychain.set("openai", "saved")
+    keystore.set("openai", "saved")
     p = get_provider("openai", {})
     assert type(p)({}, api_key="trial").api_key == "trial"
 
 
 def test_inworld_engines_share_one_keychain_entry(fake_keychain):
-    keychain.set("inworld", "ik")
+    keystore.set("inworld", "ik")
     assert get_provider("inworld", {}).configured()
     assert get_provider("inworld-flash", {}).configured()
     assert not get_provider("cartesia", {}).configured()
@@ -198,11 +199,11 @@ def test_migration_runs_once(fake_keychain):
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="the Speechy migration runs on the Mac only")
 def test_migration_never_touches_the_old_speechy_config(fake_keychain):
-    migrate.OLD_CONFIG_PATH.parent.mkdir(parents=True)
-    migrate.OLD_CONFIG_PATH.write_text('[cartesia]\napi_key = "old"\n')
+    speechy.OLD_CONFIG_PATH.parent.mkdir(parents=True)
+    speechy.OLD_CONFIG_PATH.write_text('[cartesia]\napi_key = "old"\n')
     config.load()  # copies the Speechy config over
     assert migrate.keys_to_keychain() == ["cartesia"]
-    assert migrate.OLD_CONFIG_PATH.read_text() == '[cartesia]\napi_key = "old"\n'
+    assert speechy.OLD_CONFIG_PATH.read_text() == '[cartesia]\napi_key = "old"\n'
 
 
 def test_app_start_moves_the_keys(fake_keychain):

@@ -4,7 +4,7 @@ named pasteboard, never the user's clipboard."""
 
 from AppKit import NSPasteboard
 
-from lyssna import capture
+from lyssna.mac import capture
 
 
 class FakeItem:

@@ -1,7 +1,7 @@
 """Hotkey spec parsing ("ctrl+alt+s" -> modifier flags + key code) and pretty printing.
 
 The key codes, modifier flags and display style differ per system, so the tables live in
-lyssna/hotkeys_mac.py and lyssna/win/hotkeys.py and lyssna.host picks one."""
+lyssna/mac/hotkeys.py and lyssna/win/hotkeys.py and lyssna.host picks one."""
 
 from __future__ import annotations
 

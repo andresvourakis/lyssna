@@ -9,7 +9,7 @@ import AppKit
 import httpx
 import pytest
 
-from lyssna import config, keychain
+from lyssna import config, keystore
 from lyssna.dictation import models
 from lyssna.dictation.cleaners import s1mini
 from lyssna.dictation.transcribers import parakeet
@@ -336,7 +336,7 @@ def test_local_only_refuses_without_a_request(ctl, monkeypatch, fake_keychain):
 
 def test_key_state_never_waits(ctl, fake_keychain):
     fake_keychain.items["anthropic"] = "k"
-    keychain.clear_cache()
+    keystore.clear_cache()
     assert ctl.dictation_key_state("haiku") is True  # read inline in tests; None while a real read runs
     assert ctl.dictation_key_state("openai") is False
 

@@ -13,11 +13,13 @@ import rumps
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSBundle
 from Foundation import NSURL, NSNotificationCenter, NSOperationQueue
 
-from . import __version__, autostart, capture, config, support, whatsnew
+from . import __version__, config, support, whatsnew
 from .controller import Controller, Notice
 from .dictation import cleaners, transcribers
-from .events import KeyboardTap, MouseTap, Point, SelectionGestureDetector, accessibility_trusted
 from .hotkeys import pretty, tokens
+from .mac import autostart, capture
+from .mac.events import KeyboardTap, MouseTap, Point, SelectionGestureDetector, accessibility_trusted
+from .mac.ipc import ControlServer
 from .menu import (
     DICTATE_HEADER,
     KEY_MENU_LABELS,
@@ -42,7 +44,6 @@ from .menu import (
 from .player import SPEEDS, Status
 from .providers import REGISTRY, allowed
 from .selection import SelectionWatcher
-from .server import ControlServer
 from .ui.mainthread import later, on_main
 from .ui.mini_player import MiniPlayer
 from .ui.selection_button import SelectionButton

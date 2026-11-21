@@ -1,5 +1,6 @@
-"""The engine must import on Windows without any Mac framework. Checked here by running a
-fresh interpreter that pretends to be Windows and refuses every macOS framework import."""
+"""The engine must import on Windows without any Mac framework, and lyssna.host must hand out
+the Windows modules there. Checked here by running a fresh interpreter that pretends to be
+Windows and refuses every macOS framework import."""
 
 import pkgutil
 import subprocess
@@ -15,10 +16,8 @@ MODULES = [
     "lyssna.hotkeys",
     "lyssna.gestures",
     "lyssna.selection",
-    "lyssna.keychain",
+    "lyssna.keystore",
     "lyssna.policy",
-    "lyssna.autostart",
-    "lyssna.server",
     "lyssna.support",
     "lyssna.migrate",
     "lyssna.player",
@@ -32,6 +31,7 @@ MODULES = [
     "lyssna.dictation.recorder",
     "lyssna.dictation.pipeline",
     "lyssna.dictation.hotkey",
+    "lyssna.menu",
     *sorted(f"lyssna.win.{m.name}" for m in pkgutil.iter_modules(lyssna.win.__path__)),
 ]
 
@@ -59,13 +59,31 @@ SCRIPT = textwrap.dedent(
     for name in sys.argv[1:]:
         importlib.import_module(name)
 
-    from lyssna import config, host, hotkeys, keychain, providers, server
+    from lyssna import config, host, hotkeys, keystore, providers
     assert host.IS_WINDOWS and host.DEVICE == "PC"
+    for name, (_mac, windows) in host.MODULES.items():
+        module = getattr(host, name)
+        assert (module is None) if windows is None else (module.__name__ == windows and windows.startswith("lyssna.win.")), name
+    for name in ("mic", "insert", "field_probe", "globe", "launch_agent", "speechy"):
+        try:
+            host.require(name)
+        except NotImplementedError:
+            pass
+        else:
+            raise AssertionError(name + " should not exist on Windows yet")
+    assert not host.NEEDS_ACCESSIBILITY and not host.HAS_GLOBE_KEY and not host.STATUS_TEXT_BESIDE_ICON
+    assert host.KEYBOARD_SETTINGS_URL is None and host.ACCESSIBILITY_SETTINGS_URL is None
+    assert host.SYSTEM_VOICE == "sapi" and host.library_file("espeak-ng") == "espeak-ng.dll"
     assert str(config.CONFIG_DIR).startswith(os.environ["APPDATA"])
     assert str(config.STATE_DIR).startswith(os.environ["LOCALAPPDATA"])
     assert hotkeys.pretty("ctrl+alt+s") == "Ctrl+Alt+S"
-    assert type(keychain._backend).__name__ == "CredentialBackend"
-    assert server.send({"cmd": "status"}) is None
+    assert type(keystore._backend).__module__ == "lyssna.win.credentials"
+    assert host.ipc.send({"cmd": "status"}) is None
+    from lyssna import migrate
+    assert migrate.run() == []
+    from lyssna.controller import Controller
+    ctl = Controller()  # dictation's platform pieces are missing on Windows: building must still work
+    assert ctl.dictation.recorder is not None
     assert "say" not in providers.REGISTRY and providers.local_fallback() == "kokoro"
     assert "sapi" in providers.REGISTRY
 

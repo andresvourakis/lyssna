@@ -106,23 +106,13 @@ def test_managed_false_leaves_the_choice_to_the_user(ctl, managed_prefs):
     assert not ctl.local_only()
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="CoreFoundation preferences")
-def test_real_reader_reads_our_domain(monkeypatch):
-    seen = []
-    import CoreFoundation
-
-    monkeypatch.setattr(CoreFoundation, "CFPreferencesCopyAppValue", lambda key, domain: seen.append((key, domain)))
-    assert policy._read_preference("LocalOnly") is None
-    assert seen == [("LocalOnly", "io.github.andresvourakis.lyssna")]
-
-
 # -- CLI ----------------------------------------------------------------------------------
 
 
 @pytest.fixture
 def no_app(monkeypatch):
     monkeypatch.setattr(cli, "_setup_logging", lambda verbose: None)
-    monkeypatch.setattr(cli.server, "send", lambda req, timeout=5.0: pytest.fail("must not reach the app"))
+    monkeypatch.setattr(cli.host.ipc, "send", lambda req, timeout=5.0: pytest.fail("must not reach the app"))
     played = []
     monkeypatch.setattr(cli, "_speak_standalone", lambda text: played.append(text) or 0)
     return played

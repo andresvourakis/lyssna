@@ -12,8 +12,10 @@ second, for at most a minute, and gives up as soon as focus moves to another ele
 app comes to the front, or another dictation starts. Once the field has changed and then
 stayed still for a couple of seconds, the corrections found go to `learn(observed, corrected)`,
 each pair once. Values stay in memory; the log gets counts only. Reads go through a short
-Accessibility timeout and the watcher stops if the app answers slowly, so typing is never held
-up."""
+timeout and the watcher stops if the app answers slowly, so typing is never held up.
+
+The reads themselves are the system's: host.field_probe.FieldProbe (lyssna/mac/fieldprobe.py
+on the Mac), built on first use, so a watcher can exist where the system has none yet."""
 
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..host import capture  # lyssna.capture on the Mac, lyssna.win.capture on Windows
+from .. import host
 
 log = logging.getLogger("lyssna.dictation.learn")
 
@@ -108,30 +110,6 @@ def find_corrections(inserted: str, edited: str) -> list[tuple[str, str]]:
 
 # -- watching the field ----------------------------------------------------------------------
 
-class AXProbe:
-    """The Accessibility reads EditWatcher needs, in one place so tests can replace them."""
-
-    timeout = 0.2  # seconds an AX call may block before we give up on that read
-
-    def focused(self):
-        element = capture.focused_element()
-        if element is not None:
-            capture.ax_set_timeout(element, self.timeout)
-        return element
-
-    def value(self, element) -> str | None:
-        return capture.ax_text_value(element)
-
-    def same(self, a, b) -> bool:
-        try:
-            return bool(a == b)  # CFEqual for Accessibility elements
-        except Exception:
-            return False
-
-    def front_pid(self) -> int | None:
-        return capture.front_app_pid()
-
-
 class EditWatcher:
     POLL = 0.3          # seconds between reads
     SETTLE = 2.0        # the field must be still this long before we compare
@@ -142,15 +120,22 @@ class EditWatcher:
     def __init__(
         self,
         learn: Callable[[str, str], object],
-        probe: AXProbe | None = None,
+        probe=None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self.learn = learn
-        self.probe = probe or AXProbe()
+        self._probe = probe  # host.field_probe's FieldProbe unless a test passes one
         self.clock, self.sleep = clock, sleep
         self._lock = threading.Lock()
         self._generation = 0
+
+    @property
+    def probe(self):
+        """The reads of the focused field: focused(), value(element), same(a, b), front_pid()."""
+        if self._probe is None:
+            self._probe = host.require("field_probe").FieldProbe()
+        return self._probe
 
     def watch(self, text: str, background: bool = True) -> None:
         """Start watching the focused element for edits to `text`, which was just pasted

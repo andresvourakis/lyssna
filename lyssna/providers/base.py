@@ -6,7 +6,7 @@ from typing import ClassVar
 
 import httpx
 
-from .. import host, keychain
+from .. import host, keystore
 
 
 @dataclass
@@ -73,7 +73,7 @@ class Provider:
             return ""
         return (
             self._key_override
-            or keychain.get(self.section())
+            or keystore.get(self.section())
             or self.cfg.get("api_key")
             or os.environ.get(f"{self.section().upper()}_API_KEY", "")
         )
@@ -90,7 +90,7 @@ class Provider:
         if not self.needs_key:
             return True
         if not wait:
-            return keychain.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
+            return keystore.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
                                     os.environ.get(f"{self.section().upper()}_API_KEY", ""))
         return bool(self.api_key)
 

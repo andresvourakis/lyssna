@@ -1,6 +1,6 @@
 """The Windows key tables for hotkey specs: virtual-key codes, modifier flags and the names
 the menus show (Ctrl+Alt+S). The key names are the ones the Mac table in
-lyssna/hotkeys_mac.py accepts, so a config file works on both systems.
+lyssna/mac/hotkeys.py accepts, so a config file works on both systems.
 
 The modifier flags are our own bits, not a Windows constant: the keyboard hook builds them
 from the modifier keys it sees held down."""
@@ -26,6 +26,8 @@ MODIFIERS: dict[str, int] = {
     "cmd": WIN, "command": WIN, "win": WIN,
 }
 MODIFIER_MASK = CTRL | ALT | SHIFT | WIN
+# How each dictation key is written in menus, tooltips and the pill.
+DICTATION_KEY_NAMES = {"fn": "fn", "right_option": "right Alt", "right_command": "right Win", "right_control": "right Ctrl"}
 PRETTY = {"ctrl": "Ctrl", "control": "Ctrl", "alt": "Alt", "option": "Alt", "opt": "Alt", "shift": "Shift",
           "cmd": "Win", "command": "Win", "win": "Win"}
 

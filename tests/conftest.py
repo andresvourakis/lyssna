@@ -1,8 +1,8 @@
 """Keep every test off the real machine state: config, cache, logs, usage, the control
 socket, the LaunchAgent and the old Speechy locations all point into a per-test temp dir.
-The Keychain is an in-memory fake in every test, so nothing can read or write the real login
-Keychain (its launch read runs inline unless a test says otherwise), and the managed
-preferences (defaults domain) read as unset unless a test fakes them. The Kokoro voice files
+The key store's backend is an in-memory fake in every test, so nothing can read or write the
+real login Keychain or Credential Manager (the launch read runs inline unless a test says
+otherwise), and the managed preferences read as unset unless a test fakes them. The Kokoro voice files
 live under the temp dir too, and nothing may download them or load onnxruntime: the HTTP
 client and the model loader refuse unless a test fakes them.
 Dictation is kept off the machine the same way: its vocabulary and model files live under the
@@ -16,19 +16,21 @@ import sys
 import httpx
 import pytest
 
-from lyssna import cache, cli, config, download, keychain, migrate, policy, server, support, usage
+from lyssna import cache, config, download, keystore, policy, support, usage
+from lyssna.mac import credentials as mac_credentials
+from lyssna.mac import launch_agent, speechy
 from lyssna.providers import kokoro
 
-# These files need AppKit, Quartz or the Mac-only modules (lyssna.ui, app, capture, events), so they cannot run off macOS.
+# These files need AppKit, Quartz or the Mac-only modules (lyssna.ui, app, lyssna.mac.capture and events), so they cannot run off macOS.
 collect_ignore = [] if sys.platform == "darwin" else [
-    "test_capture_ax_gate.py", "test_clipboard.py", "test_dictation_insert.py", "test_events.py", "test_dictation_app.py",
-    "test_player.py", "test_keychain_launch.py", "test_menu.py", "test_setup_window.py", "test_history_window.py",
+    "test_mac_capture_ax_gate.py", "test_mac_clipboard.py", "test_dictation_insert.py", "test_mac_events.py", "test_dictation_app.py",
+    "test_player.py", "test_keystore_launch.py", "test_menu.py", "test_setup_window.py", "test_history_window.py",
     "test_dictation_pill.py", "test_panel.py", "test_theme.py", "test_whats_new_window.py", "test_selection.py", "test_host.py",
 ]
 
 
 class FakeKeychain:
-    """Stands in for keychain.SecurityBackend. Set fail_get / fail_set / fail_delete to an
+    """Stands in for the key store's backend (host.credentials.CredentialBackend). Set fail_get / fail_set / fail_delete to an
     OSStatus (or an exception) to make that call fail; `calls` counts backend calls."""
 
     def __init__(self):
@@ -66,24 +68,24 @@ class FakeKeychain:
 @pytest.fixture(autouse=True)
 def fake_keychain(monkeypatch):
     fake = FakeKeychain()
-    monkeypatch.setattr(keychain, "_backend", fake)
+    monkeypatch.setattr(keystore, "_backend", fake)
 
     def refuse(*args, **kwargs):
         raise AssertionError("a test reached the real Keychain")
 
-    for name in ("get", "set", "delete"):  # in case a test builds a SecurityBackend itself
-        monkeypatch.setattr(keychain.SecurityBackend, name, refuse)
-    monkeypatch.setattr(keychain, "_spawn", lambda fn: fn())  # the launch read, inline: tests stay in order
-    monkeypatch.setattr(keychain, "_listeners", [])  # no controller from an earlier test hears about keys
-    monkeypatch.setattr(keychain, "_pending", set())
-    keychain.clear_cache()
+    for name in ("get", "set", "delete"):  # in case a test builds the Mac backend itself
+        monkeypatch.setattr(mac_credentials.CredentialBackend, name, refuse)
+    monkeypatch.setattr(keystore, "_spawn", lambda fn: fn())  # the launch read, inline: tests stay in order
+    monkeypatch.setattr(keystore, "_listeners", [])  # no controller from an earlier test hears about keys
+    monkeypatch.setattr(keystore, "_pending", set())
+    keystore.clear_cache()
     yield fake
-    keychain.clear_cache()
+    keystore.clear_cache()
 
 
 @pytest.fixture(autouse=True)
 def managed_prefs(monkeypatch):
-    """The defaults domain as a dict; a test sets e.g. managed_prefs["LocalOnly"] = True."""
+    """The managed preferences as a dict; a test sets e.g. managed_prefs["LocalOnly"] = True."""
     prefs: dict = {}
     monkeypatch.setattr(policy, "_reader", prefs.get)
     return prefs
@@ -103,12 +105,11 @@ def isolated_paths(tmp_path, monkeypatch):
     for name, path in paths.items():
         monkeypatch.setattr(config, name, path)
     # The old Speechy locations the migration reads from, so no test reaches the real ones.
-    monkeypatch.setattr(migrate, "OLD_CONFIG_PATH", home / "old-config" / "config.toml")
-    monkeypatch.setattr(migrate, "OLD_STATE_DIR", home / "old-state")
-    monkeypatch.setattr(migrate, "OLD_CACHE_DIR", home / "old-cache")
-    monkeypatch.setattr(server, "SOCKET_PATH", paths["SOCKET_PATH"])  # imported by name
+    monkeypatch.setattr(speechy, "OLD_CONFIG_PATH", home / "old-config" / "config.toml")
+    monkeypatch.setattr(speechy, "OLD_STATE_DIR", home / "old-state")
+    monkeypatch.setattr(speechy, "OLD_CACHE_DIR", home / "old-cache")
     monkeypatch.setattr(usage, "USAGE_PATH", paths["STATE_DIR"] / "usage.json")
-    monkeypatch.setattr(cli, "LAUNCH_AGENT", home / "LaunchAgents" / "io.github.andresvourakis.lyssna.plist")
+    monkeypatch.setattr(launch_agent, "PATH", home / "LaunchAgents" / "io.github.andresvourakis.lyssna.plist")
     monkeypatch.delenv("LYSSNA_PROVIDER", raising=False)
     for section in ("INWORLD", "CARTESIA", "ELEVENLABS", "OPENAI", "ANTHROPIC"):
         monkeypatch.delenv(f"{section}_API_KEY", raising=False)

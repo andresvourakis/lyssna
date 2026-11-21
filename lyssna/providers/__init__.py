@@ -16,11 +16,11 @@ _PROVIDERS: list[type[Provider]] = [
     OpenAIProvider,
     KokoroProvider,
 ]
-if host.IS_MAC:  # the built-in `say` voice exists only on the Mac
+if host.SYSTEM_VOICE == "say":  # the built-in voice: `say` on the Mac
     from .macos import MacOSSayProvider
 
     _PROVIDERS.append(MacOSSayProvider)
-elif host.IS_WINDOWS:  # the built-in SAPI voices exist only on Windows
+elif host.SYSTEM_VOICE == "sapi":  # the built-in SAPI voices on Windows
     from .windows import WindowsVoiceProvider
 
     _PROVIDERS.append(WindowsVoiceProvider)
@@ -54,9 +54,8 @@ def local_fallback() -> str:
     `say` on the Mac, SAPI on Windows; elsewhere Kokoro even then (there is no system voice)."""
     if KokoroProvider.can_run():
         return KokoroProvider.name
-    for name in ("say", "sapi"):
-        if name in REGISTRY:
-            return name
+    if host.SYSTEM_VOICE in REGISTRY:
+        return host.SYSTEM_VOICE
     return KokoroProvider.name
 
 

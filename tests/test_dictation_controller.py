@@ -10,7 +10,7 @@ import time
 import numpy as np
 import pytest
 
-from lyssna import config, controller, keychain
+from lyssna import config, controller, keystore
 from lyssna.controller import ASK_MIC, BUSY, GLOBE_HINT, MODEL_READY, NO_MIC, Controller, Notice
 from lyssna.dictation import models
 from lyssna.dictation.types import DictationResult
@@ -133,7 +133,7 @@ def ctl(monkeypatch, models_here):
         watcher=FakeWatcher(), mic_status=lambda: c.mic, request_mic=c.asked.append, timer=c.timers,
     )
     c.push_to_talk = FakePTT()
-    monkeypatch.setattr("lyssna.dictation.hotkey.globe_key_action", lambda: "nothing")
+    monkeypatch.setattr("lyssna.mac.globe.globe_key_action", lambda: "nothing")
     return c
 
 
@@ -371,7 +371,7 @@ def test_missing_cleanup_model_does_not_block(ctl, monkeypatch):
 
 
 def test_globe_hint_shows_once(ctl, monkeypatch):
-    monkeypatch.setattr("lyssna.dictation.hotkey.globe_key_action", lambda: "emoji")
+    monkeypatch.setattr("lyssna.mac.globe.globe_key_action", lambda: "emoji")
     ctl.dictation_start()
     deadline = time.monotonic() + 2
     while GLOBE_HINT not in texts(ctl) and time.monotonic() < deadline:
@@ -393,7 +393,7 @@ def test_no_globe_hint_when_set_right_or_not_fn(ctl, monkeypatch):
     time.sleep(0.05)
     assert GLOBE_HINT not in texts(ctl)  # "Do Nothing" already
     assert not (config.STATE_DIR / controller.GLOBE_MARKER).exists()
-    monkeypatch.setattr("lyssna.dictation.hotkey.globe_key_action", lambda: "emoji")
+    monkeypatch.setattr("lyssna.mac.globe.globe_key_action", lambda: "emoji")
     ctl._globe_checked = False
     ctl.cfg["dictation"]["hotkey"] = "right_option"
     ctl._globe_hint_once()
@@ -407,7 +407,7 @@ def test_no_globe_hint_when_set_right_or_not_fn(ctl, monkeypatch):
 @pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_local_only_moves_dictation_to_this_mac(ctl, fake_keychain):
     fake_keychain.items.update({"openai": "k", "anthropic": "k"})
-    keychain.clear_cache()  # the launch read found none
+    keystore.clear_cache()  # the launch read found none
     ctl.set_transcriber("openai")
     ctl.set_cleaner("haiku")
     assert ctl.dictation_privacy_note() == "Speech is sent to OpenAI, text is sent to Anthropic"

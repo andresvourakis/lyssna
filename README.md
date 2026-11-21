@@ -169,19 +169,20 @@ cli.py ──socket──▶ controller.py ◀── app.py (menu bar, hotkeys, 
                         │                │
                      player.py        ui/ (selection_button, mini_player, panel)
                         │
-          providers/ + cache.py + keychain.py
+          providers/ + cache.py + keystore.py
 ```
 
 - `controller.py` owns playback and exposes every action once. The menu bar, hotkeys, floating player and the command line all call it.
-- `events.py` has the keyboard tap for hotkeys and a listen-only mouse tap that spots selection gestures. `selection.py` shows the play button only on proof that text was selected: a new selection reported through Accessibility, or a copy on select.
-- `capture.py` reads the selection through the Accessibility API first. Only where an app does not expose it does it send Command-C, then put the whole previous clipboard back.
+- `mac/events.py` has the keyboard tap for hotkeys and a listen-only mouse tap that spots selection gestures. `selection.py` shows the play button only on proof that text was selected: a new selection reported through Accessibility, or a copy on select.
+- `mac/capture.py` reads the selection through the Accessibility API first. Only where an app does not expose it does it send Command-C, then put the whole previous clipboard back.
 - `text.py` strips markdown, code fences, URLs, tables and hashtags, then splits the text into sentences.
 - `player.py` synthesizes up to four sentences ahead with two parallel requests, so stopping early does not pay for the rest, and plays them with AVAudioPlayer. Speed changes are time-stretched with pitch preserved.
 - `providers/` has one small class per voice provider. `providers/kokoro.py` runs the local voice and `download.py` fetches its model files once, with pinned hashes.
 - `cache.py` keeps synthesized audio in `~/Library/Caches/Lyssna`, so reading the same text again is free and instant.
 - `dictation/` turns speech into text: `recorder.py` records in memory, `pipeline.py` runs a speech engine (`transcribers/`) and a cleanup engine (`cleaners/`), `insert.py` pastes the result, `vocabulary.py` and `learn.py` keep the dictionary, and `history.py` keeps the history.
-- `keychain.py` stores API keys in the macOS Keychain and reads them at launch on a background thread. `migrate.py` carries over settings from the app's earlier name.
-- `server.py` is a Unix socket, so the command line and the menu bar app share one player.
+- `keystore.py` stores API keys in the macOS Keychain (through `mac/credentials.py`) and reads them at launch on a background thread. `migrate.py` carries over settings from the app's earlier name.
+- `mac/ipc.py` is a Unix socket, so the command line and the menu bar app share one player.
+- `host.py` picks the Mac modules in `mac/` or their Windows twins in `win/`; the rest of the code reaches the system only through it.
 
 </details>
 

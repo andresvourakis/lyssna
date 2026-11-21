@@ -1,6 +1,6 @@
 """Grab the text the user has selected in whatever app is in front, on Windows.
 
-Same public functions and the same order of attempts as lyssna/capture.py, so the controller
+Same public functions and the same order of attempts as lyssna/mac/capture.py, so the controller
 and the selection watcher do not care which system they run on:
 
 1. UI Automation. The focused element, or the nearest ancestor that offers the Text pattern,

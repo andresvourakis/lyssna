@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from lyssna import keychain
+from lyssna import keystore
 from lyssna.win import credentials
 from lyssna.win.credentials import CredentialBackend
 
@@ -42,13 +42,13 @@ def api():
 
 def test_round_trip_set_get_delete(api):
     backend = CredentialBackend(api)
-    assert backend.get("openai") == (keychain.NOT_FOUND, None)
+    assert backend.get("openai") == (keystore.NOT_FOUND, None)
     assert backend.set("openai", "first") == 0
     assert backend.set("openai", "second") == 0  # overwrites
     assert backend.get("openai") == (0, "second")
     assert backend.delete("openai") == 0
-    assert backend.get("openai") == (keychain.NOT_FOUND, None)
-    assert backend.delete("openai") == keychain.NOT_FOUND
+    assert backend.get("openai") == (keystore.NOT_FOUND, None)
+    assert backend.delete("openai") == keystore.NOT_FOUND
 
 
 def test_credential_names_and_fields(api):

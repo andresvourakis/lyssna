@@ -1,12 +1,15 @@
-"""Which operating system Lyssna runs on, and the pieces of the engine that differ between them.
+"""Which computer Lyssna runs on, what it can do, and the platform modules the engine uses.
 
-Why one module: the Mac app and the Windows app share the engine, and only a handful of its
-modules talk to the operating system. Each of those is reached through here, so the choice
-between a Mac module and its Windows twin under lyssna/win/ is made in exactly one place.
+Why one module: the Mac app and the Windows app share the engine, and only the modules under
+lyssna/mac/ and lyssna/win/ talk to the operating system. They come in pairs with the same
+names and the same public functions, and the engine reaches them only through here
+(`host.capture`, `host.audio`...), so the choice between a Mac module and its Windows twin is
+made in exactly one place. Where the two systems differ in a way the engine or the interface
+must know about, that difference is a named capability below, never a test of the system.
 
 This module imports nothing from the package when it loads. The platform modules load the
-first time they are asked for (`host.capture`, `host.audio`...), so importing host never pulls
-in a Mac or Windows framework by itself."""
+first time they are asked for, so importing host never pulls in a Mac or Windows framework
+by itself."""
 
 from __future__ import annotations
 
@@ -16,19 +19,35 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 DEVICE = "Mac" if IS_MAC else "PC"
 
-# Wording that names a place on the computer. On the Mac each is the text the app always used.
+# Wording that names a place or a key on the computer. On the Mac each is the text the app always used.
 KEY_STORE = "Windows Credential Manager" if IS_WINDOWS else "the Keychain"  # where API keys are saved
 MENU_PLACE = "the Lyssna icon by the clock" if IS_WINDOWS else "the menu bar"  # where Lyssna's menu opens
+APP_KIND = "the app" if IS_WINDOWS else "the menu bar app"  # what the command line's help calls the app
+PASTE_SHORTCUT = "Ctrl+V" if IS_WINDOWS else "⌘V"  # the keys that paste
+MIC_SETTINGS_PLACE = (  # where the user allows the microphone, as the system's settings name it
+    "Settings > Privacy & security > Microphone" if IS_WINDOWS else "System Settings > Privacy & Security > Microphone"
+)
 
+# What the computer has. The engine and the interface ask these, never the operating system.
+NEEDS_ACCESSIBILITY = not IS_WINDOWS  # reading the selection and the global keys need the Accessibility permission
+HAS_GLOBE_KEY = not IS_WINDOWS  # the fn key doubles as the Globe key, and a system setting decides what it does
+STATUS_TEXT_BESIDE_ICON = not IS_WINDOWS  # the menu bar can show text (the reading progress) next to the icon
+FAST_INT8 = not IS_WINDOWS  # 8-bit model maths is fast here (Apple silicon); x86 PCs run the half-precision model faster
+SYSTEM_VOICE: str | None = "sapi" if IS_WINDOWS else "say" if IS_MAC else None  # the built-in voice's provider name
+
+# Settings pages the app opens. None where the system has no such page.
 MIC_SETTINGS_URL = (
     "ms-settings:privacy-microphone" if IS_WINDOWS
     else "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 )
+KEYBOARD_SETTINGS_URL = None if IS_WINDOWS else "x-apple.systempreferences:com.apple.Keyboard-Settings.extension"
+ACCESSIBILITY_SETTINGS_URL = None if IS_WINDOWS else "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 
 
 @dataclass(frozen=True)
@@ -53,6 +72,11 @@ def paths() -> Paths:
                  home / "Library" / "Logs" / "Lyssna", state / "lyssna.sock")
 
 
+def library_file(name: str) -> str:
+    """A shared library's file name as the frozen app ships it: espeak-ng.dll, libespeak-ng.dylib."""
+    return f"{name}.dll" if IS_WINDOWS else f"lib{name}.dylib"
+
+
 def open_target(target: str) -> None:
     """Open a URL, a settings page or a file with the system's default handler, without
     touching our stdio."""
@@ -63,25 +87,40 @@ def open_target(target: str) -> None:
                    stderr=subprocess.DEVNULL)
 
 
-# Neutral name -> (Mac module, Windows module). None means the existing Mac code in the module
-# that asks handles it itself.
-_MODULES: dict[str, tuple[str | None, str]] = {
-    "app": ("lyssna.app", "lyssna.win.app"),                       # run(): the interface
-    "capture": ("lyssna.capture", "lyssna.win.capture"),           # the selected text and the clipboard
-    "events": ("lyssna.events", "lyssna.win.events"),              # global keys and mouse, permission check
-    "audio": ("lyssna.audio_mac", "lyssna.win.audio"),             # make_player(audio, speed)
-    "hotkey_table": ("lyssna.hotkeys_mac", "lyssna.win.hotkeys"),  # key codes and modifier flags
-    "autostart_impl": (None, "lyssna.win.autostart"),              # start at login
-    "ipc": (None, "lyssna.win.ipc"),                               # the CLI's channel to the running app
-    "credentials": (None, "lyssna.win.credentials"),               # where API keys are stored
-    "policy_impl": (None, "lyssna.win.policy"),                    # the managed local-only setting
+# Neutral name -> (Mac module, Windows module). None means that system has no such piece yet:
+# `host.<name>` is then None, and require() says so.
+MODULES: dict[str, tuple[str | None, str | None]] = {
+    "app": ("lyssna.app", "lyssna.win.app"),                    # run(): the interface
+    "capture": ("lyssna.mac.capture", "lyssna.win.capture"),    # the selected text and the clipboard
+    "events": ("lyssna.mac.events", "lyssna.win.events"),       # global keys and mouse, permission check
+    "audio": ("lyssna.mac.audio", "lyssna.win.audio"),          # make_player(audio, speed)
+    "hotkey_table": ("lyssna.mac.hotkeys", "lyssna.win.hotkeys"),  # key codes, modifier flags, key names
+    "credentials": ("lyssna.mac.credentials", "lyssna.win.credentials"),  # CredentialBackend: where API keys are stored
+    "policy": ("lyssna.mac.policy", "lyssna.win.policy"),       # read_preference(key): the managed settings
+    "autostart": ("lyssna.mac.autostart", "lyssna.win.autostart"),  # is_enabled(), set_enabled(on): start at login
+    "ipc": ("lyssna.mac.ipc", "lyssna.win.ipc"),                # ControlServer, send(): the CLI's channel to the app
+    "mic": ("lyssna.mac.mic", None),                            # the microphone and its permission
+    "insert": ("lyssna.mac.insert", None),                      # the paste pieces dictation uses
+    "field_probe": ("lyssna.mac.fieldprobe", None),             # FieldProbe: reads the text field a dictation went into
+    "globe": ("lyssna.mac.globe", None),                        # globe_key_action(): the system's Globe key setting
+    "launch_agent": ("lyssna.mac.launch_agent", None),          # start at login from source, for the command line
+    "speechy": ("lyssna.mac.speechy", None),                    # the carry-over from the app's old name
 }
 
 
+def require(name: str) -> ModuleType:
+    """`host.<name>`, for code that cannot go on without it. Raises NotImplementedError on a
+    system that has no such piece yet."""
+    module = getattr(sys.modules[__name__], name)
+    if module is None:
+        raise NotImplementedError(f"{name} is not built for this computer yet")
+    return module
+
+
 def __getattr__(name: str):
-    if name not in _MODULES:
+    if name not in MODULES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    mac, windows = _MODULES[name]
+    mac, windows = MODULES[name]
     target = windows if IS_WINDOWS else mac
     module = importlib.import_module(target) if target else None
     globals()[name] = module  # cached: the next lookup is a plain attribute

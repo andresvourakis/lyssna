@@ -2,7 +2,7 @@
 thread helper, and the state machine that turns mouse events into "the user probably just
 selected text" gestures.
 
-Kept apart from the event taps (lyssna/events.py on the Mac, lyssna/win/events.py on Windows)
+Kept apart from the event taps (lyssna/mac/events.py on the Mac, lyssna/win/events.py on Windows)
 so the selection watcher and the tests can use them without loading Quartz."""
 
 from __future__ import annotations

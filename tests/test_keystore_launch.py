@@ -10,7 +10,7 @@ import time
 import pytest
 from Foundation import NSDate, NSRunLoop
 
-from lyssna import config, keychain
+from lyssna import config, keystore
 from lyssna.providers import kokoro
 
 
@@ -37,7 +37,7 @@ class BlockingKeychain:
 
 
 def spawn(fn):
-    threading.Thread(target=fn, daemon=True, name="lyssna-keychain").start()
+    threading.Thread(target=fn, daemon=True, name="lyssna-keystore").start()
 
 
 @pytest.fixture
@@ -45,13 +45,13 @@ def launch(monkeypatch):
     """Returns build(provider, items) -> (backend, menubar), with the real background read."""
     monkeypatch.setattr(kokoro.KokoroProvider, "can_run", classmethod(lambda cls: True))
     monkeypatch.setattr(kokoro.KokoroProvider, "prepare", lambda self, on_error=None: None)
-    monkeypatch.setattr(keychain, "_spawn", spawn)
+    monkeypatch.setattr(keystore, "_spawn", spawn)
     backends = []
 
     def build(provider, items):
         backend = BlockingKeychain(items)
         backends.append(backend)
-        monkeypatch.setattr(keychain, "_backend", backend)
+        monkeypatch.setattr(keystore, "_backend", backend)
         config.ensure_dirs()
         config.CONFIG_PATH.write_text(config.TEMPLATE)
         config.update(provider=provider)
@@ -72,7 +72,7 @@ def settle(backend, menubar, seconds=3.0):
     """Release the Keychain, wait for the read to land, and run the main-thread refresh."""
     backend.release.set()
     deadline = time.monotonic() + seconds
-    while not keychain.known() and time.monotonic() < deadline:
+    while not keystore.known() and time.monotonic() < deadline:
         time.sleep(0.01)
     NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.2))
 
@@ -104,7 +104,7 @@ def test_a_saved_key_keeps_its_provider(launch):
 def test_each_section_is_read_once_even_when_a_reading_asks_meanwhile(launch):
     backend, menubar = launch("cartesia", {"cartesia": "ck"})
     got = []
-    reader = threading.Thread(target=lambda: got.append(keychain.get("cartesia")))
+    reader = threading.Thread(target=lambda: got.append(keystore.get("cartesia")))
     reader.start()  # a reading on its own thread waits for the launch read, not a second prompt
     settle(backend, menubar)
     reader.join(2)

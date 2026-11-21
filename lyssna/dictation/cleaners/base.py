@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Sequence
 
-from ... import keychain
+from ... import keystore
 
 
 class Cleaner:
@@ -39,7 +39,7 @@ class Cleaner:
             return ""
         return (
             self._key_override
-            or keychain.get(self.section())
+            or keystore.get(self.section())
             or self.cfg.get("api_key")
             or os.environ.get(f"{self.section().upper()}_API_KEY", "")
         )
@@ -54,7 +54,7 @@ class Cleaner:
         if not self.needs_key:
             return True
         if not wait:
-            return keychain.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
+            return keystore.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
                                     os.environ.get(f"{self.section().upper()}_API_KEY", ""))
         return bool(self.api_key)
 

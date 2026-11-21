@@ -1,40 +1,23 @@
-"""Local-only mode: keep the text being read on this Mac by refusing every engine that sends
-it to an online service.
+"""Local-only mode: keep the text being read on this computer by refusing every engine that
+sends it to an online service.
 
 Why a separate module: the setting comes from two places with different owners. The user
 turns it on from the menu (`local_only` in the config file); a company can also force it on
-for everyone with a configuration profile that sets the managed preference `LocalOnly` in our
-defaults domain. A forced value wins and the user cannot switch it off from the app.
+for everyone with a managed setting `LocalOnly` (a configuration profile on the Mac, Group
+Policy on Windows). A forced value wins and the user cannot switch it off from the app.
 
-The preference is read through CFPreferences, which sees profile (managed) values as well as
-`defaults write` ones. Tests swap `_reader` for a fake, so no test reads the real domain."""
+The managed setting is read by host.policy.read_preference (lyssna/mac/policy.py,
+lyssna/win/policy.py). Tests swap `_reader` for a fake, so no test reads the real setting."""
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 
 from . import host
 
-log = logging.getLogger("lyssna.policy")
-
-DOMAIN = "io.github.andresvourakis.lyssna"
 MANAGED_KEY = "LocalOnly"
 
-
-def _read_preference(key: str) -> object | None:
-    """The value of `key` in our defaults domain, or None when it is not set."""
-    try:
-        from CoreFoundation import CFPreferencesCopyAppValue
-
-        return CFPreferencesCopyAppValue(key, DOMAIN)
-    except Exception as e:  # a broken preference must never stop the app from starting
-        log.warning("could not read the %s preference: %s", key, e)
-        return None
-
-
-# The Mac reads the defaults domain; Windows reads its registry policy key (lyssna/win/policy.py).
-_reader: Callable[[str], object | None] = _read_preference if host.policy_impl is None else host.policy_impl.read_preference
+_reader: Callable[[str], object | None] = host.policy.read_preference
 
 
 def managed_local_only() -> bool:

@@ -19,7 +19,7 @@ def sent(monkeypatch):
         requests.append(req)
         return {"ok": True, "status": {"state": "idle"}}
 
-    monkeypatch.setattr(cli.server, "send", send)
+    monkeypatch.setattr(cli.host.ipc, "send", send)
     monkeypatch.setattr(cli, "_setup_logging", lambda verbose: None)
     monkeypatch.setattr(cli, "_speak_standalone", lambda text: pytest.fail("must not play standalone"))
     return requests
@@ -76,7 +76,7 @@ def test_speak_reads_files(sent, tmp_path):
 
 def test_app_not_running_falls_back_to_standalone(monkeypatch):
     played = []
-    monkeypatch.setattr(cli.server, "send", lambda req, timeout=5.0: None)
+    monkeypatch.setattr(cli.host.ipc, "send", lambda req, timeout=5.0: None)
     monkeypatch.setattr(cli, "_setup_logging", lambda verbose: None)
     monkeypatch.setattr(cli, "_speak_standalone", lambda text: played.append(text) or 0)
     assert cli.main(["hello"]) == 0
@@ -87,7 +87,7 @@ def test_app_not_running_falls_back_to_standalone(monkeypatch):
 @pytest.mark.skipif(sys.platform != "darwin", reason="the macOS say voice")
 def test_provider_flag_forces_standalone_with_that_engine(monkeypatch):
     played = []
-    monkeypatch.setattr(cli.server, "send", lambda req, timeout=5.0: pytest.fail("must not use the app"))
+    monkeypatch.setattr(cli.host.ipc, "send", lambda req, timeout=5.0: pytest.fail("must not use the app"))
     monkeypatch.setattr(cli, "_setup_logging", lambda verbose: None)
     monkeypatch.setattr(cli, "_speak_standalone", lambda text: played.append((text, os.environ["LYSSNA_PROVIDER"])) or 0)
     monkeypatch.setenv("LYSSNA_PROVIDER", "unset")  # so monkeypatch restores the environment afterwards
@@ -96,7 +96,7 @@ def test_provider_flag_forces_standalone_with_that_engine(monkeypatch):
 
 
 def test_failed_speak_reports_the_error(monkeypatch, capsys):
-    monkeypatch.setattr(cli.server, "send", lambda req, timeout=5.0: {"ok": False, "status": {"error": "Nothing to read"}})
+    monkeypatch.setattr(cli.host.ipc, "send", lambda req, timeout=5.0: {"ok": False, "status": {"error": "Nothing to read"}})
     monkeypatch.setattr(cli, "_setup_logging", lambda verbose: None)
     assert cli.main(["   "]) == 1
     assert "Nothing to read" in capsys.readouterr().err

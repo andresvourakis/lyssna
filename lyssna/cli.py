@@ -19,17 +19,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-import plistlib
-import shutil
-import subprocess
 import sys
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from . import config, host, server
-
-LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "io.github.andresvourakis.lyssna.plist"
+from . import config, host
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -114,7 +109,7 @@ def _print_status(resp: dict | None) -> int:
 
 def cmd_speak(text: str, force_standalone: bool = False) -> int:
     if not force_standalone:
-        resp = server.send({"cmd": "speak", "text": text})
+        resp = host.ipc.send({"cmd": "speak", "text": text})
         if resp is not None:
             if not resp.get("ok"):
                 print(resp.get("status", {}).get("error") or resp.get("error") or "failed", file=sys.stderr)
@@ -132,7 +127,7 @@ def cmd_doctor() -> int:
     print(f"config:   {config.CONFIG_PATH}")
     print(f"provider: {cfg['provider']}  speed: {cfg['speed']}")
     print(f"accessibility permission for this process: {'yes' if accessibility_trusted() else 'NO'}")
-    print(f"app running: {'yes' if server.send({'cmd': 'status'}) else 'no'}")
+    print(f"app running: {'yes' if host.ipc.send({'cmd': 'status'}) else 'no'}")
     print("providers:")
     for name in REGISTRY:
         p = get_provider(name, cfg)
@@ -150,35 +145,13 @@ def cmd_doctor() -> int:
 
 
 def cmd_autostart(enable: bool) -> int:
-    if host.autostart_impl is not None:  # Windows: the registry Run key, as the app's own switch uses
-        from . import autostart
-
-        if not autostart.set_enabled(enable):
-            print("Could not change start at login. See the log for details.", file=sys.stderr)
-            return 1
-        print("Lyssna starts at login." if enable else "Autostart removed.")
+    if host.launch_agent is not None:  # the Mac from source: a LaunchAgent (the bundled app has its own switch)
+        host.launch_agent.set_enabled(enable)
         return 0
-    exe = shutil.which("lyssna") or str(Path(sys.argv[0]).resolve())
-    if enable:
-        plist = {
-            "Label": "io.github.andresvourakis.lyssna",
-            "ProgramArguments": [exe, "app"],
-            "RunAtLoad": True,
-            "KeepAlive": False,
-            "StandardOutPath": str(config.LOG_DIR / "launchd.out.log"),
-            "StandardErrorPath": str(config.LOG_DIR / "launchd.err.log"),
-            "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
-        }
-        LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
-        LAUNCH_AGENT.write_bytes(plistlib.dumps(plist))
-        subprocess.run(["launchctl", "unload", str(LAUNCH_AGENT)], capture_output=True)
-        subprocess.run(["launchctl", "load", str(LAUNCH_AGENT)], check=False)
-        print(f"Installed {LAUNCH_AGENT} → runs `{exe} app` at login.")
-        print("If hotkeys don't work when launched this way, grant Accessibility to the python binary it runs.")
-    else:
-        subprocess.run(["launchctl", "unload", str(LAUNCH_AGENT)], capture_output=True)
-        LAUNCH_AGENT.unlink(missing_ok=True)
-        print("Autostart removed.")
+    if not host.autostart.set_enabled(enable):  # Windows: the registry Run key, as the app's own switch uses
+        print("Could not change start at login. See the log for details.", file=sys.stderr)
+        return 1
+    print("Lyssna starts at login." if enable else "Autostart removed.")
     return 0
 
 
@@ -348,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     if head is not None and argv[head] in _SUBCOMMANDS:
         return _SUBCOMMANDS[argv[head]](argv[:head] + argv[head + 1 :])
 
-    usage = __doc__.replace("launch the menu bar app", "launch the app") if host.IS_WINDOWS else __doc__
+    usage = __doc__.replace("launch the menu bar app", f"launch {host.APP_KIND}")
     parser = argparse.ArgumentParser(prog="lyssna", description=usage, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--standalone", action="store_true", help="play in this process even if the app is running")
@@ -377,13 +350,13 @@ def main(argv: list[str] | None = None) -> int:
     head, rest = args[0], args[1:]
     simple = {"pause", "stop", "next", "prev", "status", "selection", "clipboard", "quit"}
     if head in simple and not rest:
-        return _print_status(server.send({"cmd": head}))
+        return _print_status(host.ipc.send({"cmd": head}))
     if head == "button":
-        return _print_status(server.send({"cmd": "button", "value": (rest[:1] or ["toggle"])[0]}))
+        return _print_status(host.ipc.send({"cmd": "button", "value": (rest[:1] or ["toggle"])[0]}))
     if head == "speed" and rest:
-        return _print_status(server.send({"cmd": "speed", "value": float(rest[0])}))
+        return _print_status(host.ipc.send({"cmd": "speed", "value": float(rest[0])}))
     if head == "seek" and rest:
-        return _print_status(server.send({"cmd": "seek_to", "value": float(rest[0])}))
+        return _print_status(host.ipc.send({"cmd": "seek_to", "value": float(rest[0])}))
     if head == "doctor":
         return cmd_doctor()
     if head == "config":

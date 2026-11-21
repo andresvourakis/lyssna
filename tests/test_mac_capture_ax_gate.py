@@ -1,4 +1,4 @@
-"""The rule in capture.py: no Accessibility client call that can land in our own process from
+"""The rule in lyssna/mac/capture.py: no Accessibility client call that can land in our own process from
 a background thread (AppKit's accessibility code is not thread-safe; racing the main thread
 crashed the app). These tests replace the Accessibility functions with fakes, so nothing
 touches the real Accessibility API."""
@@ -9,7 +9,7 @@ import threading
 import ApplicationServices
 import pytest
 
-from lyssna import capture
+from lyssna.mac import capture
 
 OWN = os.getpid()
 OTHER = OWN + 1

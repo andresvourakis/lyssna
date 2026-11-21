@@ -155,8 +155,6 @@ a = Analysis(
     hiddenimports=[
         *LYSSNA_WIN,
         *LYSSNA_QT,
-        "lyssna.autostart",
-        "lyssna.server",
         "lyssna.providers.windows",
         "lyssna.providers.kokoro",
         "PySide6.QtMultimedia",

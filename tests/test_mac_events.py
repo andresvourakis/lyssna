@@ -1,7 +1,7 @@
 import Quartz
 
-from lyssna import events
-from lyssna.events import KeyboardTap, Point, SelectionGestureDetector
+from lyssna.mac import events
+from lyssna.mac.events import KeyboardTap, Point, SelectionGestureDetector
 
 
 def make(ignore=None):

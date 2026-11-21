@@ -2,9 +2,9 @@
 
 Why: Credential Manager is the Windows counterpart of the macOS Keychain. It encrypts the key
 for this user account, so a key never sits in a plain text file. Same contract as
-keychain.SecurityBackend: each method returns a status (0 for success, keychain.NOT_FOUND when
-there is no key, any other number is a Windows error code) and get also returns the stored
-text. lyssna.keychain logs those codes as numbers only.
+lyssna/mac/credentials.py: each method returns a status (0 for success, keystore.NOT_FOUND
+when there is no key, any other number is a Windows error code) and get also returns the
+stored text. lyssna.keystore logs those codes as numbers only.
 
 The key is stored as UTF-16-LE bytes, which is what Windows tools (cmdkey, PowerShell) expect
 for text. The calls into advapi32 live in _Advapi, a thin layer that loads only when first
@@ -17,7 +17,7 @@ import ctypes
 import logging
 from ctypes import wintypes
 
-from .. import keychain
+from .. import keystore
 
 log = logging.getLogger("lyssna.win.credentials")
 
@@ -31,7 +31,7 @@ USER_NAME = "Lyssna"
 
 def target_name(account: str) -> str:
     """The credential's name as Credential Manager lists it."""
-    return f"{keychain.SERVICE}/{account}"
+    return f"{keystore.SERVICE}/{account}"
 
 
 class CREDENTIALW(ctypes.Structure):
@@ -109,11 +109,11 @@ class _Advapi:
 
 
 def _status(code: int) -> int:
-    return keychain.NOT_FOUND if code == ERROR_NOT_FOUND else code
+    return keystore.NOT_FOUND if code == ERROR_NOT_FOUND else code
 
 
 class CredentialBackend:
-    """Credential Manager behind the keychain backend contract. `api` is the advapi32 layer;
+    """Credential Manager behind the key store's backend contract. `api` is the advapi32 layer;
     the real one loads on first use, so building a backend never touches Windows."""
 
     def __init__(self, api: object | None = None):

@@ -130,7 +130,7 @@ class WindowsVoiceProvider(Provider):
 
     @classmethod
     def can_run(cls) -> bool:
-        return host.IS_WINDOWS and importlib.util.find_spec("comtypes") is not None
+        return host.SYSTEM_VOICE == cls.name and importlib.util.find_spec("comtypes") is not None
 
     @property
     def voice(self) -> str:

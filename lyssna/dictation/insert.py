@@ -1,18 +1,16 @@
 """Paste dictated text at the cursor in whatever app is in front.
 
-macOS has no general "insert text here" call that every app honours, so we do what a person
-does: put the text on the clipboard, press Cmd+V, and then put the previous clipboard back
-(every item in every format, through the same helpers the Cmd+C fallback uses). Our clipboard
-entry carries the nspasteboard.org markers `org.nspasteboard.TransientType` (it is about to be
-replaced) and `org.nspasteboard.ConcealedType` (do not show or keep it), so clipboard managers
-that follow the convention neither record nor display the dictated text.
+There is no general "insert text here" call that every app honours, so we do what a person
+does: put the text on the clipboard, press the paste shortcut, and then put the previous
+clipboard back. Our clipboard entry is marked so that clipboard managers neither record nor
+display the dictated text.
 
 Whether to paste at all is decided by one question: is there a focused element that takes
-text? Accessibility answers it for native apps (an editable value, or a settable text
-selection). Browsers and Electron apps often expose only a window, a group or a web area for
-what is really a text editor, so a generic container counts as "maybe" and we paste anyway.
-Only when the focused thing is clearly something else (the desktop, a list, a button) does
-the text stay on the clipboard for the user to paste by hand ("copied").
+text? "text" and "maybe" paste; only "none" (the desktop, a list, a button) leaves the text on
+the clipboard for the user to paste by hand ("copied").
+
+The system's pieces (the clipboard writes, the paste key, the focused-element question) come
+from host.insert, looked up when a paste happens: lyssna/mac/insert.py on the Mac.
 
 The text is pasted exactly as given: no trailing space is added."""
 
@@ -23,66 +21,11 @@ import threading
 import time
 from collections.abc import Callable
 
-from ..host import capture  # lyssna.capture on the Mac; AppKit and Quartz load where they are used
+from .. import host
 
 log = logging.getLogger("lyssna.dictation.insert")
 
-KEY_V = 9
 RESTORE_DELAY = 0.5  # seconds before the previous clipboard comes back; slow apps read the paste lazily
-
-TRANSIENT_TYPE = "org.nspasteboard.TransientType"
-CONCEALED_TYPE = "org.nspasteboard.ConcealedType"
-
-# Roles that can stand for a text editor whose inside Accessibility does not show us (web
-# pages, Electron apps, apps with Accessibility half switched on). Focus on one of these is
-# not proof that there is no text field, so we paste.
-CONTAINER_ROLES = {"AXWindow", "AXGroup", "AXWebArea", "AXUnknown", "AXApplication", "AXLayoutArea", "AXSplitGroup"}
-
-
-def text_target(element) -> str:
-    """"text" when the element takes typed text, "maybe" when we cannot tell, "none" when it
-    clearly does not (a list, a button, the desktop)."""
-    if element is None:
-        return "maybe"  # nothing exposed: common in Electron apps and some browsers
-    if capture.ax_settable(element, "AXValue") and capture.ax_text_value(element) is not None:
-        return "text"
-    if capture.ax_settable(element, "AXSelectedTextRange"):
-        return "text"
-    role = capture.ax_role(element)
-    if role is None or role in CONTAINER_ROLES:
-        return "maybe"
-    return "none"
-
-
-def _text_item(text: str, transient: bool):
-    from AppKit import NSPasteboardItem, NSPasteboardTypeString
-
-    item = NSPasteboardItem.alloc().init()
-    item.setString_forType_(text, NSPasteboardTypeString)
-    if transient:
-        item.setString_forType_("", TRANSIENT_TYPE)
-        item.setString_forType_("", CONCEALED_TYPE)
-    return item
-
-
-def put_text(pb, text: str, transient: bool) -> int:
-    """Replace the clipboard with `text`; returns the pasteboard's change count afterwards.
-    The change is noted as Lyssna's own, so it never passes for a selection the user copied."""
-    before = int(pb.changeCount())
-    pb.clearContents()
-    pb.writeObjects_([_text_item(text, transient)])
-    count = int(pb.changeCount())
-    capture.note_own_changes(before, count)
-    return count
-
-
-def restore_unless_changed(pb, previous: list[dict[str, bytes]], our_count: int) -> bool:
-    """Put the previous clipboard back, unless something else was copied since our paste."""
-    if int(pb.changeCount()) != our_count:
-        log.info("clipboard changed after the paste; not restoring it")
-        return False
-    capture.restore_pasteboard(pb, previous)
-    return True
 
 
 class Inserter:
@@ -92,52 +35,39 @@ class Inserter:
         self,
         pasteboard=None,
         focused: Callable[[], object] | None = None,
-        target: Callable[[object], str] = text_target,
+        target: Callable[[object], str] | None = None,
         send_key: Callable[[int, int], None] | None = None,
         wait_for_modifiers: Callable[[], None] | None = None,
         later: Callable[[float, Callable[[], None]], None] | None = None,
         restore_delay: float = RESTORE_DELAY,
     ):
-        # Left out, the machine calls are the capture module's, looked up here rather than when
-        # the module loads, so importing this module needs no Mac framework.
+        # Left out, the machine calls are host.insert's, looked up when a paste happens, so an
+        # Inserter can be built on a system that has no paste pieces yet.
         self._pasteboard = pasteboard
-        self.focused, self.target = focused or capture.focused_element, target
-        self.send_key = send_key or capture.send_key
-        self.wait_for_modifiers = wait_for_modifiers or capture._wait_for_modifiers_release
+        self.focused, self.target = focused, target
+        self.send_key = send_key
+        self.wait_for_modifiers = wait_for_modifiers
         self.later = later or _later
         self.restore_delay = restore_delay
-
-    @property
-    def pasteboard(self):
-        if self._pasteboard:
-            return self._pasteboard
-        from AppKit import NSPasteboard
-
-        return NSPasteboard.generalPasteboard()
 
     def __call__(self, text: str) -> str:
         return self.paste(text)
 
     def paste(self, text: str) -> str:
-        pb = self.pasteboard
-        kind = self.target(self.focused())
+        system = host.require("insert")
+        pb = self._pasteboard or system.pasteboard()
+        kind = (self.target or system.text_target)((self.focused or system.focused_element)())
         if kind == "none":
-            put_text(pb, text, transient=False)  # the user pastes it themselves: a normal clipboard entry
+            system.put_text(pb, text, transient=False)  # the user pastes it themselves: a normal clipboard entry
             log.info("no text field in front; %d chars left on the clipboard", len(text))
             return "copied"
-        previous = capture.snapshot_pasteboard(pb)
-        count = put_text(pb, text, transient=True)
-        self.wait_for_modifiers()
-        self.send_key(KEY_V, _command_flag())
-        self.later(self.restore_delay, lambda: restore_unless_changed(pb, previous, count))
+        previous = system.snapshot(pb)
+        count = system.put_text(pb, text, transient=True)
+        (self.wait_for_modifiers or system.wait_for_modifiers)()
+        (self.send_key or system.send_key)(system.KEY_V, system.paste_flags())
+        self.later(self.restore_delay, lambda: system.restore_unless_changed(pb, previous, count))
         log.info("pasted %d chars (target %s)", len(text), kind)
         return "pasted"
-
-
-def _command_flag() -> int:
-    import Quartz
-
-    return Quartz.kCGEventFlagMaskCommand
 
 
 def _later(delay: float, fn: Callable[[], None]) -> None:

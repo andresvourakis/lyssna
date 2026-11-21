@@ -1,7 +1,7 @@
 import threading
 import time
 
-from lyssna.events import Point
+from lyssna.mac.events import Point
 from lyssna.selection import AXSelection, SelectionWatcher, offers_button, selection_proof
 
 BOX = (1.0, 2.0, 3.0, 4.0)
@@ -131,7 +131,7 @@ def test_double_click_compares_with_the_first_press():
 
 
 def test_a_press_while_our_own_app_is_in_front_does_not_show():
-    # With our app in front capture reads nothing (see test_capture_ax_gate); no rule needed here.
+    # With our app in front capture reads nothing (see test_mac_capture_ax_gate); no rule needed here.
     w, shown, _ = make([UNSUPPORTED, UNSUPPORTED])
     run(w)
     assert shown == []
@@ -259,7 +259,7 @@ class Pasteboard:
 
 
 def test_copied_since_ignores_our_own_writes(monkeypatch):
-    from lyssna import capture
+    from lyssna.mac import capture
 
     pb = Pasteboard(10, "hello world")
     class General:
@@ -278,8 +278,7 @@ def test_copied_since_ignores_our_own_writes(monkeypatch):
 
 
 def test_our_paste_and_restore_are_noted_as_ours(monkeypatch):
-    from lyssna import capture
-    from lyssna.dictation import insert
+    from lyssna.mac import capture, insert
 
     class Board:
         def __init__(self):

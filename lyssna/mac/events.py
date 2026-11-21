@@ -16,10 +16,10 @@ from collections.abc import Callable
 
 import Quartz
 
-from .gestures import Point, SelectionGestureDetector, spawn  # re-exported: older imports name them here
-from .hotkeys import MODIFIER_MASK, parse
+from ..gestures import Point, SelectionGestureDetector, spawn  # re-exported: older imports name them here
+from ..hotkeys import MODIFIER_MASK, parse
 
-log = logging.getLogger("lyssna.events")
+log = logging.getLogger("lyssna.mac.events")
 
 
 def accessibility_trusted(prompt: bool = False) -> bool:

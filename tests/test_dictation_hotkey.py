@@ -2,7 +2,6 @@
 
 import pytest
 
-from lyssna.dictation import hotkey
 from lyssna.dictation.hotkey import (
     DEVICE_LEFT_OPTION,
     DEVICE_RIGHT_OPTION,
@@ -196,19 +195,3 @@ def test_unknown_keys_are_refused():
         PushToTalk(trigger="caps_lock")
     with pytest.raises(ValueError):
         PushToTalk(hands_free="tab")
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [("0", "nothing"), ("1", "input_source"), ("2", "emoji"), ("3", "dictation"), ("", "default"), (None, "unknown"),
-     ("7", "unknown"), ("garbage", "unknown")],
-)
-def test_globe_key_action(raw, expected):
-    seen = []
-
-    def read(domain, key):
-        seen.append((domain, key))
-        return raw
-
-    assert hotkey.globe_key_action(read) == expected
-    assert seen == [("com.apple.HIToolbox", "AppleFnUsageType")]

@@ -1,4 +1,4 @@
-"""Global keys and mouse on Windows, the twin of lyssna/events.py.
+"""Global keys and mouse on Windows, the twin of lyssna/mac/events.py.
 
 KeyboardTap  - a low-level keyboard hook (WH_KEYBOARD_LL) that fires the callbacks for
                registered hotkeys and swallows those keystrokes.

@@ -49,7 +49,7 @@ MAC_MODEL = ModelFile("kokoro-v1.0.int8.onnx", f"{_RELEASE}/kokoro-v1.0.int8.onn
 WINDOWS_MODEL = ModelFile("kokoro-v1.0.fp16.onnx", f"{_RELEASE_V10}/kokoro-v1.0.fp16.onnx",
                           "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204", 177_464_787)
 FILES: list[ModelFile] = [
-    WINDOWS_MODEL if host.IS_WINDOWS else MAC_MODEL,
+    MAC_MODEL if host.FAST_INT8 else WINDOWS_MODEL,
     ModelFile("voices-v1.0.bin", f"{_RELEASE}/voices-v1.0.bin",
               "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d", 28_214_398),
 ]
@@ -80,7 +80,7 @@ def packages_installed() -> bool:
 # -- espeak-ng location ------------------------------------------------------------------
 
 
-_ESPEAK_LIBRARY = "espeak-ng.dll" if host.IS_WINDOWS else "libespeak-ng.dylib"  # its file name in the frozen app
+_ESPEAK_LIBRARY = host.library_file("espeak-ng")  # its file name in the frozen app
 
 
 def _bundled_espeak() -> tuple[str, str]:

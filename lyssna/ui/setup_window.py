@@ -61,9 +61,9 @@ from Foundation import NSURL, NSInsetRect, NSMakeRect, NSObject, NSRunLoop, NSRu
 
 from ..controller import KEYBOARD_SETTINGS_URL, MIC_SETTINGS_URL
 from ..dictation import cleaners, transcribers
-from ..dictation.hotkey import globe_key_action
-from ..events import accessibility_trusted
 from ..hotkeys import pretty, tokens
+from ..mac.events import accessibility_trusted
+from ..mac.globe import globe_key_action
 from ..menu import LOCAL_HEADER, ONLINE_HEADER, key_name, privacy_symbol
 from ..providers import REGISTRY, allowed, get_provider, kokoro
 from . import theme

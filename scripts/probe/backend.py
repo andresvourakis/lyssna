@@ -116,7 +116,7 @@ class RealBackend:
     # ----- step 2: system pieces ----------------------------------------------------------
 
     def check_credentials(self) -> dict:
-        from lyssna import keychain
+        from lyssna import keystore
         from lyssna.win.credentials import CredentialBackend
 
         b = CredentialBackend()
@@ -125,10 +125,10 @@ class RealBackend:
         get_code, got = b.get(CRED_ACCOUNT)
         delete_code = b.delete(CRED_ACCOUNT)
         after_code, _after = b.get(CRED_ACCOUNT)
-        ok = set_code == 0 and get_code == 0 and got == value and delete_code == 0 and after_code == keychain.NOT_FOUND
+        ok = set_code == 0 and get_code == 0 and got == value and delete_code == 0 and after_code == keystore.NOT_FOUND
         return {"ok": ok, "set_code": set_code, "get_code": get_code, "value_matches": got == value,
                 "delete_code": delete_code, "get_after_delete_code": after_code,
-                "get_after_delete_is_not_found": after_code == keychain.NOT_FOUND}
+                "get_after_delete_is_not_found": after_code == keystore.NOT_FOUND}
 
     def check_policy(self) -> dict:
         from lyssna.win import policy

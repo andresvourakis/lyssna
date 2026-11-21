@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import lyssna.capture
+import lyssna.mac.capture
 from lyssna import config, controller, host, hotkeys
 from lyssna.win import hotkeys as win_hotkeys
 
@@ -24,10 +24,18 @@ def test_mac_paths_are_the_ones_lyssna_always_used():
 @mac_only
 def test_mac_gets_the_mac_modules():
     assert host.IS_MAC and not host.IS_WINDOWS and host.DEVICE == "Mac"
-    assert host.capture is lyssna.capture
-    assert controller.capture is lyssna.capture
-    assert host.ipc is None and host.autostart_impl is None and host.credentials is None and host.policy_impl is None
+    assert host.capture is lyssna.mac.capture
+    assert controller.capture is lyssna.mac.capture
+    for name, (mac, _windows) in host.MODULES.items():
+        if name != "app":
+            assert mac is not None and mac.startswith("lyssna.mac."), name  # every piece the Mac has lives in lyssna/mac/
     assert controller.MIC_SETTINGS_URL == "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+    assert controller.KEYBOARD_SETTINGS_URL == "x-apple.systempreferences:com.apple.Keyboard-Settings.extension"
+    from lyssna.ui.setup_window import ACCESSIBILITY_PANE
+
+    assert host.ACCESSIBILITY_SETTINGS_URL == ACCESSIBILITY_PANE  # the pane the setup window opens
+    assert host.NEEDS_ACCESSIBILITY and host.HAS_GLOBE_KEY and host.STATUS_TEXT_BESIDE_ICON and host.FAST_INT8
+    assert host.SYSTEM_VOICE == "say" and host.library_file("espeak-ng") == "libespeak-ng.dylib"
 
 
 @mac_only
@@ -56,10 +64,11 @@ def test_windows_table_parses_every_default_hotkey():
 
 
 def test_windows_table_knows_every_mac_key_name():
-    from lyssna import hotkeys_mac
+    from lyssna.mac import hotkeys as mac_hotkeys
 
-    assert set(win_hotkeys.KEYCODES) == set(hotkeys_mac.KEYCODES)
-    assert set(hotkeys_mac.MODIFIERS) <= set(win_hotkeys.MODIFIERS)
+    assert set(win_hotkeys.KEYCODES) == set(mac_hotkeys.KEYCODES)
+    assert set(mac_hotkeys.MODIFIERS) <= set(win_hotkeys.MODIFIERS)
+    assert set(win_hotkeys.DICTATION_KEY_NAMES) == set(mac_hotkeys.DICTATION_KEY_NAMES)
 
 
 def test_windows_pretty_names():

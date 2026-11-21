@@ -18,7 +18,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 
-from lyssna import config, hotkeys, server
+from lyssna import config, host, hotkeys
 from lyssna.controller import Controller, Notice
 from lyssna.gestures import Point
 from lyssna.player import Status
@@ -339,7 +339,7 @@ def test_a_second_launch_asks_the_running_copy_to_show_itself(qapp, monkeypatch)
     from lyssna.win import app as app_mod
 
     sent = []
-    monkeypatch.setattr(server, "send", lambda req, timeout=5.0: sent.append(req) or {"ok": True})
+    monkeypatch.setattr(host.ipc, "send", lambda req, timeout=5.0: sent.append(req) or {"ok": True})
     monkeypatch.setattr(app_mod, "SingleInstance", lambda: FakeInstance(free=False))
 
     def refuse(*args, **kwargs):
@@ -353,7 +353,7 @@ def test_a_second_launch_asks_the_running_copy_to_show_itself(qapp, monkeypatch)
 
 def test_losing_the_pipe_race_counts_as_a_second_launch(make_app, monkeypatch):
     sent = []
-    monkeypatch.setattr(server, "send", lambda req, timeout=5.0: sent.append(req) or {"ok": True})
+    monkeypatch.setattr(host.ipc, "send", lambda req, timeout=5.0: sent.append(req) or {"ok": True})
     a = make_app(server_cls=TakenServer)
     assert a.lost_race is True and a.server is None
     assert a.keyboard is None and a.mouse is None  # the keys stay with the running copy

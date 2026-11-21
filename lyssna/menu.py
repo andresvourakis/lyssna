@@ -20,10 +20,7 @@ LOCAL_HEADER = f"On this {host.DEVICE}"
 ONLINE_HEADER = "Online, with your API key"
 _LOCAL_PREFIX = f"{LOCAL_HEADER} ("
 # How each dictation key is written in menus, tooltips and the pill.
-KEY_NAMES = (
-    {"fn": "fn", "right_option": "right Alt", "right_command": "right Win", "right_control": "right Ctrl"} if host.IS_WINDOWS
-    else {"fn": "fn", "right_option": "right ⌥", "right_command": "right ⌘", "right_control": "right ⌃"}
-)
+KEY_NAMES: dict[str, str] = host.hotkey_table.DICTATION_KEY_NAMES
 
 
 @dataclass(frozen=True)

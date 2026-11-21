@@ -31,7 +31,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMenu, QMessageBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
-from ... import __version__, autostart, config, host, support, whatsnew
+from ... import __version__, config, host, support, whatsnew
 from ...controller import Notice
 from ...dictation import cleaners, transcribers
 from ...hotkeys import pretty
@@ -462,7 +462,7 @@ class Tray:
         self.item_login = None
         if getattr(sys, "frozen", False):  # from source this would register the wrong program
             self.item_login = self._action(s, "Start at Login", self._toggle_login, checkable=True)
-            self.item_login.setChecked(autostart.is_enabled())
+            self.item_login.setChecked(host.autostart.is_enabled())
         self.item_button = self._action(s, "Play Button on Selection", self._toggle_button, "button", checkable=True)
         self.item_auto_hide = self._action(s, "Auto-hide Squiggle", self._toggle_auto_hide, checkable=True)
         self.item_wave = self._action(s, "Squiggle Wave", self._toggle_wave, checkable=True)
@@ -639,9 +639,9 @@ class Tray:
         self.on_whats_new()
 
     def _toggle_login(self) -> None:
-        autostart.set_enabled(not autostart.is_enabled())
+        host.autostart.set_enabled(not host.autostart.is_enabled())
         if self.item_login is not None:
-            self.item_login.setChecked(autostart.is_enabled())
+            self.item_login.setChecked(host.autostart.is_enabled())
 
     def show_permission_warning(self) -> None:
         """The keyboard and mouse hooks did not start: say so at the top of the menu (it opens

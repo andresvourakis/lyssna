@@ -7,7 +7,7 @@ paused afterwards), and while a dictation records or works the read actions only
 Observers get a fresh Status (or DictationStatus, or Notice) on every change, on whatever
 thread produced it; UI observers must hop to the main thread themselves.
 
-The saved API keys are read once at launch on a background thread (see keychain.py: that read
+The saved API keys are read once at launch on a background thread (see keystore.py: that read
 can wait on a macOS password prompt). Until it lands, every question the menu and the windows
 ask here answers as if the key were there, and nothing is decided from it: the launch check
 that moves an engine without a key to the voice on this Mac waits for the real answer."""
@@ -21,13 +21,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import config, host, keychain, migrate, policy, usage
+from . import config, host, keystore, migrate, policy, usage
 from .cache import AudioCache, cache_enabled
 from .dictation import cleaners, transcribers
 from .dictation import models as dictation_models
 from .dictation.session import DictationSession
 from .dictation.types import DictationResult, DictationStatus
-from .host import capture  # lyssna.capture on the Mac, lyssna.win.capture on Windows
+from .host import capture  # lyssna.mac.capture on the Mac, lyssna.win.capture on Windows
 from .menu import dictation_privacy
 from .player import Reader, Status
 from .providers import REGISTRY, allowed, effective_provider, get_provider, kokoro, local_fallback
@@ -40,7 +40,7 @@ SPEED_STEP = 0.1
 DICTATING = ("recording", "locked", "working")
 _RECORDING = ("recording", "locked")
 MIC_SETTINGS_URL = host.MIC_SETTINGS_URL
-KEYBOARD_SETTINGS_URL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension"
+KEYBOARD_SETTINGS_URL = host.KEYBOARD_SETTINGS_URL
 GLOBE_MARKER = "globe-key-hint-shown"  # in STATE_DIR, like the `welcomed` marker
 
 ASK_MIC = "Allow microphone access to dictate"
@@ -100,8 +100,8 @@ class Controller:
         self._globe_checked = False
         self.push_to_talk = None  # the app's PushToTalk, kept in step with the session (see _dictation_changed)
         self.dictation = self._make_dictation()
-        keychain.subscribe(self._keys_read)
-        keychain.load(key_sections(), first=self._move_keys_to_keychain)
+        keystore.subscribe(self._keys_read)
+        keystore.load(key_sections(), first=self._move_keys_to_keychain)
         self._check_provider()  # at once when the answer is known already (no key needed, or cached)
 
     # -- API keys at launch ------------------------------------------------------------
@@ -455,13 +455,13 @@ class Controller:
         app can remove it from; a key in the environment is out of its reach)? Never waits for
         the Keychain: False until it has been read."""
         section = REGISTRY[name].section()
-        return bool(config.file_api_key(section) or keychain.has_key(section))
+        return bool(config.file_api_key(section) or keystore.has_key(section))
 
     def remove_api_key(self, name: str) -> None:
         """Forget the saved key for this engine (and any engine sharing its config section).
         If the current engine used it, move to the free voice on this Mac."""
         section = REGISTRY[name].section()
-        keychain.delete(section)
+        keystore.delete(section)
         if config.file_api_key(section):
             self.cfg = config.update(**{f"{section}.api_key": ""})
         log.info("removed the %s API key", section)
@@ -756,7 +756,7 @@ class Controller:
     def _globe_hint_once(self) -> None:
         """With Fn as the dictation key, macOS must not also react to the Globe key. Checked
         off the tap's thread; the hint shows once ever."""
-        if self._globe_checked or str(self.cfg.get("dictation", {}).get("hotkey", "fn")) != "fn":
+        if not host.HAS_GLOBE_KEY or self._globe_checked or str(self.cfg.get("dictation", {}).get("hotkey", "fn")) != "fn":
             return
         self._globe_checked = True
         marker = config.STATE_DIR / GLOBE_MARKER
@@ -764,9 +764,7 @@ class Controller:
             return
 
         def check() -> None:
-            from .dictation.hotkey import globe_key_action
-
-            action = globe_key_action()
+            action = host.globe.globe_key_action()
             if action in ("nothing", "unknown"):
                 return
             try:

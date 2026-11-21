@@ -7,7 +7,7 @@ from __future__ import annotations
 from AVFoundation import AVAudioPlayer
 from Foundation import NSData
 
-from .providers.base import Audio, ProviderError
+from ..providers.base import Audio, ProviderError
 
 
 def make_player(audio: Audio, speed: float):

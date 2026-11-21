@@ -2,7 +2,7 @@ r"""The control channel the CLI uses to drive the running app, on Windows.
 
 Why a named pipe: Windows has no Unix socket server in the standard library, and the standard
 library's multiprocessing.connection already speaks named pipes. The requests and replies are
-the same JSON objects as the Unix socket in lyssna/server.py carries, one per connection.
+the same JSON objects as the Unix socket in lyssna/mac/ipc.py carries, one per connection.
 
 Named pipes are visible to every account on the PC, so the pipe alone does not keep other
 users out. The running app makes a random 32-byte key at start() and writes it to the marker

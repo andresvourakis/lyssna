@@ -1,5 +1,6 @@
 """The Mac key tables for hotkey specs: virtual key codes, Quartz modifier flags and the
-symbols the menus show (⌃⌥S). lyssna/hotkeys.py picks this or lyssna/win/hotkeys.py."""
+symbols the menus show (⌃⌥S, right ⌥). lyssna.host hands out this or lyssna/win/hotkeys.py, and
+lyssna/hotkeys.py reads them from there."""
 
 from __future__ import annotations
 
@@ -26,6 +27,8 @@ MODIFIER_MASK = (
     Quartz.kCGEventFlagMaskCommand | Quartz.kCGEventFlagMaskControl
     | Quartz.kCGEventFlagMaskAlternate | Quartz.kCGEventFlagMaskShift
 )
+# How each dictation key is written in menus, tooltips and the pill.
+DICTATION_KEY_NAMES = {"fn": "fn", "right_option": "right ⌥", "right_command": "right ⌘", "right_control": "right ⌃"}
 PRETTY = {"ctrl": "⌃", "control": "⌃", "alt": "⌥", "option": "⌥", "opt": "⌥", "cmd": "⌘", "command": "⌘",
           "shift": "⇧", "space": "Space", "left": "←", "right": "→", "up": "↑", "down": "↓", "return": "↩", "escape": "⎋"}
 

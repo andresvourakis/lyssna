@@ -37,12 +37,9 @@ UNDO_SECONDS = 5.0     # how long a cancelled recording can be brought back
 NOTICE_SECONDS = 3.0   # how long other notices stay
 
 CANCELLED = "Transcript cancelled"
-COPIED = "Copied. Press Ctrl+V to paste" if host.IS_WINDOWS else "Copied. Press ⌘V to paste"
+COPIED = f"Copied. Press {host.PASTE_SHORTCUT} to paste"
 FAILED = "Dictation failed. Try again."
-NO_MIC = (
-    "Lyssna can't use the microphone. Allow it in Settings > Privacy & security > Microphone." if host.IS_WINDOWS
-    else "Lyssna can't use the microphone. Allow it in System Settings > Privacy & Security > Microphone."
-)
+NO_MIC = f"Lyssna can't use the microphone. Allow it in {host.MIC_SETTINGS_PLACE}."
 ASK_MIC = "Allow the microphone, then dictate again."
 
 _RECORDING = ("recording", "locked")

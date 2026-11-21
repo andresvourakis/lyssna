@@ -1,13 +1,12 @@
 """Start at Login for the bundled app, via SMAppService (macOS 13+). Only meaningful when
-running from Lyssna.app; from source it would register the wrong bundle."""
+running from Lyssna.app; from source it would register the wrong bundle (the command line
+writes a LaunchAgent instead, see lyssna/mac/launch_agent.py). Neither function raises."""
 
 from __future__ import annotations
 
 import logging
 
-from . import host
-
-log = logging.getLogger("lyssna.autostart")
+log = logging.getLogger("lyssna.mac.autostart")
 
 STATUS_ENABLED = 1
 
@@ -19,8 +18,6 @@ def _service():
 
 
 def is_enabled() -> bool:
-    if host.autostart_impl is not None:  # Windows: the registry Run key
-        return host.autostart_impl.is_enabled()
     try:
         return _service().status() == STATUS_ENABLED
     except Exception:
@@ -30,8 +27,6 @@ def is_enabled() -> bool:
 
 def set_enabled(enabled: bool) -> bool:
     """Register or unregister the app as a login item. Returns True on success."""
-    if host.autostart_impl is not None:
-        return host.autostart_impl.set_enabled(enabled)
     try:
         service = _service()
         ok, error = service.registerAndReturnError_(None) if enabled else service.unregisterAndReturnError_(None)

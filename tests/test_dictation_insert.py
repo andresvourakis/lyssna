@@ -1,13 +1,15 @@
 """Paste at the cursor, with fakes only: no key is ever posted and the user's clipboard is
-never touched (a fake pasteboard, and once a private, uniquely named one)."""
+never touched (a fake pasteboard, and once a private, uniquely named one). The Inserter is the
+engine's (lyssna/dictation/insert.py); the clipboard writes and the text-field question are the
+Mac's (lyssna/mac/insert.py)."""
 
 import pytest
 import Quartz
 from AppKit import NSPasteboard
 
-from lyssna import capture
-from lyssna.dictation import insert
-from lyssna.dictation.insert import CONCEALED_TYPE, TRANSIENT_TYPE, Inserter, text_target
+from lyssna.dictation.insert import Inserter
+from lyssna.mac import capture, insert
+from lyssna.mac.insert import CONCEALED_TYPE, TRANSIENT_TYPE, text_target
 
 PLAIN = "public.utf8-plain-text"
 

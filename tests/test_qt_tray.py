@@ -405,10 +405,10 @@ def test_choosing_a_provider_without_its_key_opens_setup(tray):
 
 
 def test_choosing_a_provider_with_its_key_switches(tray, fake_keychain):
-    from lyssna import keychain
+    from lyssna import keystore
 
     fake_keychain.items["cartesia"] = "k"
-    keychain.clear_cache()
+    keystore.clear_cache()
     tray._refresh_checks()
     tray.provider_items["cartesia"].trigger()
     assert config.load()["provider"] == "cartesia"
@@ -423,9 +423,9 @@ def test_an_online_provider_is_refused_in_local_only_mode(tray):
 
 
 def test_remove_key_asks_first(tray, monkeypatch):
-    from lyssna import keychain
+    from lyssna import keystore
 
-    keychain.set("cartesia", "k")
+    keystore.set("cartesia", "k")
     tray._refresh_checks()
     assert rows(tray.key_menu)[-2:] == ["---", "Remove Cartesia Sonic Key…"]
     asked = []

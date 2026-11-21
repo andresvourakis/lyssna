@@ -182,12 +182,12 @@ def test_permission_warning_sits_above_listen(menubar):
 
 
 def test_privacy_lines_show_where_things_go(menubar, fake_keychain):
-    from lyssna import keychain
+    from lyssna import keystore
 
     assert menubar._privacy_symbols == {"reading": "lock", "dictation": "lock"}
     assert menubar.item_privacy._menuitem.image() is not None
     fake_keychain.items["openai"] = "k"
-    keychain.clear_cache()
+    keystore.clear_cache()
     menubar._set_transcriber("openai")
     assert menubar._privacy_symbols["dictation"] == "arrow.up.right"
 
@@ -236,9 +236,9 @@ def test_squiggle_wave_is_checked_persisted_and_applied(menubar):
 
 
 def test_stored_key_shows_its_remove_entry(menubar):
-    from lyssna import keychain
+    from lyssna import keystore
 
-    keychain.set("cartesia", "k")
+    keystore.set("cartesia", "k")
     menubar._refresh_checks()
     keys = visible_rows(menubar.key_menu._menu)
     assert keys[-2:] == ["---", "Remove Cartesia Sonic Key…"]
@@ -361,10 +361,10 @@ def test_choosing_an_engine_without_its_key(menubar, monkeypatch):
 
 
 def test_choosing_an_engine_with_its_key(menubar, fake_keychain):
-    from lyssna import keychain
+    from lyssna import keystore
 
     fake_keychain.items["openai"] = "k"
-    keychain.clear_cache()  # building the menu already looked for it
+    keystore.clear_cache()  # building the menu already looked for it
     menubar._set_transcriber("openai")
     assert menubar.transcription_menu.title == "Transcription: OpenAI (gpt-transcribe)"
     assert menubar.item_dictation_privacy.title == "Speech is sent to OpenAI"

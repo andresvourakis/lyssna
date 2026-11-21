@@ -24,10 +24,10 @@ from collections import OrderedDict, deque
 import Quartz
 from AppKit import NSApp, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSRunningApplication, NSWorkspace
 
-from .hotkeys import MODIFIER_MASK
-from .selection import AXSelection
+from ..hotkeys import MODIFIER_MASK
+from ..selection import AXSelection
 
-log = logging.getLogger("lyssna.capture")
+log = logging.getLogger("lyssna.mac.capture")
 
 _KEY_C = 8
 

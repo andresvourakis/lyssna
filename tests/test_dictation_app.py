@@ -126,7 +126,7 @@ def test_a_bad_dictation_key_is_reported_not_fatal(monkeypatch, lyssna):
 def test_play_button_reads_what_it_was_offered_for(lyssna, monkeypatch):
     """A button offered on a copy-on-select reads the clipboard, with no Cmd+C sent; one
     offered on an Accessibility selection reads the selection."""
-    from lyssna.events import Point
+    from lyssna.mac.events import Point
 
     calls = []
     monkeypatch.setattr(lyssna.ctl, "speak_clipboard", lambda: calls.append("clipboard"))

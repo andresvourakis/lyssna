@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 
 import httpx
 
-from ... import host, keychain
+from ... import host, keystore
 from ...providers.base import error_summary
 
 log = logging.getLogger("lyssna.dictation")
@@ -66,7 +66,7 @@ class Transcriber:
             return ""
         return (
             self._key_override
-            or keychain.get(self.section())
+            or keystore.get(self.section())
             or self.cfg.get("api_key")
             or os.environ.get(f"{self.section().upper()}_API_KEY", "")
         )
@@ -82,7 +82,7 @@ class Transcriber:
         if not self.needs_key:
             return True
         if not wait:
-            return keychain.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
+            return keystore.has_key(self.section(), self._key_override, self.cfg.get("api_key"),
                                     os.environ.get(f"{self.section().upper()}_API_KEY", ""))
         return bool(self.api_key)
 

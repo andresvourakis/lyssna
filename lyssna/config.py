@@ -318,9 +318,9 @@ def file_api_key(section: str) -> str:
 def save_api_key(section: str, key: str) -> bool:
     """Store a key in the Keychain and blank it in the config file. If the Keychain will not take
     it, write it to the config file instead (owner-only, as before). True = it is in the Keychain."""
-    from . import keychain
+    from . import keystore
 
-    if keychain.set(section, key) and keychain.get(section) == key:
+    if keystore.set(section, key) and keystore.get(section) == key:
         if file_api_key(section):
             update(**{f"{section}.api_key": ""})
         return True

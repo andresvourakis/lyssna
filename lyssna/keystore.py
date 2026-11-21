@@ -1,9 +1,10 @@
-"""API keys in the macOS login Keychain, one generic password per engine config section.
+"""API keys in the system's key store, one entry per engine config section: the login Keychain
+on the Mac (lyssna/mac/credentials.py), Credential Manager on Windows (lyssna/win/credentials.py).
 
 Why: a key in a plain text file is readable by anything running as the user and ends up in
-backups and dotfile repos. The Keychain encrypts it and ties it to the app that stored it.
-We call the Security framework directly instead of the `security` command line tool, which
-would need the key as an argument where any other process could see it.
+backups and dotfile repos. The key store encrypts it for this user. This module is the part
+both systems share: the cache, the background read at launch and the rules below. The backend
+that talks to the system comes from lyssna.host.
 
 Every function is safe from any thread and never raises: a Keychain problem is logged and
 reads as "no key here", so lookup carries on to the config file and the environment. Keys
@@ -31,61 +32,13 @@ from collections.abc import Callable, Iterable
 
 from . import host
 
-log = logging.getLogger("lyssna.keychain")
+log = logging.getLogger("lyssna.keystore")
 
 SERVICE = "io.github.andresvourakis.lyssna"
 # Backend statuses that are not failures. The values are the macOS ones (errSecItemNotFound,
-# errSecDuplicateItem); the Windows backend answers with the same numbers.
+# errSecDuplicateItem); both backends import them from here and answer with these numbers.
 NOT_FOUND = -25300
 DUPLICATE = -25299
-
-
-class SecurityBackend:
-    """The real login Keychain. Each method returns an OSStatus (0 = success); get also
-    returns the stored text. Tests swap this out for an in-memory fake."""
-
-    def __init__(self, service: str = SERVICE):
-        self.service = service
-
-    def _query(self, account: str) -> dict:
-        import Security
-
-        return {
-            Security.kSecClass: Security.kSecClassGenericPassword,
-            Security.kSecAttrService: self.service,
-            Security.kSecAttrAccount: account,
-        }
-
-    def get(self, account: str) -> tuple[int, str | None]:
-        import Security
-
-        query = self._query(account)
-        query[Security.kSecReturnData] = True
-        query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
-        status, data = Security.SecItemCopyMatching(query, None)
-        if status != 0 or data is None:
-            return status, None
-        return 0, bytes(data).decode("utf-8")
-
-    def set(self, account: str, value: str) -> int:
-        import Security
-        from Foundation import NSData
-
-        raw = value.encode("utf-8")
-        data = NSData.dataWithBytes_length_(raw, len(raw))
-        query = self._query(account)
-        attrs = dict(query)
-        attrs[Security.kSecValueData] = data
-        attrs[Security.kSecAttrLabel] = f"Lyssna API key ({account})"
-        status, _ = Security.SecItemAdd(attrs, None)
-        if status == DUPLICATE:
-            status = Security.SecItemUpdate(query, {Security.kSecValueData: data})
-        return status
-
-    def delete(self, account: str) -> int:
-        import Security
-
-        return Security.SecItemDelete(self._query(account))
 
 
 class _Unknown:
@@ -95,7 +48,7 @@ class _Unknown:
 
 UNKNOWN = _Unknown()  # peek's answer while the Keychain has not been read for that section yet
 
-_backend = SecurityBackend() if host.credentials is None else host.credentials.CredentialBackend()
+_backend = host.credentials.CredentialBackend()  # tests swap this for an in-memory fake
 _lock = threading.Lock()
 _settled = threading.Condition(_lock)  # notified whenever a background read finishes a section
 _cache: dict[str, str | None] = {}
@@ -162,7 +115,7 @@ def get(account: str) -> str | None:
 
 def _spawn(fn: Callable[[], None]) -> None:
     """Start the background read (tests replace this to run it inline)."""
-    threading.Thread(target=fn, daemon=True, name="lyssna-keychain").start()
+    threading.Thread(target=fn, daemon=True, name="lyssna-keystore").start()
 
 
 def subscribe(fn: Callable[[], None]) -> None:
