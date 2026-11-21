@@ -101,7 +101,14 @@ POLL = 0.5                    # seconds between checks for changes while the win
 COPIED_FOR = 1.2              # seconds the copy icon shows a check
 FRAME = 1 / 60                # animation tick
 
-EMPTY_DICTATIONS = "Your dictations will appear here. Hold fn and speak."
+
+
+def empty_dictations(key: str = "fn") -> str:
+    """The empty list's line, naming the key that dictates ("fn" on the Mac, the legacy wording)."""
+    return f"Your dictations will appear here. Hold {key} and speak."
+
+
+EMPTY_DICTATIONS = empty_dictations()
 EMPTY_SEARCH = "No dictations match."
 EMPTY_DICTIONARY = "Words Lyssna should know: names, products, jargon. It also learns when you correct a dictation."
 SOURCE_BADGE = {"learned": "Learned", "manual": "Added"}  # any other source reads "Added"
@@ -116,12 +123,14 @@ def figure(n: int) -> str:
     return f"{int(n):,}"
 
 
-def retention_text(days: int) -> str:
+def retention_text(days: int, device: str = "Mac") -> str:
+    """The footer's line. `device` names the computer ("Mac", what the legacy window passes by
+    leaving it out, or "PC": host.DEVICE)."""
     if days == 0:
         return "History is off"
     if days < 0:
-        return "Kept on this Mac until you clear it"
-    return f"Kept for {days} day{'s' if days != 1 else ''} on this Mac"
+        return f"Kept on this {device} until you clear it"
+    return f"Kept for {days} day{'s' if days != 1 else ''} on this {device}"
 
 
 def day_label(day: date, today: date) -> str:
