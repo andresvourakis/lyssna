@@ -9,16 +9,12 @@ import objc
 from . import theme
 from .mainthread import later, on_main
 from .panel import FloatingPanel, TintedView, screen_at_quartz, screen_height, symbol_button
-
-OFFSET = 10.0       # gap between the button and the selection / cursor line
-LINE_HEIGHT = 22.0  # fallback: assume the cursor sits on a line about this tall
-
-
-def _intersects(rect, ns_rect) -> bool:
-    x, y, w, h = rect
-    ox, oy = ns_rect.origin.x, ns_rect.origin.y
-    ow, oh = ns_rect.size.width, ns_rect.size.height
-    return x < ox + ow and x + w > ox and y < oy + oh and y + h > oy
+from .shared.button import (
+    LINE_HEIGHT,  # noqa: F401  (re-exported)
+    OFFSET,  # noqa: F401  (re-exported)
+    _intersects,  # noqa: F401  (re-exported)
+    place,
+)
 
 
 class SelectionButton(FloatingPanel):
@@ -68,16 +64,6 @@ class SelectionButton(FloatingPanel):
     def _present(self, qx: float, qy: float, avoid=None, selection=None) -> None:
         if self._timer:
             self._timer.cancel()
-        H = screen_height()
-        if selection is not None:
-            sx, sy, sw, sh = selection
-            top = sy                                   # top edge of the selected text (Quartz)
-            x = min(max(qx, sx), sx + sw) - self.width / 2  # centred on the cursor, kept within the selection
-        else:
-            top = qy - LINE_HEIGHT / 2
-            x = qx - self.width / 2
-        y = H - top + OFFSET                            # bottom of the button sits OFFSET above the selection
-        if avoid is not None and _intersects((x, y, self.width, self.height), avoid):
-            y = H - (top + (sh if selection else LINE_HEIGHT)) - OFFSET - self.height  # flip below
+        x, y = place(qx, qy, (self.width, self.height), screen_height(), avoid, selection)
         self.show_at(x, y, screen=screen_at_quartz(qx, qy))
         self._timer = later(self.timeout, self.hide)

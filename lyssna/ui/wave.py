@@ -15,7 +15,6 @@ tested without a window."""
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 
 import objc
@@ -24,47 +23,27 @@ from AppKit import NSView
 from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 from . import theme
+from .shared.wave import (
+    AMP_MAX,  # noqa: F401  (re-exported)
+    AMP_MIN,
+    ATTACK,  # noqa: F401  (re-exported)
+    BREATHE_LOW,
+    BREATHE_SECS,
+    CYCLES,  # noqa: F401  (re-exported)
+    FPS,
+    RELEASE,  # noqa: F401  (re-exported)
+    SPEED,
+    STEPS,  # noqa: F401  (re-exported)
+    STROKE,
+    WAVE_H,
+    WAVE_W,
+    WORK_AMP,
+    WORK_SPEED,
+    ease,
+    target_amplitude,
+    wave_points,
+)
 from .widgets import _loop
-
-WAVE_W, WAVE_H = 14.0, 36.0
-CYCLES = 1.5           # sine cycles over the meter's height
-STROKE = 2.5
-AMP_MIN, AMP_MAX = 1.0, 5.5   # sideways swing in points, silence to full level
-ATTACK, RELEASE = 0.06, 0.25  # seconds: the swing grows fast and settles slowly
-SPEED = 1.2            # cycles per second the phase scrolls while recording
-WORK_AMP, WORK_SPEED = 2.5, 0.5
-BREATHE_LOW, BREATHE_SECS = 0.45, 1.4  # working: opacity 0.45 to 1.0 and back over 1.4 s
-FPS = 30.0
-STEPS = 48             # line segments in the path
-
-
-def target_amplitude(level: float) -> float:
-    """The swing for a microphone level in 0..1."""
-    level = min(1.0, max(0.0, level))
-    return AMP_MIN + (AMP_MAX - AMP_MIN) * level
-
-
-def ease(current: float, target: float, dt: float) -> float:
-    """Move `current` toward `target` over `dt` seconds: quickly when rising (ATTACK), more
-    slowly when falling (RELEASE), the way a level meter does."""
-    tau = ATTACK if target > current else RELEASE
-    return current + (target - current) * (1.0 - math.exp(-max(0.0, dt) / tau))
-
-
-def wave_points(amplitude: float, phase: float, width: float = WAVE_W, height: float = WAVE_H,
-                cycles: float = CYCLES, steps: int = STEPS, horizontal: bool = False) -> list[tuple[float, float]]:
-    """Points of the wave along a width x height area: up its height, or with `horizontal`
-    left to right across its width, swinging about the middle of the other side. The ends
-    sit half a stroke in so the round caps stay inside."""
-    length, depth = (width, height) if horizontal else (height, width)
-    start, span = STROKE / 2, length - STROKE
-    mid = depth / 2
-    points = []
-    for i in range(steps + 1):
-        along = start + span * i / steps
-        swing = mid + amplitude * math.sin(2 * math.pi * (cycles * i / steps + phase))
-        points.append((along, swing) if horizontal else (swing, along))
-    return points
 
 
 class WaveView(NSView):

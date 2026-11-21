@@ -10,9 +10,7 @@ from __future__ import annotations
 import AppKit
 from AppKit import NSColor
 
-CREAM = (0xF4, 0xEF, 0xE6)    # #F4EFE6
-INK = (0x0F, 0x0F, 0x11)      # #0F0F11, the dark surface (the logo tile)
-INK_TEXT = (0x14, 0x14, 0x14)  # #141414, text and marks on cream
+from .shared.tokens import CONTENT_DIM_ALPHA, CREAM, FILL_SOFT_ALPHA, HAIRLINE_ALPHA, INK, INK_TEXT
 
 
 def _is_dark(appearance) -> bool:
@@ -42,6 +40,6 @@ def content(alpha: float = 1.0) -> NSColor:
 
 SURFACE = surface()
 CONTENT = content()
-CONTENT_DIM = content(0.60)  # secondary text
-HAIRLINE = content(0.12)     # borders and separators
-FILL_SOFT = content(0.08)    # soft pills, keycaps, tracks
+CONTENT_DIM = content(CONTENT_DIM_ALPHA)  # secondary text
+HAIRLINE = content(HAIRLINE_ALPHA)        # borders and separators
+FILL_SOFT = content(FILL_SOFT_ALPHA)      # soft pills, keycaps, tracks

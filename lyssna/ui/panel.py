@@ -33,13 +33,13 @@ from Foundation import NSMakeRect, NSObject
 
 from . import theme
 from .mainthread import later
+from .shared.layout import DRAG_SLOP
+from .shared.tokens import PANEL_BG as BG
 
 log = logging.getLogger("lyssna.ui.panel")
 
-BG = (0.10, 0.10, 0.11, 0.96)
 FG = NSColor.whiteColor()
 DIM = NSColor.colorWithWhite_alpha_(1.0, 0.6)
-DRAG_SLOP = 3.0  # points the mouse must travel before a press counts as a drag
 VERIFY_DELAY = 0.25  # seconds after an order-front before we ask the window server what it did
 REBUILD_COOLDOWN = 2.0  # seconds; a genuine failure must not turn into a rebuild loop
 
