@@ -446,27 +446,15 @@ def test_no_pill_after_the_reading_ended(pill):
 # -- the idle menu -------------------------------------------------------------------------------
 
 
-def test_the_menu_holds_only_read_selection_in_this_release(pill):
+def test_the_menu_matches_the_mac(pill):
     pill.show_idle()
     rest_cy = centre(pill)[1]
     pill.mouse_entered()
     assert pill.form == "menu" and pill.content is pill.menu_host and pill._watch is not None
     x, y, w, h = frame(pill)
-    assert (w, h) == (MENU_W, MENU_DISC) and x == 1440 - DOCK_GAP - MENU_W
-    assert y + h / 2 == pytest.approx(rest_cy, abs=1)
-    assert pill.menu_dictate.isHidden() and pill.menu_history.isHidden() and not pill.menu_read.isHidden()
-    r = pill.menu_read.geometry()
-    assert (r.width(), r.height()) == (MENU_DISC, MENU_DISC)
-    assert r.center().x() + 0.5 == pytest.approx(MENU_W / 2, abs=0.5)
-    settle(pill)
-
-
-def test_the_menu_with_every_feature_matches_the_mac(pill):
-    pill.features = {"dictate": True, "history": True}
-    pill.show_idle()
-    pill.mouse_entered()
-    _x, _y, w, h = frame(pill)
+    assert x == 1440 - DOCK_GAP - MENU_W and y + h / 2 == pytest.approx(rest_cy, abs=1)
     assert (w, h) == (MENU_W, MENU_H)
+    assert not any(v.isHidden() for v in (pill.menu_dictate, pill.menu_read, pill.menu_history))
     d, r, hi = (v.geometry() for v in (pill.menu_dictate, pill.menu_read, pill.menu_history))
     # bottom to top: the dictate capsule, read selection, history, DOCK_GAP_V apart
     assert d.y() + d.height() == MENU_H and (d.width(), d.height()) == (CAP_W, MENU_MIC_H)
@@ -476,7 +464,6 @@ def test_the_menu_with_every_feature_matches_the_mac(pill):
 
 
 def test_the_bottom_menu_is_a_row(pill):
-    pill.features = {"dictate": True, "history": True}
     pill.dictation_layout = {"dock": "bottom", "y": 0.3}
     pill.show_idle()
     rest_cx = centre(pill)[0]
@@ -490,7 +477,6 @@ def test_the_bottom_menu_is_a_row(pill):
 @pytest.mark.parametrize(("item", "fired"), [("menu_read", "read_selection"), ("menu_dictate", "dictate"),
                                              ("menu_history", "history")])
 def test_a_menu_item_closes_the_menu_then_acts(pill, item, fired):
-    pill.features = {"dictate": True, "history": True}
     pill.show_idle()
     pill.mouse_entered()
     seen = []
@@ -817,8 +803,6 @@ def test_the_live_status_wins_over_a_stale_snapshot(pill):
 
 @pytest.fixture
 def dictating(pill):
-    """The player with dictation switched on, as the app does once it ships."""
-    pill.features = {"dictate": True, "history": False}
     return pill
 
 
@@ -1063,20 +1047,6 @@ def test_a_dictation_update_never_runs_inline(dictating):
     t.start()
     t.join()
     pump(until=lambda: p.form == "rest")
-
-
-def test_with_dictation_off_a_status_changes_nothing(pill, monkeypatch):
-    from lyssna.dictation.types import DictationStatus
-    from lyssna.ui import mini_player as mp
-
-    queued = []
-    monkeypatch.setattr(mp, "_post", lambda fn: queued.append(fn))
-    pill.show_idle()
-    before = (pill.form, list(pill.shown), frame(pill))
-    pill.dictation_update(DictationStatus(state="recording", level=0.6))
-    assert queued == [] and pill._level == pytest.approx(0.6)
-    pill._set_dictation("recording")  # even reached directly, the form never shows
-    assert (pill.form, list(pill.shown), frame(pill)) == before and pill.dictation_state == "idle"
 
 
 def test_wave_reads_the_stored_level_and_breathes_while_working(dictating):

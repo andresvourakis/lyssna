@@ -59,6 +59,9 @@ class FakeTwin:
         self.calls.append(("is_on_screen", widget))
         return self.on_screen
 
+    def prepare_app(self):
+        self.calls.append(("prepare_app",))
+
     def hide_dock_icon(self):
         self.calls.append(("hide_dock_icon",))
 
@@ -67,6 +70,10 @@ class FakeTwin:
 
     def set_dark_title_bar(self, widget, dark):
         self.calls.append(("set_dark_title_bar", widget, dark))
+        return False
+
+    def left_button_down(self):
+        self.calls.append(("left_button_down",))
         return False
 
     def names(self):
@@ -186,8 +193,8 @@ def _public_functions(module) -> set[str]:
 
 def test_the_twins_offer_the_same_functions():
     assert _public_functions(mac_window) == _public_functions(win_window)
-    assert {"make_floating", "set_click_through", "bring_to_top", "is_on_screen", "hide_dock_icon", "activate_app",
-            "set_dark_title_bar"} == _public_functions(mac_window)
+    assert {"make_floating", "set_click_through", "bring_to_top", "is_on_screen", "prepare_app", "hide_dock_icon",
+            "activate_app", "set_dark_title_bar", "left_button_down"} == _public_functions(mac_window)
     assert host.MODULES["window"] == ("lyssna.mac.window", "lyssna.win.window")
 
 
@@ -306,6 +313,28 @@ def test_the_mac_twin_does_nothing_without_cocoa(qapp):
     mac_window.activate_app()
     assert mac_window.is_on_screen(w) is None
     assert mac_window.set_dark_title_bar(w, True) is False
+    assert mac_window.left_button_down() is False  # Qt's own answer: no button is held in a test
+
+
+def test_the_mac_twin_keeps_qt_from_bringing_the_app_forward_at_launch(monkeypatch):
+    monkeypatch.delenv("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM", raising=False)
+    mac_window.prepare_app()
+    assert os.environ["QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM"] == "1"
+    monkeypatch.delenv("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM")
+    win_window.prepare_app()  # nothing to do on Windows
+    assert "QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM" not in os.environ
+
+
+def test_the_windows_twin_asks_the_system_for_the_mouse_button(monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+
+    state = {"bits": 0x8000}
+    user32 = SimpleNamespace(GetAsyncKeyState=lambda vk: state["bits"] if vk == 0x01 else 0)
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32), raising=False)
+    assert win_window.left_button_down() is True
+    state["bits"] = 0x0001  # pressed since the last call, but not held now
+    assert win_window.left_button_down() is False
 
 
 # -- a real panel on a Mac -------------------------------------------------------------------

@@ -68,21 +68,21 @@ def machine():
 
 @pytest.fixture
 def make(qapp, ctl, machine, monkeypatch):
-    """make(system="pc", taps_ok=True, engine=None, dictation=None, features=None) -> a
+    """make(system="pc", taps_ok=True, engine=None, dictation=None) -> a
     prepared SetupWindow with that system's capabilities, never shown."""
     from lyssna.ui.setup_window import SetupWindow
 
     made = []
 
-    def build(system: str = "pc", taps_ok: bool = True, engine: str | None = None, dictation: str | None = None,
-              features: dict | None = None) -> SetupWindow:
+    def build(system: str = "pc", taps_ok: bool = True, engine: str | None = None,
+              dictation: str | None = None) -> SetupWindow:
         mac = system == "mac"
         monkeypatch.setattr(host, "NEEDS_ACCESSIBILITY", mac)
         monkeypatch.setattr(host, "HAS_GLOBE_KEY", mac)
         monkeypatch.setattr(host, "DEVICE", "Mac" if mac else "PC")
+        if mac:  # the Mac's dictation key (fn, no double tap), whatever this computer's default is
+            ctl.cfg = config.update(**{"dictation.hotkey": "fn", "dictation.double_tap": False})
         w = SetupWindow(ctl)
-        if features is not None:
-            w.features = features
         w.taps_ok = lambda: taps_ok
         w.accessibility_trusted = machine.accessibility_trusted
         w.globe_action = lambda: machine.globe
@@ -144,11 +144,7 @@ def test_which_tab_opens():
     assert opening_tab(None, None, 0, 0) == LISTEN  # all done
 
 
-def test_dictate_is_on_by_default_with_a_switch(window):
-    from lyssna.ui.setup_window import DICTATE, LISTEN
-
-    assert window.features == {"dictate": True}
-    assert window.tabs == (LISTEN, DICTATE)
+def test_dictate_has_its_tab_beside_listen(window):
     assert shown(window.switch) and window.tab_listen.isChecked() and not window.tab_dictate.isChecked()
     assert window.subtitle.value() == "Lyssna reads text aloud and types what you say. Set up each one below."
 
@@ -238,20 +234,6 @@ def test_on_a_short_screen_only_the_steps_scroll(window, monkeypatch):
     assert window.height() == 320
     assert window.content.height() > window.scroll_area.height()
     assert shown(window.header_line)
-
-
-def test_with_dictate_off_there_is_no_switch_and_no_dictate_tab(make):
-    from lyssna.ui.setup_window import LISTEN
-
-    w = make(features={"dictate": False})
-    assert w.tabs == (LISTEN,) and w.tab == LISTEN and w.switch is None
-    assert not hasattr(w, "tab_dictate") and not hasattr(w, "mic_row")
-    assert w.footer_status.value() == "Listen: 1 step left"
-    assert w.subtitle.value().startswith("Lyssna reads text aloud. Two quick steps and you are set.")
-    w.prepare(None, "openai", opening=False)  # a dictation key asked for anyway: Listen stays
-    assert w.tab == LISTEN
-    m = make("mac", features={"dictate": False})
-    assert m.subtitle.value().startswith("Lyssna reads text aloud. Three quick steps and you are set.")
 
 
 # -- Listen: the steps by capability -----------------------------------------------------------
@@ -590,7 +572,7 @@ def test_no_globe_line_without_a_globe_key(make, ctl):
 
     w = make("pc")
     w._select_tab(DICTATE)
-    assert ctl.cfg["dictation"]["hotkey"] == "fn"
+    assert ctl.cfg["dictation"]["hotkey"] == host.DICTATION_KEY_DEFAULT
     assert not shown(w.globe_row) and not shown(w.globe_settings)
     assert w.dicon1.done and w.tab_dictate.status == "1 step left"  # the microphone alone decides
 
@@ -716,6 +698,22 @@ def test_dictation_step_explains_the_keys(mac):
     assert mac.hold_keys.labels == ["fn"]
     assert shown(mac.hold_keys) and shown(mac.free_keys)
     assert mac.free_text.value() == "Hands-free:" and mac.free_keys.labels == ["fn", "Space"]
+    assert not shown(mac.tap_text) and not shown(mac.tap_keys)  # no double tap on the Mac
+
+
+def test_where_the_double_tap_is_on_try_it_says_so(make, ctl):
+    from lyssna.ui.setup_window import DICTATE
+
+    ctl.cfg = config.update(**{"dictation.hotkey": "right_control", "dictation.double_tap": True})
+    w = make("pc")
+    w._select_tab(DICTATE)
+    assert shown(w.tap_text) and shown(w.tap_keys) and shown(w.tap_after)
+    assert (w.tap_text.value(), w.tap_after.value()) == ("Or tap", "twice.")
+    assert w.tap_keys.labels == w.hold_keys.labels and len(w.tap_keys.labels) == 1  # the same caps as Hold
+    assert w.tap_text.y() > w.free_text.y()  # under the hands-free line
+    ctl.cfg = config.update(**{"dictation.double_tap": False})
+    refresh(w)
+    assert not shown(w.tap_text) and not shown(w.tap_keys)
 
 
 def test_the_dictation_keys_follow_the_config(mac, ctl):

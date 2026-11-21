@@ -236,9 +236,8 @@ class Tray:
           Read Selection, Read Clipboard, [now playing],
           [Pause / Resume, Stop, Previous Sentence, Next Sentence] (only while reading),
           Speed >, [Voice >], Voice Provider >, where the text goes
-        [Dictate (a section header)
-          Start Dictation, [History...], Transcription >, Cleanup >, where speech goes]
-          (on unless features["dictate"] is False; History unless features["history"] is)
+        Dictate (a section header)
+          Start Dictation, History..., Transcription >, Cleanup >, where speech goes]
         [What's New in 0.3.0...], [usage this month], Settings >, Setup..., About Lyssna,
         [Support Lyssna]
         Quit Lyssna (⌘Q on the Mac)
@@ -250,10 +249,9 @@ class Tray:
     key_text: Callable[[str], str] = staticmethod(lambda spec: host.statusbar.shortcut_text(spec))
     style_header: Callable[[QAction, QMenu], None] = staticmethod(lambda a, menu: host.statusbar.style_header(a, menu))
 
-    def __init__(self, ctl, features: dict | None = None):
+    def __init__(self, ctl):
         self.ctl = ctl
         self.hk = ctl.cfg.get("hotkeys", {})
-        self.features: dict = {"dictate": True, "history": True, **(features or {})}
         self.on_quit: Callable[[], None] | None = None
         self.on_setup: Callable[[str | None], None] = lambda engine: None  # opens the setup window; set by the app
         self.on_setup_dictation: Callable[[str], None] = lambda engine: None  # ...at its dictation keys
@@ -392,8 +390,6 @@ class Tray:
         self.cleanup_items.update(self._add_engines(self.cleanup_menu, cleaners.REGISTRY,
                                                     lambda cls: not cls.sends_text_off_device, self._set_cleaner))
         self.item_dictation_privacy = self._action(m, self.ctl.dictation_privacy_note())
-        self.dictation_items = [self.header_dictate, self.item_dictate, self.item_history, self.transcription_menu.menuAction(),
-                                self.cleanup_menu.menuAction(), self.item_dictation_privacy]
 
     def _add_engines(self, menu: QMenu, registry: dict, runs_here: Callable[[type], bool],
                      choose: Callable[[str], None]) -> dict[str, QAction]:
@@ -717,7 +713,7 @@ class Tray:
         return cleanup_title(cls.label if cls else "")
 
     def _dictate_title(self) -> str:
-        return dictation_title(str(self.ctl.cfg.get("dictation", {}).get("hotkey", "fn")),
+        return dictation_title(str(self.ctl.cfg.get("dictation", {}).get("hotkey", host.DICTATION_KEY_DEFAULT)),
                                recording=self.ctl.dictation.state in ("recording", "locked"))
 
     def _refresh_voices(self) -> None:
@@ -756,11 +752,6 @@ class Tray:
                           (self.item_support, "support")):
             if item.isVisible() != shown[key]:
                 item.setVisible(shown[key])
-        dictate = bool(self.features.get("dictate"))
-        for item in self.dictation_items:
-            want = dictate and (item is not self.item_history or bool(self.features.get("history")))
-            if item.isVisible() != want:
-                item.setVisible(want)
         if self.item_warning.isVisible() != self.warning:
             self.item_warning.setVisible(self.warning)
         for menu in (self.menu, self.settings_menu, self.key_menu):
@@ -975,8 +966,7 @@ class _StatusStrip(QWidget):
         p.end()
 
 
-def _preview_tray(open_menu: str = "", warning: bool = False, features: dict | None = None, style: str = "",
-                  **state) -> QWidget:
+def _preview_tray(open_menu: str = "", warning: bool = False, style: str = "", **state) -> QWidget:
     """The menu (and one open submenu) side by side on a stage, drawn by Qt (the Mac's is drawn
     natively, so its rows only approximate it), under a strip showing what the icon shows. `style`
     forces "mac" or "windows" shortcuts, warning row and status; by default this computer's."""
@@ -988,7 +978,7 @@ def _preview_tray(open_menu: str = "", warning: bool = False, features: dict | N
         key_text = staticmethod(_preview_keys(style))
         style_header = staticmethod(win_statusbar.style_header)  # the native Mac header is a dim bold row too
 
-    tray = PreviewTray(_PreviewController(**state), features)
+    tray = PreviewTray(_PreviewController(**state))
     tray.timer.stop()
     tray.whats_new_pending = state.get("whats_new", False)
     tray.item_quit.setText(f"Quit Lyssna\t{_preview_keys(style)('cmd+q')}" if style == "mac" else "Quit Lyssna")
@@ -1075,7 +1065,6 @@ PREVIEWS = {
     "tray.menu.reading.mac": lambda: _preview_tray(style="mac", status=_READING),
     "tray.menu.reading.windows": lambda: _preview_tray(style="windows", status=_READING),
     "tray.menu.paused.mac": lambda: _preview_tray(style="mac", status=Status(state="paused", index=2, total=5, text="Hello.")),
-    "tray.menu.nodictate": lambda: _preview_tray(features={"dictate": False}),
     "tray.menu.provider": lambda: _preview_tray("provider", keys=("cartesia",)),
     "tray.menu.transcription": lambda: _preview_tray("transcription"),
     "tray.menu.cleanup": lambda: _preview_tray("cleanup"),

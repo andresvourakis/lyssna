@@ -9,6 +9,7 @@
 # The approach (espeak data, comtypes wrappers made at build time, Qt Multimedia's FFmpeg DLLs,
 # hidden imports for the modules lyssna/host.py loads by name) is the one lyssna-probe.spec
 # proved on GitHub's Windows machine.
+import ast
 import glob
 import os
 import re
@@ -113,13 +114,36 @@ def version_file(name: str, original: str) -> str:
     return path
 
 
-# Every module lyssna/host.py can load by name on Windows (the app and the Windows plumbing),
-# and the engine pieces chosen by name.
-LYSSNA_WIN = ["lyssna.app", *("lyssna.win." + m for m in ("audio", "autostart", "capture", "clipboard", "credentials",
-                                                         "events", "hotkeys", "instance", "ipc", "policy"))]
-# The interface modules lyssna/app.py imports inside functions.
-LYSSNA_QT = ["lyssna.ui." + m for m in ("mainthread", "window", "mini_player", "selection_button", "toast",
-                                         "tray", "setup_window", "whats_new_window")]
+def host_modules() -> list[str]:
+    """Every module lyssna/host.py can load by name on Windows (the app and the Windows
+    plumbing), read from host.MODULES itself so a new one is never left out. host imports
+    nothing from the package when it loads, so this pulls in nothing else."""
+    sys.path.insert(0, ROOT)
+    from lyssna import host
+
+    names = sorted({windows for _mac, windows in host.MODULES.values() if windows})
+    print(f"lyssna-win.spec: modules host loads by name: {', '.join(names)}")
+    return names
+
+
+def interface_modules() -> list[str]:
+    """The interface modules lyssna/app.py imports inside functions (`from .ui.x import ...` and
+    `from .ui import x`), read from its source so the list cannot go stale."""
+    with open(os.path.join(ROOT, "lyssna", "app.py"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+            if node.module == "ui":
+                names.update(f"lyssna.ui.{alias.name}" for alias in node.names)
+            elif node.module.startswith("ui."):
+                names.add(f"lyssna.{node.module}")
+    print(f"lyssna-win.spec: interface modules lyssna/app.py imports: {', '.join(sorted(names))}")
+    return sorted(names)
+
+
+LYSSNA_WIN = host_modules()
+LYSSNA_QT = interface_modules()
 
 # Qt modules the app never imports. PyInstaller only bundles what is imported, so this list
 # guards against one of them being pulled in by a dependency. QtNetwork, QtGui and QtCore stay:
@@ -143,8 +167,8 @@ a = Analysis(
         *collect_data_files("kokoro_onnx"),
         *copy_metadata("kokoro-onnx"),  # kokoro_onnx reads its own version at import
         (espeakng_loader.get_data_path(), "espeak-ng-data"),
-        # Dictation is off in this release, but the engine imports its modules: the common-words
-        # list and its licence, onnx-asr's preprocessors and its version metadata.
+        # Dictation: the common-words list the vocabulary weighs corrections against, and its
+        # licence; onnx-asr's audio preprocessors and its version metadata.
         ("lyssna/dictation/data/common_words.txt", "lyssna/dictation/data"),
         ("lyssna/dictation/data/common_words.LICENSE", "lyssna/dictation/data"),
         *collect_data_files("onnx_asr"),

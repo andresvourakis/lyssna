@@ -9,7 +9,7 @@ behind a switch in the header:
     Dictate  1  Permission   microphone access and, on a Globe key, its system setting
              2  Engine       the speech models on this computer (download, progress, ready)
                              or the user's own OpenAI and Anthropic keys (Get a key, Save)
-             3  Try it       the dictation keys
+             3  Try it       the dictation keys (and the double tap, where it is on)
 
 Why one window and not alerts: every step shows its state, errors appear inline, and Listen's
 Voice and Try it work before the permission is granted (the sample goes through speak_text,
@@ -23,8 +23,6 @@ Where the two systems differ, the window asks a capability in lyssna.host, never
     dictation is on fn.
   * host.DEVICE names the computer ("Mac", "PC"), and key caps take the system's own key
     names from host.hotkey_table ([⌃] [⌥] [S] on a Mac, [Ctrl] [Alt] [S] on a PC).
-A caller may still turn Dictate off with features["dictate"] = False: there is then no switch,
-no Dictate tab, and the footer speaks only for Listen.
 
 It is a regular titled window: it takes the keyboard (the key fields), centres on the screen
 under the mouse and closing it never quits the app. The header (mark, title, switch) and the
@@ -649,10 +647,9 @@ class _KeyRow:
 
 
 class SetupWindow(LyssnaWindow):
-    """Set `ctl`, `taps_ok` (did the keyboard shortcuts start?), `relaunch`, `on_change` (the
-    menu refreshes) and, if Dictate is to be left out, `features` after construction, then call
-    show(). `accessibility_trusted`, `globe_action` and `key_table` are the system's by default;
-    tests and previews replace them."""
+    """Set `ctl`, `taps_ok` (did the keyboard shortcuts start?), `relaunch` and `on_change` (the
+    menu refreshes) after construction, then call show(). `accessibility_trusted`,
+    `globe_action` and `key_table` are the system's by default; tests and previews replace them."""
 
     def __init__(self, ctl=None):
         super().__init__("Lyssna Setup")
@@ -660,13 +657,11 @@ class SetupWindow(LyssnaWindow):
         self.taps_ok: Callable[[], bool] = lambda: True
         self.relaunch: Callable[[], None] = lambda: None
         self.on_change: Callable[[], None] = lambda: None
-        self.features: dict = {"dictate": True}
         self.accessibility_trusted: Callable[..., bool] = _accessibility_trusted
         self.globe_action: Callable[[], str] = _globe_action  # read on a worker thread
         self.key_table: ModuleType | None = None  # host.hotkey_table unless set
         self.built = False
         self.tab = LISTEN  # the tab on show; the user's choice while the window stays open
-        self.tabs = (LISTEN,)
         self._saving = False
         self._key_message = ("", "secondary")  # inline note under the key field: (text, tone)
         self._shape: dict | None = None  # what was visible at the last layout
@@ -690,7 +685,7 @@ class SetupWindow(LyssnaWindow):
         key field."""
         self.prepare(engine, dictation, opening=not self.isVisible())
         self.show_centered()
-        row = next((r for r in self.key_rows if r.name == dictation), None) if self.dictate else None
+        row = next((r for r in self.key_rows if r.name == dictation), None)
         if row is not None and not row.field.isHidden():
             self.scroll_area.ensureWidgetVisible(row.field, 0, 96)
             row.field.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -708,12 +703,11 @@ class SetupWindow(LyssnaWindow):
         if not self.built:
             self._build()
         self._choose_radio(engine)
-        if self.dictate:
-            self._choose_dictation(dictation)
-            self._read_globe(force=True)
+        self._choose_dictation(dictation)
+        self._read_globe(force=True)
         self._refresh(force=True)
         if opening or engine is not None or dictation is not None:
-            self._select_tab(opening_tab(engine, dictation, *self._left) if self.dictate else LISTEN)
+            self._select_tab(opening_tab(engine, dictation, *self._left))
 
     def hideEvent(self, ev) -> None:
         self._timer.stop()
@@ -725,8 +719,7 @@ class SetupWindow(LyssnaWindow):
     def _select_tab(self, tab: str) -> None:
         """Show `tab`'s steps, from the top."""
         self.tab = tab
-        if self.dictate:
-            (self.tab_listen if tab == LISTEN else self.tab_dictate).setChecked(True)
+        (self.tab_listen if tab == LISTEN else self.tab_dictate).setChecked(True)
         self._refresh(force=True)
         self.scroll_area.verticalScrollBar().setValue(0)
 
@@ -742,8 +735,6 @@ class SetupWindow(LyssnaWindow):
         self.device = host.DEVICE  # wording that names the computer: "Mac" or "PC"
         self.needs_accessibility = bool(host.NEEDS_ACCESSIBILITY)
         self.has_globe = bool(host.HAS_GLOBE_KEY)
-        self.dictate = bool(self.features.get("dictate", True))
-        self.tabs = (LISTEN, DICTATE) if self.dictate else (LISTEN,)
         keys = self.key_table or host.hotkey_table
         self.key_table = keys
 
@@ -751,25 +742,18 @@ class SetupWindow(LyssnaWindow):
         self.header = QWidget(self)
         self.mark = MarkView(MARK_H, self.header)
         self.title = Label("Welcome to Lyssna", self.header, font=theme.serif_font(TITLE_SIZE))
-        if self.dictate:
-            subtitle = "Lyssna reads text aloud and types what you say. Set up each one below."
-        else:
-            count = "Three" if self.needs_accessibility else "Two"
-            subtitle = (f"Lyssna reads text aloud. {count} quick steps and you are set. "
-                        f"You can come back here any time from {host.MENU_PLACE}.")
+        subtitle = "Lyssna reads text aloud and types what you say. Set up each one below."
         self.subtitle = Label(subtitle, self.header, size=13, color=theme.content_dim, wrap=True)
         self.subtitle.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.switch: SwitchTrack | None = None
-        if self.dictate:
-            self.switch = SwitchTrack(self.header)
-            self.tab_listen = TabButton("Listen", self.switch)
-            self.tab_dictate = TabButton("Dictate", self.switch)
-            self.tab_group = QButtonGroup(self)
-            self.tab_group.setExclusive(True)
-            for tab, button in ((LISTEN, self.tab_listen), (DICTATE, self.tab_dictate)):
-                self.tab_group.addButton(button)
-                button.toggled.connect(lambda checked, t=tab: self._on_tab(t, checked))
-            self.tab_listen.setChecked(True)
+        self.switch = SwitchTrack(self.header)
+        self.tab_listen = TabButton("Listen", self.switch)
+        self.tab_dictate = TabButton("Dictate", self.switch)
+        self.tab_group = QButtonGroup(self)
+        self.tab_group.setExclusive(True)
+        for tab, button in ((LISTEN, self.tab_listen), (DICTATE, self.tab_dictate)):
+            self.tab_group.addButton(button)
+            button.toggled.connect(lambda checked, t=tab: self._on_tab(t, checked))
+        self.tab_listen.setChecked(True)
         self.header_line = Hairline(self.header)
 
         self.scroll_area = QScrollArea(self)
@@ -859,8 +843,7 @@ class SetupWindow(LyssnaWindow):
         self.try_note = Label("The shortcut works once step 1 is done. The sample works now.", c, size=12,
                               color=theme.content_dim, wrap=True)
 
-        if self.dictate:
-            self._build_dictation(c)
+        self._build_dictation(c)
 
         for card in self.cards:
             card.lower()
@@ -931,6 +914,9 @@ class SetupWindow(LyssnaWindow):
                                   color=theme.content_dim, wrap=True)
         self.free_text = Label("Hands-free:", c, size=13, color=theme.content_dim)
         self.free_keys = KeyCaps([], c)
+        self.tap_text = Label("Or tap", c, size=13, color=theme.content_dim)  # only where the double tap is on
+        self.tap_keys = KeyCaps([], c)
+        self.tap_after = Label("twice.", c, size=13, color=theme.content_dim)
         self._set_dictation_caps()
 
     def restyle(self) -> None:
@@ -966,12 +952,19 @@ class SetupWindow(LyssnaWindow):
     def _dictation_hotkey(self) -> str:
         return str(self._dictation_section().get("hotkey", config.DEFAULTS["dictation"]["hotkey"]))
 
+    def _double_tap(self) -> bool:
+        """Do two quick taps of the dictation key start hands-free? On by default where
+        host.DICTATION_DOUBLE_TAP_DEFAULT is (the PC), and the [dictation] double_tap setting."""
+        return bool(self._dictation_section().get("double_tap", host.DICTATION_DOUBLE_TAP_DEFAULT))
+
     def _set_dictation_caps(self) -> None:
         """The dictation key and hands-free caps, from the config, named for this system."""
         hold = dictation_caps(self._dictation_hotkey(), self.key_table)
         hands_free = str(self._dictation_section().get("hands_free", config.DEFAULTS["dictation"]["hands_free"]))
         if hold != self.hold_keys.labels:
             self.hold_keys.set_labels(hold)
+        if hold != self.tap_keys.labels:
+            self.tap_keys.set_labels(hold)
         free = [*hold, *key_caps(hands_free, self.key_table)]
         if free != self.free_keys.labels:
             self.free_keys.set_labels(free)
@@ -1068,15 +1061,12 @@ class SetupWindow(LyssnaWindow):
         for view in (self.popup, self.key_field, self.save):
             view.setEnabled(not self._saving)
 
-        dictation = self._refresh_dictation() if self.dictate else None
+        dictation = self._refresh_dictation()
 
-        self._left = (steps_left((permission_done, voice_done)), steps_left(self._dictate_done) if self.dictate else 0)
-        if self.dictate:
-            self.tab_listen.set_status(tab_status(self._left[0]))
-            self.tab_dictate.set_status(tab_status(self._left[1]))
-            self.footer_status.set_text(footer_status(*self._left))
-        else:
-            self.footer_status.set_text(footer_status(self._left[0], 0).split(" · ")[0])  # Listen's part alone
+        self._left = (steps_left((permission_done, voice_done)), steps_left(self._dictate_done))
+        self.tab_listen.set_status(tab_status(self._left[0]))
+        self.tab_dictate.set_status(tab_status(self._left[1]))
+        self.footer_status.set_text(footer_status(*self._left))
 
         local_chosen = self.radio_local.isChecked()
         shape = {
@@ -1172,7 +1162,7 @@ class SetupWindow(LyssnaWindow):
         self.dicon3.set_done(False)
         return (mic, on_globe, globe_ok, local_only or not self._dictation_online_allowed(), local_chosen,
                 progress is not None, ready, error, can_run, tuple(texts), self.dict_local_note.value(),
-                self.mic_row.label.value(), tuple(self.free_keys.labels), self.dict_download.text())
+                self.mic_row.label.value(), tuple(self.free_keys.labels), self.dict_download.text(), self._double_tap())
 
     def _in_use(self, name: str) -> bool:
         if name in transcribers.REGISTRY:
@@ -1268,15 +1258,12 @@ class SetupWindow(LyssnaWindow):
         _, sh = self.subtitle.fit(W - 2 * MARGIN)
         self.subtitle.move(round(MARGIN), round(y))
         y += sh + 16
-        if self.switch is not None:
-            seg_w = max(self.tab_listen.preferred_width(), self.tab_dictate.preferred_width())  # equal halves
-            self.tab_listen.setGeometry(round(SEG_PAD), round(SEG_PAD), round(seg_w), round(SEG_H))
-            self.tab_dictate.setGeometry(round(SEG_PAD + seg_w + 2), round(SEG_PAD), round(seg_w), round(SEG_H))
-            track_w = 2 * seg_w + 2 + 2 * SEG_PAD
-            self.switch.setGeometry(round((W - track_w) / 2), round(y), round(track_w), round(SEG_H + 2 * SEG_PAD))
-            y += SEG_H + 2 * SEG_PAD + 18
-        else:
-            y += 2  # no switch: the line sits as far under the sentence as it would under the switch
+        seg_w = max(self.tab_listen.preferred_width(), self.tab_dictate.preferred_width())  # equal halves
+        self.tab_listen.setGeometry(round(SEG_PAD), round(SEG_PAD), round(seg_w), round(SEG_H))
+        self.tab_dictate.setGeometry(round(SEG_PAD + seg_w + 2), round(SEG_PAD), round(seg_w), round(SEG_H))
+        track_w = 2 * seg_w + 2 + 2 * SEG_PAD
+        self.switch.setGeometry(round((W - track_w) / 2), round(y), round(track_w), round(SEG_H + 2 * SEG_PAD))
+        y += SEG_H + 2 * SEG_PAD + 18
         self.header_line.setGeometry(0, round(y), round(W), 1)
         return y + 1
 
@@ -1430,18 +1417,24 @@ class SetupWindow(LyssnaWindow):
             self._place_card(self.card_dict_online, top, y, not local_chosen)
         y = self._sep(self.dsep2, y)
 
-        # 3 Try it: Hold [key] and speak.   Hands-free: [key] [Space]
+        # 3 Try it: Hold [key] and speak.   Hands-free: [key] [Space]   (Or tap [key] twice.)
         y += self._step(self.dicon3, self.dhead3, y) + 8
-        row_x, x = [], TEXT_X
-        for view, gap in ((self.hold_text, 6), (self.hold_keys, 6), (self.hold_after, 0)):
-            w = view.fit()[0] if isinstance(view, Label) else view.width()
-            row_x.append((view, x))
-            x += w + gap
-        y += centre_row(row_x, y) + 6
+        y += self._caps_row((self.hold_text, self.hold_keys, self.hold_after), y) + 6
         y += put(self.dictate_body, TEXT_X, y, TEXT_W) + 10
         fw, _ = self.free_text.fit()
         y += centre_row([(self.free_text, TEXT_X), (self.free_keys, TEXT_X + fw + 6)], y)
+        if self._double_tap():
+            y += 6 + self._caps_row((self.tap_text, self.tap_keys, self.tap_after), y)
         return y
+
+    def _caps_row(self, views: tuple[Label, KeyCaps, Label], y: float) -> float:
+        """A sentence with key caps in it ("Hold [fn] and speak."), from TEXT_X; returns its height."""
+        row_x, x = [], TEXT_X
+        for view, gap in zip(views, (6, 6, 0), strict=True):
+            w = view.fit()[0] if isinstance(view, Label) else view.width()
+            row_x.append((view, x))
+            x += w + gap
+        return self.centre_row(row_x, y)
 
     # -- actions -----------------------------------------------------------------------------
 
@@ -1655,9 +1648,10 @@ class _FakeController:
     def __init__(self, *, provider: str = "kokoro", ready: bool = False, progress: float | None = None,
                  keys: tuple[str, ...] = (), local_only: bool = False, mic: str = "granted", models: bool = False,
                  dict_progress: float | None = None, dict_keys: tuple[str, ...] = (), online: bool = False,
-                 hotkey: str = "fn"):
+                 hotkey: str = "fn", double_tap: bool | None = None):
         dictation = {"transcriber": "openai" if online else "parakeet", "cleaner": "haiku" if online else "s1-mini",
-                     "cleanup": True, "hotkey": hotkey, "hands_free": "space"}
+                     "cleanup": True, "hotkey": hotkey, "hands_free": "space",
+                     **({} if double_tap is None else {"double_tap": double_tap})}
         self.cfg = {"provider": provider, "hotkeys": {"speak": "ctrl+alt+s"}, "local_only": local_only, "dictation": dictation}
         self.ready = ready
         self.progress = progress
@@ -1743,8 +1737,7 @@ def _key_table(system: str) -> ModuleType:
 def _preview(ctl: _FakeController, *, system: str = "pc", tab: str = LISTEN, engine: str | None = None,
              dictation: str | None = None, trusted: bool = True, taps_ok: bool = True, globe: str = "nothing",
              error: str = "", message: tuple[str, str] | None = None, saving: bool = False, key: str = "",
-             dict_saving: int | None = None, dict_message: tuple[int, str, str] | None = None,
-             features: dict | None = None) -> QWidget:
+             dict_saving: int | None = None, dict_message: tuple[int, str, str] | None = None) -> QWidget:
     """A setup window built against `ctl` with the capabilities of `system` ("mac" or "pc")
     forced, never put on screen."""
     from unittest import mock
@@ -1760,14 +1753,12 @@ def _preview(ctl: _FakeController, *, system: str = "pc", tab: str = LISTEN, eng
         w = SetupWindow(ctl)
         w.height_limit = lambda: float("inf")  # the whole window in the shot, whatever screen renders it
         w.key_table = _key_table(system)
-        if features is not None:
-            w.features = dict(features)
         w.taps_ok = lambda: taps_ok
         w.accessibility_trusted = lambda prompt=False: trusted
         w.globe_action = lambda: globe
         w._globe = globe
         w.prepare(engine, dictation)
-        if engine is None and dictation is None and w.dictate:
+        if engine is None and dictation is None:
             w._select_tab(tab)
         if key:
             w.key_field.setText(key)
@@ -1804,12 +1795,10 @@ PREVIEWS = {
                                         message=("Saved. Lyssna now reads with OpenAI TTS.", "good")),
     "setup.local-only": lambda: _preview(_FakeController(ready=True, local_only=True)),
     "setup.shortcuts-warning": lambda: _preview(_FakeController(ready=True), taps_ok=False),
-    "setup.listen-only": lambda: _preview(_FakeController(), features={"dictate": False}),
     # Listen on a Mac: the permission step in each of its states
     "setup.mac.not-allowed": lambda: _preview(_FakeController(), system="mac", trusted=False),
     "setup.mac.relaunch": lambda: _preview(_FakeController(ready=True), system="mac", taps_ok=False),
     "setup.mac.ready": lambda: _preview(_FakeController(**_DONE), system="mac"),
-    "setup.mac.listen-only": lambda: _preview(_FakeController(), system="mac", trusted=False, features={"dictate": False}),
     # Dictate on a Mac: the microphone, the Globe key, the models, the keys
     "setup.dictate.mic-undetermined": lambda: _preview(_FakeController(ready=True, mic="undetermined"), system="mac",
                                                        tab=DICTATE),
@@ -1824,6 +1813,8 @@ PREVIEWS = {
     # Dictate on a PC: no Globe key row, the PC's key names
     "setup.pc.dictate": lambda: _preview(_FakeController(ready=True, mic="undetermined", hotkey="right_control"),
                                          tab=DICTATE),
+    "setup.pc.dictate-double-tap": lambda: _preview(_FakeController(ready=True, models=True, hotkey="ctrl+win",
+                                                                    double_tap=True), tab=DICTATE),
     "setup.pc.dictate-online": lambda: _preview(_FakeController(ready=True, models=True, online=True,
                                                                 dict_keys=("openai", "haiku")), dictation="openai",
                                                 dict_message=(0, "Saved. Dictation now uses OpenAI for transcription.", "good")),

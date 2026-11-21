@@ -209,6 +209,46 @@ def test_later_runs_on_the_gui_thread_and_can_be_cancelled(qapp):
     assert cancelled == []
 
 
+def test_cancel_pending_stops_every_waiting_timer(qapp):
+    from lyssna.ui import mainthread
+
+    fired = []
+    mainthread.cancel_pending()  # whatever earlier tests left waiting
+    kept = mainthread.later(0.05, lambda: fired.append("cancelled by hand"))
+    kept.cancel()
+    mainthread.later(0.05, lambda: fired.append("a"))
+    mainthread.later(0.05, lambda: fired.append("b"))
+    assert mainthread.cancel_pending() == 2  # the one cancelled by hand is not waiting any more
+    pump(0.15)
+    assert fired == [] and mainthread.cancel_pending() == 0
+
+
+def test_a_call_after_the_dispatcher_is_gone_is_dropped_quietly(qapp, monkeypatch, caplog):
+    """At shutdown a timer may fire after Qt deleted the dispatcher: nothing runs, nothing is raised."""
+    import shiboken6
+
+    from lyssna.ui import mainthread
+
+    gone = mainthread._Dispatcher()
+    shiboken6.delete(gone)
+    monkeypatch.setattr(mainthread, "_dispatcher", gone)
+    ran, errors = [], []
+    monkeypatch.setattr(threading, "excepthook", lambda hook_args: errors.append(hook_args.exc_value))
+    worker = threading.Thread(target=lambda: _call_catching(lambda: mainthread.on_main(ran.append, 1), errors))
+    worker.start()
+    worker.join()
+    t = mainthread.later(0.01, ran.append, 2)
+    t.join(1.0)
+    assert ran == [] and errors == []
+
+
+def _call_catching(fn, errors: list) -> None:
+    try:
+        fn()
+    except Exception as e:
+        errors.append(e)
+
+
 # -- panel -------------------------------------------------------------------------------------
 
 

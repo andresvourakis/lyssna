@@ -157,9 +157,11 @@ def test_builds_offscreen_with_the_brand_sizes(win):
 
 
 def test_empty_state(win):
+    from lyssna.menu import key_name
+
     win.prepare()
     assert kinds(win) == ["empty"]
-    assert layout.EMPTY_DICTATIONS in list_strings(win)
+    assert layout.empty_dictations(key_name(host.DICTATION_KEY_DEFAULT)) in list_strings(win)  # this computer's key
     assert not win.clear_button.isEnabled()
 
 

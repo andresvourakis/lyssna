@@ -1,6 +1,6 @@
 """What the Qt interface needs from Windows for its windows: floating panels that never take
-focus, click-through, a dark title bar. The twin of lyssna/mac/window.py; the interface reaches
-it as host.window.
+focus, click-through, a dark title bar, the mouse button. The twin of lyssna/mac/window.py; the
+interface reaches it as host.window.
 
 Why native calls at all: Qt's Tool, frameless, stay-on-top and does-not-accept-focus flags do not
 stop Windows from activating a window that is clicked, and a tool window still gets a taskbar
@@ -90,6 +90,11 @@ def is_on_screen(widget) -> bool | None:
     return None
 
 
+def prepare_app() -> None:
+    """Nothing to do on Windows before the QApplication exists: there is no Dock to keep out of
+    (the taskbar identity is instance.set_app_id, which run() calls first)."""
+
+
 def hide_dock_icon() -> None:
     """Nothing to do on Windows: the panels carry WS_EX_TOOLWINDOW and the tray icon is the app's
     only permanent place (the taskbar grouping is instance.set_app_id)."""
@@ -114,4 +119,15 @@ def set_dark_title_bar(widget, dark: bool) -> bool:
                   ctypes.sizeof(value)) == 0
     except Exception:
         log.debug("could not set the title bar colour", exc_info=True)
+        return False
+
+
+def left_button_down() -> bool:
+    """Is the left mouse button held right now? Asked of the system, so a release Qt never saw
+    (the stuck-drag case the player guards against) still counts."""
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+    except Exception:
         return False

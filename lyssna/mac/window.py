@@ -1,5 +1,5 @@
 """What the Qt interface needs from macOS for its windows: floating panels that never take focus,
-click-through, no Dock icon, bringing the app forward for a normal window. The twin of
+click-through, no Dock icon, bringing the app forward for a normal window, the mouse button. The twin of
 lyssna/win/window.py; the interface reaches it as host.window.
 
 Why native calls at all: for a Qt.Tool window Qt creates an NSPanel (Qt's QNSPanel), but not one
@@ -24,6 +24,7 @@ NSWindow and every call does nothing."""
 from __future__ import annotations
 
 import logging
+import os
 
 log = logging.getLogger("lyssna.mac.window")
 
@@ -146,10 +147,18 @@ def is_on_screen(widget) -> bool | None:
         return None
 
 
+def prepare_app() -> None:
+    """What must happen before the QApplication exists. Run from source, Qt turns the Python
+    process into a foreground app as it starts, which brings it to the front at launch even
+    when the accessory policy is set right after (hide_dock_icon); this environment variable
+    tells Qt not to. The built app's LSUIElement already keeps it in the background."""
+    os.environ.setdefault("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM", "1")
+
+
 def hide_dock_icon() -> None:
     """No Dock icon, like the legacy Lyssna: the accessory activation policy. Run after the
-    QApplication exists, since Qt sets the regular policy when it starts from source (the built
-    app's LSUIElement makes it accessory from launch)."""
+    QApplication exists (and after prepare_app before it), since Qt sets the regular policy
+    when it starts from source (the built app's LSUIElement makes it accessory from launch)."""
     try:
         from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 
@@ -177,3 +186,21 @@ def activate_app() -> None:
 def set_dark_title_bar(widget, dark: bool) -> bool:
     """Nothing to do on the Mac: the system draws the title bar in the app's appearance."""
     return False
+
+
+def left_button_down() -> bool:
+    """Is the left mouse button held right now? Asked of the window server, so a release Qt
+    never saw (a drag that ended outside every Qt window) still counts. Off Cocoa (the
+    offscreen tests, the preview shots) Qt's own idea of the buttons is all there is."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
+
+    if QGuiApplication.platformName() == "cocoa":
+        try:
+            import Quartz
+
+            return bool(Quartz.CGEventSourceButtonState(Quartz.kCGEventSourceStateCombinedSessionState,
+                                                        Quartz.kCGMouseButtonLeft))
+        except Exception:
+            log.debug("could not ask the window server about the mouse button", exc_info=True)
+    return bool(QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton)

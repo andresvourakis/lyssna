@@ -146,9 +146,10 @@ def make_app(qapp, monkeypatch):
         for panel in (a.mini_player, a.toast, a.selection_button):
             if panel is not None:
                 panel.hide()
-        if a.setup_window is not None:
-            a.setup_window.hide()
-            a.setup_window.deleteLater()  # not left for interpreter exit, where its theme hook would complain
+        for window in (a.setup_window, a.history_window):
+            if window is not None and hasattr(window, "deleteLater"):
+                window.hide()
+                window.deleteLater()  # not left for interpreter exit, where its theme hook would complain
 
 
 @pytest.fixture
@@ -294,16 +295,170 @@ def test_first_launch_opens_setup_once(lyssna, monkeypatch):
     assert opened == [True]
 
 
-def test_features_off_means_no_dictation(lyssna):
-    from lyssna import app as app_mod
+class FakePushToTalk:
+    """Stands in for host.pushtotalk and records what attach() was given."""
 
-    assert app_mod.FEATURES == {"dictate": False, "history": False}
-    assert lyssna.keyboard.push_to_talk is None and lyssna.ctl.push_to_talk is None
-    assert lyssna.warmed == []
-    assert lyssna.mini_player.features == app_mod.FEATURES and lyssna.tray.features == app_mod.FEATURES
-    assert not {"dictate", "dictate_stop", "dictate_cancel", "history"} & set(lyssna.mini_player.actions)
-    lyssna.show_setup()
-    assert lyssna.setup_window.features["dictate"] is False
+    def __init__(self, error: str = ""):
+        self.error = error
+        self.calls = []
+        self.made = object()
+
+    def attach(self, keyboard, cfg, on_start, on_stop, on_lock, on_cancel):
+        if self.error:
+            raise ValueError(self.error)
+        self.calls.append((keyboard, cfg, on_start, on_stop, on_lock, on_cancel))
+        keyboard.push_to_talk = self.made
+        return self.made
+
+
+def test_the_dictation_keys_attach_through_the_host_with_the_controllers_methods(make_app, monkeypatch):
+    fake = FakePushToTalk()
+    monkeypatch.setattr(host, "pushtotalk", fake, raising=False)
+    a = make_app()
+    [(keyboard, cfg, on_start, on_stop, on_lock, on_cancel)] = fake.calls
+    assert keyboard is a.keyboard and cfg is a.ctl.cfg
+    assert (on_start, on_stop, on_lock) == (a.ctl.dictation_start, a.ctl.dictation_stop, a.ctl.dictation_lock)
+    cancelled = []
+    monkeypatch.setattr(a.ctl, "dictation_cancel", lambda quiet=False: cancelled.append(quiet))
+    on_cancel(True)
+    on_cancel(False)
+    assert cancelled == [True, False]
+    assert a.ctl.push_to_talk is fake.made and a.keyboard.push_to_talk is fake.made
+
+
+def test_the_real_dictation_keys_attach_to_the_keyboard(lyssna):
+    """This computer's own host.pushtotalk, from the template's [dictation] section."""
+    assert lyssna.ctl.push_to_talk is not None and lyssna.keyboard.push_to_talk is lyssna.ctl.push_to_talk
+
+
+def test_a_bad_dictation_key_is_logged_and_toasted_and_the_app_still_starts(make_app, monkeypatch, caplog):
+    toasts = []
+    monkeypatch.setattr(Controller, "toast", lambda self, notice: toasts.append((notice.text, notice.seconds)))
+    key_line = f'hotkey = "{host.DICTATION_KEY_DEFAULT}"'
+    template = config.TEMPLATE.replace(key_line, 'hotkey = "nosuchkey"')
+    assert template != config.TEMPLATE
+    a = make_app(template=template)
+    assert "bad dictation key" in caplog.text
+    [(text, seconds)] = toasts
+    assert "nosuchkey" in text and seconds == 8.0
+    assert a.ctl.push_to_talk is None and a.keyboard.push_to_talk is None
+    assert a.taps_ok is True and len(a.keyboard.bound) == 8  # everything else runs as usual
+    assert (1.0, a._welcome_once) in a.deferred
+
+
+def test_dictation_status_reaches_the_player(lyssna, monkeypatch):
+    seen = []
+    monkeypatch.setattr(lyssna.mini_player, "_set_dictation", lambda state: seen.append(state))
+    worker = threading.Thread(target=lambda: lyssna.ctl.dictation._set_if(None, state="recording"))
+    worker.start()
+    worker.join()
+    pump(lambda: seen)
+    assert seen == ["recording"]
+
+
+def test_the_player_has_the_dictation_and_history_actions(lyssna, monkeypatch):
+    ctl, actions = lyssna.ctl, lyssna.mini_player.actions
+    assert actions["dictate_stop"] == ctl.dictation_stop and actions["dictate_cancel"] == ctl.dictation_cancel
+    assert actions["dictation_layout"] == ctl.save_dictation_layout and actions["history"] == lyssna.show_history
+    started = []
+    monkeypatch.setattr(ctl, "dictation_start", lambda hands_free=False: started.append(hands_free))
+    actions["dictate"]()
+    assert started == [True]  # the player's Dictate starts hands-free
+    from lyssna.menu import key_name
+
+    hotkey = ctl.cfg["dictation"].get("hotkey", host.DICTATION_KEY_DEFAULT)
+    assert lyssna.mini_player.key_name == key_name(hotkey)
+
+
+def test_the_history_window_opens_from_the_tray_and_the_player_and_is_made_once(lyssna, monkeypatch):
+    from lyssna.ui import history_window
+
+    made = []
+
+    class FakeHistory:
+        def __init__(self):
+            self.ctl = None
+            self.shown = 0
+            made.append(self)
+
+        def show(self):
+            self.shown += 1
+
+    monkeypatch.setattr(history_window, "HistoryWindow", FakeHistory)
+    lyssna.tray.item_history.trigger()
+    lyssna.mini_player.actions["history"]()
+    assert len(made) == 1 and made[0].shown == 2 and made[0].ctl is lyssna.ctl
+    assert lyssna.history_window is made[0]
+
+
+def test_the_tray_opens_setup_at_the_dictation_keys(lyssna, monkeypatch):
+    opened = []
+    monkeypatch.setattr(lyssna, "show_setup", lambda engine=None, dictation=None: opened.append((engine, dictation)))
+    lyssna.tray.on_setup_dictation("openai")
+    assert opened == [(None, "openai")]
+
+
+def test_the_microphone_is_warmed_once_at_launch(lyssna):
+    assert lyssna.warmed == [True]
+
+
+def test_the_ui_command_says_whether_dictation_is_ready(lyssna):
+    reply = lyssna.ctl.dispatch({"cmd": "ui"})
+    assert reply["dictation"]["keys"] is True
+    pieces = reply["dictation"]["pieces"]
+    assert set(pieces) == {"mic", "insert", "field_probe", "pushtotalk"}
+    assert all(name.startswith(("lyssna.mac.", "lyssna.win.")) for name in pieces.values()), pieces
+    assert "shown" not in reply
+    assert lyssna.ctl.dispatch({"cmd": "ui", "show": "setup"})["shown"] == "setup"
+
+
+def test_shutdown_cancels_the_timers_still_waiting(lyssna):
+    from lyssna.ui import mainthread
+
+    fired = []
+    mainthread.later(0.05, lambda: fired.append(True))
+    lyssna.shutdown()
+    time.sleep(0.15)
+    QCoreApplication.processEvents()
+    assert fired == []
+
+
+def test_the_app_has_no_feature_switch_left():
+    """Dictation and history ship: the switch that held them back is gone from the package."""
+    import re
+    from pathlib import Path
+
+    package = Path(__file__).resolve().parent.parent / "lyssna"
+    hits = [f"{path.relative_to(package)}:{n}" for path in package.rglob("*.py") if "legacy" not in path.parts
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if re.search(r"\bfeatures\b|FEATURES", line)]
+    assert hits == []
+
+
+def test_the_window_titles_have_no_suffix(qapp, monkeypatch):
+    """Qt on Windows writes a title as "<title> - <display name>" unless the title ends with the
+    display name; the app's display name is empty, so the titles stay exactly the Mac's."""
+    from lyssna import app as app_mod
+    from lyssna.ui.history_window import HistoryWindow
+    from lyssna.ui.setup_window import SetupWindow
+    from lyssna.ui.whats_new_window import WhatsNewWindow
+
+    calls = []
+    monkeypatch.setattr(host, "window", SimpleNamespace(prepare_app=lambda: calls.append("prepare_app"),
+                                                       hide_dock_icon=lambda: calls.append("hide_dock_icon")), raising=False)
+    shown_name = qapp.applicationDisplayName()
+    try:
+        assert app_mod._qapplication() is qapp
+        assert calls == ["prepare_app", "hide_dock_icon"]
+        assert qapp.applicationName() == "Lyssna" and qapp.applicationDisplayName() == ""
+        windows = [SetupWindow(None), HistoryWindow(), WhatsNewWindow()]
+        assert [w.windowTitle() for w in windows] == ["Lyssna Setup", "Lyssna History", "What's New in Lyssna"]
+        for w in windows:
+            assert w.windowTitle().endswith(qapp.applicationDisplayName())  # Qt's own test for adding nothing
+            w.deleteLater()
+    finally:
+        qapp.setApplicationDisplayName(shown_name)
+        QCoreApplication.processEvents()
 
 
 def test_shutdown_stops_everything_once(lyssna, monkeypatch):
@@ -335,6 +490,15 @@ def test_a_second_launch_asks_the_running_copy_to_show_itself(qapp, monkeypatch)
     assert sent == [app_mod.SHOW_REQUEST]
 
 
+@pytest.mark.parametrize(("reply", "printed"), [({"ok": True, "shown": "setup"}, False), ({"ok": True}, True), (None, True)])
+def test_a_second_launch_says_so_unless_the_running_copy_came_forward(qapp, monkeypatch, capsys, reply, printed):
+    from lyssna import app as app_mod
+
+    monkeypatch.setattr(host.ipc, "send", lambda req, timeout=5.0: reply)
+    app_mod._ask_running_copy_to_show()
+    assert ("Another Lyssna is running" in capsys.readouterr().err) is printed
+
+
 def test_losing_the_pipe_race_counts_as_a_second_launch(make_app, monkeypatch):
     sent = []
     monkeypatch.setattr(host.ipc, "send", lambda req, timeout=5.0: sent.append(req) or {"ok": True})
@@ -342,6 +506,7 @@ def test_losing_the_pipe_race_counts_as_a_second_launch(make_app, monkeypatch):
     assert a.lost_race is True and a.server is None
     assert a.keyboard is None and a.mouse is None  # the keys stay with the running copy
     assert a.deferred == []  # no setup, no idle squiggle
+    assert a.warmed == [] and a.ctl.push_to_talk is None  # nor the microphone or the dictation keys
     a.run()
     assert sent == [{"cmd": "ui", "show": "setup"}]
     assert a._shut is True

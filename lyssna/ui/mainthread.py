@@ -5,7 +5,12 @@ player and the hooks all call back from their own threads. on_main runs a call i
 is already on the GUI thread and otherwise posts it there through a queued signal on a QObject
 that lives on that thread. A call posted before the event loop starts runs as soon as it spins.
 later is a daemon threading.Timer whose callback hops with on_main, so the caller can cancel
-it exactly as on the Mac."""
+it exactly as on the Mac.
+
+At shutdown: a timer can fire, or a worker can call in, after Qt has deleted the dispatcher
+(when the app quits, or at interpreter exit). Such a call is dropped quietly: there is no GUI
+thread left to run it on. cancel_pending() cancels every timer still waiting, for the app's
+shutdown."""
 
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ import logging
 import threading
 from collections.abc import Callable
 
+import shiboken6
 from PySide6.QtCore import QCoreApplication, QObject, Qt, QThread, Signal, Slot
 
 log = logging.getLogger("lyssna.ui.mainthread")
@@ -38,6 +44,8 @@ class _Dispatcher(QObject):
 
 _dispatcher: _Dispatcher | None = None
 _lock = threading.Lock()
+_pending: set[threading.Timer] = set()  # later() timers that have not fired or been cancelled
+_pending_lock = threading.Lock()
 
 
 def _gui_thread() -> QThread | None:
@@ -53,11 +61,14 @@ def is_main_thread() -> bool:
     return QThread.currentThread() is gui or QThread.currentThread() == gui
 
 
-def _get() -> _Dispatcher:
+def _get() -> _Dispatcher | None:
+    """The dispatcher, made on first use; None once Qt has deleted it (the app is ending)."""
     global _dispatcher
     with _lock:
         if _dispatcher is None:
             _dispatcher = _Dispatcher()
+        if not shiboken6.isValid(_dispatcher):
+            return None
         gui = _gui_thread()
         if gui is not None and _dispatcher.thread() != gui:
             # Made on a worker before the application existed: hand it to the GUI thread.
@@ -69,19 +80,57 @@ def _get() -> _Dispatcher:
 
 
 def on_main(fn: Callable, *args) -> None:
-    """Run fn(*args) on the GUI thread, asynchronously (or inline if already there)."""
+    """Run fn(*args) on the GUI thread, asynchronously (or inline if already there). After Qt
+    has deleted the dispatcher (the app is ending) a call from another thread is dropped."""
     if is_main_thread():
         fn(*args)
         return
-    _get().call.emit((fn, args))
+    try:
+        dispatcher = _get()
+        if dispatcher is not None:
+            dispatcher.call.emit((fn, args))
+            return
+    except RuntimeError:  # deleted while this call was on its way
+        pass
+    log.debug("dropped a main-thread call after Qt shut down: %r", fn)
+
+
+class _Timer(threading.Timer):
+    """A daemon timer that hops to the GUI thread and keeps itself in _pending until it fires
+    or is cancelled."""
+
+    def __init__(self, delay: float, fn: Callable, args: tuple):
+        super().__init__(delay, self._fire, (fn, args))
+        self.daemon = True
+
+    def _fire(self, fn: Callable, args: tuple) -> None:
+        with _pending_lock:
+            _pending.discard(self)
+        on_main(fn, *args)
+
+    def cancel(self) -> None:
+        with _pending_lock:
+            _pending.discard(self)
+        super().cancel()
 
 
 def later(delay: float, fn: Callable, *args) -> threading.Timer:
     """Call fn(*args) on the GUI thread after `delay` seconds. Returns the timer so it can be cancelled."""
-    t = threading.Timer(delay, lambda: on_main(fn, *args))
-    t.daemon = True
+    t = _Timer(delay, fn, args)
+    with _pending_lock:
+        _pending.add(t)
     t.start()
     return t
+
+
+def cancel_pending() -> int:
+    """Cancel every later() timer that has not fired yet, for shutdown. Returns how many."""
+    with _pending_lock:
+        timers = list(_pending)
+        _pending.clear()
+    for t in timers:
+        t.cancel()
+    return len(timers)
 
 
 # Made at import, normally on the GUI thread, so the dispatcher already lives there when the

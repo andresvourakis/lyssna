@@ -14,7 +14,7 @@ LOCAL_ONLY_MANAGED_TITLE = f"{LOCAL_ONLY_TITLE} (Set by Your Organization)"
 KEY_MENU_LABELS = {"inworld": "Inworld"}  # providers sharing a config section get one key entry
 REPO_URL = "https://github.com/andresvourakis/lyssna"
 CLEANUP_OFF = "Off"
-# Section headers: the menu's two features, and the two kinds of engine inside each picker.
+# Section headers: the menu's two halves, and the two kinds of engine inside each picker.
 LISTEN_HEADER = "Listen"
 DICTATE_HEADER = "Dictate"
 LOCAL_HEADER = f"On this {host.DEVICE}"

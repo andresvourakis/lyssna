@@ -32,6 +32,7 @@ from lyssna.menu import (
     LOCAL_HEADER,
     ONLINE_HEADER,
     MenuState,
+    key_name,
     local_only_title,
     separators_shown,
     visibility,
@@ -83,12 +84,12 @@ def make_tray(qapp, monkeypatch):
 
     made = []
 
-    def make(features=None, system="windows"):
+    def make(system="windows"):
         mac = system == "mac"
         monkeypatch.setattr(host, "statusbar", FakeMacStatusbar() if mac else win_statusbar, raising=False)
         monkeypatch.setattr(host, "STATUS_TEXT_BESIDE_ICON", mac)
         monkeypatch.setattr(host, "NEEDS_ACCESSIBILITY", mac)
-        tray = Tray(Controller(), features)
+        tray = Tray(Controller())
         tray.timer.stop()  # the tests tick by hand
         made.append(tray)
         return tray
@@ -136,26 +137,12 @@ def test_top_level_menu_when_idle(tray):
     assert rows(tray.menu) == [
         LISTEN_HEADER, "Read Selection", "Read Clipboard",
         "Speed: 1.2×", "Voice: Heart", kokoro_provider_title(tray), f"Text stays on this {d}", "---",
-        DICTATE_HEADER, "Start Dictation · hold fn", "History…", f"Transcription: On this {d} (Parakeet)",
+        DICTATE_HEADER, f"Start Dictation · hold {key_name(host.DICTATION_KEY_DEFAULT)}", "History…",
+        f"Transcription: On this {d} (Parakeet)",
         f"Cleanup: On this {d} (S1-mini by Superwhisper)", f"Speech stays on this {d}", "---",
         "Settings", "Setup…", "About Lyssna", "---",
         "Quit Lyssna",
     ]
-
-
-def test_the_dictate_section_is_on_unless_its_feature_is_off(make_tray):
-    tray = make_tray({"history": False})  # history off: the rest of the section shows
-    assert "History…" not in rows(tray.menu) and DICTATE_HEADER in rows(tray.menu)
-    tray = make_tray({"dictate": False})
-    assert rows(tray.menu) == [
-        LISTEN_HEADER, "Read Selection", "Read Clipboard",
-        "Speed: 1.2×", "Voice: Heart", kokoro_provider_title(tray), f"Text stays on this {host.DEVICE}", "---",
-        "Settings", "Setup…", "About Lyssna", "---",
-        "Quit Lyssna",
-    ]
-    tray.features["dictate"] = True
-    tray._tick()
-    assert DICTATE_HEADER in rows(tray.menu)
 
 
 def test_the_dictate_row_names_the_key_and_finishes_while_recording(tray, monkeypatch):
@@ -294,11 +281,9 @@ def test_usage_line_shows_only_with_a_cost(tray):
     assert r[r.index(f"Speech stays on this {host.DEVICE}") + 1:][:3] == ["---", "This month: 2k characters, about $0.10", "Settings"]
 
 
-@pytest.mark.parametrize("features", [None, {"dictate": True, "history": True}])
-def test_separators_never_double_up_lead_or_trail(make_tray, monkeypatch, features):
+def test_separators_never_double_up_lead_or_trail(tray, monkeypatch):
     from lyssna import support
 
-    tray = make_tray(features)
 
     def check():
         for menu in all_menus(tray.menu):
@@ -318,8 +303,7 @@ def test_separators_never_double_up_lead_or_trail(make_tray, monkeypatch, featur
     check()
 
 
-def test_no_submenu_title_ends_with_an_ellipsis(make_tray):
-    tray = make_tray({"dictate": True, "history": True})
+def test_no_submenu_title_ends_with_an_ellipsis(tray):
     for menu in all_menus(tray.menu):
         if menu is not tray.menu:
             assert not menu.title().endswith(("…", "...")), menu.title()
@@ -602,8 +586,7 @@ def test_setup_and_about(tray, monkeypatch):
     dialog._unsubscribe()
 
 
-def test_dictation_engines_without_their_key_go_to_setup(make_tray):
-    tray = make_tray({"dictate": True, "history": True})
+def test_dictation_engines_without_their_key_go_to_setup(tray):
     opened, dictation, toasts = [], [], []
     tray.on_setup = opened.append
     tray.on_setup_dictation = dictation.append

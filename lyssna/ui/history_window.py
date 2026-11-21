@@ -654,9 +654,7 @@ class DictationRow(Row):
 
         self.time = _Text(time_label(entry.when()), theme.digits_font(TIME_SIZE), theme.content_dim)
         self.text = _Text(entry.text, theme.ui_font(TEXT_SIZE), theme.content, TEXT_LINE_H)
-        italic = theme.ui_font(NOTE_SIZE)
-        italic.setItalic(True)
-        self.original = _Text(entry.raw, italic, theme.content_dim)
+        self.original = _Text(entry.raw, theme.ui_font(NOTE_SIZE, italic=True), theme.content_dim)
         self.learned_label = _Text(self.learned, theme.ui_font(NOTE_SIZE), theme.content_dim)
 
         self.copy = RowIcon("doc.on.doc", ICON_SIZE, "Copy", lambda: owner.copy_entry(entry.id, self.copy), self)

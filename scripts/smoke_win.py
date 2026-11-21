@@ -9,7 +9,8 @@ screenshots into the output folder, and exits 1 when a must-pass check fails.
 The profile: APPDATA and LOCALAPPDATA of the child processes point into a temp folder (the app
 finds its files through lyssna.host.paths()), and config.toml there picks the built-in Windows
 voice (provider = "sapi"), so nothing is downloaded. The start at login round trip is not run:
-it would write the real Run key of this account."""
+it would write the real Run key of this account. Dictation is on in the app, but nothing here
+records or sends keys: its check only asks the running app whether its pieces loaded."""
 
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG_TOML = 'provider = "sapi"\n'
 READ_TEXT = "This sentence is read by the built app."
 STATUS_STATES = ("idle", "loading", "playing", "paused")
+DICTATION_PIECES = ("mic", "insert", "field_probe", "pushtotalk")  # what lyssna.app reports under "dictation"
 
 
 # -- pure helpers (checked by --self-check) ------------------------------------------------------
@@ -69,6 +71,19 @@ def status_state(line: str) -> str:
     return word if word in STATUS_STATES else ""
 
 
+def dictation_lines(ui_reply: dict | None, status_reply: dict | None) -> tuple[bool, list[str]]:
+    """Whether the app's dictation pieces all loaded and its keys are attached, from its `ui`
+    and `status` replies, and one line per fact for the report."""
+    dictation = (ui_reply or {}).get("dictation") or {}
+    pieces = dictation.get("pieces") or {}
+    lines = [f"dictation keys attached: {'yes' if dictation.get('keys') else 'no'}"]
+    lines += [f"{name}: {pieces.get(name, '(not reported)')}" for name in DICTATION_PIECES]
+    state = ((status_reply or {}).get("status") or {}).get("dictation") or {}
+    lines.append(f"dictation state: {state.get('state', '(not reported)')}")
+    ok = bool(dictation.get("keys")) and all(str(pieces.get(n, "")).startswith("lyssna.win.") for n in DICTATION_PIECES)
+    return ok, lines
+
+
 def summary(checks: list[Check]) -> str:
     failed = [c for c in checks if c.failed()]
     if failed:
@@ -97,6 +112,13 @@ def self_check() -> int:
     import tomllib
 
     assert tomllib.loads(CONFIG_TOML) == {"provider": "sapi"}
+    pieces = {n: f"lyssna.win.{n}" for n in DICTATION_PIECES}
+    ok, lines = dictation_lines({"dictation": {"keys": True, "pieces": pieces}}, {"status": {"dictation": {"state": "idle"}}})
+    assert ok and lines[0] == "dictation keys attached: yes" and lines[-1] == "dictation state: idle"
+    ok, lines = dictation_lines({"dictation": {"keys": True, "pieces": {**pieces, "mic": "missing: ImportError: x"}}}, None)
+    assert not ok and "mic: missing: ImportError: x" in lines
+    assert dictation_lines(None, None) == (False, ["dictation keys attached: no", *(f"{n}: (not reported)" for n in DICTATION_PIECES),
+                                                   "dictation state: (not reported)"])
     a = Check(1, "a", True, "PASS")
     b = Check(2, "b", False, "INFO")
     assert summary([a, b]).startswith("SMOKE PASSED")
@@ -316,8 +338,16 @@ class Smoke:
         else:
             self.done(c, "FAIL", "skipped because the app is not running")
 
-        # 5. reading a sentence
-        c = self.check(5, "lyssna-cli.exe reads a sentence through the app (screenshot 02-reading.png)", False)
+        # 5. dictation's pieces, asked of the running app (nothing is recorded, no key is sent)
+        c = self.check(5, "the built app attached the dictation keys and loaded the microphone, typing and key modules", False)
+        if app_up:
+            ok, lines = dictation_lines(self.ipc({"cmd": "ui"}), self.ipc({"cmd": "status"}))
+            self.done(c, "INFO" if ok else "FAIL", *lines)
+        else:
+            self.done(c, "SKIP", "the app is not running")
+
+        # 6. reading a sentence
+        c = self.check(6, "lyssna-cli.exe reads a sentence through the app (screenshot 02-reading.png)", False)
         if app_up:
             code, out, err = self.cli(READ_TEXT)
             details = [f"speak: exit {code} {out.strip()} {err.strip()[-400:]}".rstrip()]
@@ -348,8 +378,8 @@ class Smoke:
         else:
             self.done(c, "SKIP", "the app is not running")
 
-        # 6. pause and stop
-        c = self.check(6, "lyssna-cli.exe pause and stop are answered", True)
+        # 7. pause and stop
+        c = self.check(7, "lyssna-cli.exe pause and stop are answered", True)
         if app_up:
             results = []
             for cmd in ("pause", "stop"):
@@ -360,8 +390,8 @@ class Smoke:
         else:
             self.done(c, "FAIL", "skipped because the app is not running")
 
-        # 7. a second copy
-        c = self.check(7, "a second Lyssna.exe exits by itself within 10 s with code 0", True)
+        # 8. a second copy
+        c = self.check(8, "a second Lyssna.exe exits by itself within 10 s with code 0", True)
         if app_up:
             second = subprocess.Popen([str(self.app_exe)], env=self.env, cwd=str(self.dist))
             try:
@@ -378,8 +408,8 @@ class Smoke:
         else:
             self.done(c, "FAIL", "skipped because the app is not running")
 
-        # 8. quit
-        c = self.check(8, "lyssna-cli.exe quit ends the app within 10 s, the pipe marker is gone", True)
+        # 9. quit
+        c = self.check(9, "lyssna-cli.exe quit ends the app within 10 s, the pipe marker is gone", True)
         if app_up:
             code, out, err = self.cli("quit")
             details = [f"quit: exit {code}: {out.strip() or err.strip()}"]
@@ -398,8 +428,8 @@ class Smoke:
         else:
             self.done(c, "FAIL", "skipped because the app is not running")
 
-        # 9. standalone reading
-        c = self.check(9, "lyssna-cli.exe reads by itself with no app running", False)
+        # 10. standalone reading
+        c = self.check(10, "lyssna-cli.exe reads by itself with no app running", False)
         if self.first is not None and self.first.poll() is None:
             self.done(c, "SKIP", "the first copy is still running, so the reading would go to it")
         else:
@@ -409,8 +439,8 @@ class Smoke:
             ended = "did not end within 60 s" if code is None else f"exit {code} after {took:.1f} s"
             self.done(c, "INFO", ended, f"stdout: {out.strip()[-400:]}", f"stderr: {err.strip()[-1200:]}")
 
-        # 10. start at login
-        c = self.check(10, "start at login round trip", False)
+        # 11. start at login
+        c = self.check(11, "start at login round trip", False)
         self.done(c, "SKIP", "not run: it would write the real Run key of this account")
 
     def _cleanup(self) -> None:

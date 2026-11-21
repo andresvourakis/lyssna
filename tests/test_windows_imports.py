@@ -118,7 +118,8 @@ SCRIPT = textwrap.dedent(
     from lyssna import migrate
     assert migrate.run() == []
     from lyssna.controller import Controller
-    ctl = Controller()  # dictation's platform pieces are missing on Windows: building must still work
+    assert all(host.require(name) for name in ("mic", "insert", "field_probe", "pushtotalk"))  # dictation's pieces
+    ctl = Controller()  # builds its dictation session with them
     assert ctl.dictation.recorder is not None
     assert "say" not in providers.REGISTRY and providers.local_fallback() == "kokoro"
     assert "sapi" in providers.REGISTRY

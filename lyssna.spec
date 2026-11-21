@@ -1,5 +1,6 @@
 # PyInstaller spec for Lyssna.app. Build with ./scripts/build_app.sh.
 import os
+import sys
 import tomllib
 
 import espeakng_loader
@@ -26,9 +27,24 @@ def llama_libs():
     return [(os.path.join(lib, n), "llama_cpp/lib") for n in names if os.path.exists(os.path.join(lib, n))]
 
 
-# The Mac modules lyssna.host loads by name (lyssna/mac/).
-LYSSNA_MAC = ["lyssna.mac." + m for m in ("audio", "autostart", "capture", "credentials", "events", "fieldprobe", "globe",
-                                          "hotkeys", "insert", "instance", "ipc", "launch_agent", "mic", "policy", "speechy")]
+# The Qt interface's Mac twins. They load PySide6, which this build leaves out while it ships the
+# legacy (AppKit) interface; they join when the Mac switches to the Qt interface.
+QT_ONLY = {"lyssna.mac.window", "lyssna.mac.statusbar", "lyssna.mac.appearance"}
+
+
+def host_modules() -> list[str]:
+    """The Mac modules lyssna.host loads by name (lyssna/mac/ and, for the interface, the legacy
+    app), read from host.MODULES itself so a new one is never left out. host imports nothing
+    from the package when it loads, so this pulls in nothing else."""
+    sys.path.insert(0, os.path.abspath("."))
+    from lyssna import host
+
+    names = sorted({mac for mac, _windows in host.MODULES.values() if mac} - QT_ONLY)
+    print(f"lyssna.spec: modules host loads by name: {', '.join(names)}")
+    return names
+
+
+LYSSNA_MAC = host_modules()
 
 
 a = Analysis(
@@ -56,7 +72,7 @@ a = Analysis(
     # The Keychain module imports Security lazily, and lyssna.host loads the app and the Mac
     # modules by name, so the analysis cannot see them by itself. The Mac build ships the legacy
     # (AppKit) interface until the Qt one in lyssna/app.py replaces it.
-    hiddenimports=["Security", "lyssna.legacy.app", *LYSSNA_MAC],
+    hiddenimports=["Security", *LYSSNA_MAC],
     excludes=[],
     noarchive=False,
 )

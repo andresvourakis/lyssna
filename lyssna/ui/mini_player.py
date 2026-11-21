@@ -9,11 +9,9 @@ One window, one form in it at a time, every switch through _show_form:
              upright on a side edge and lying flat along the bottom
     rest     idle: the logo's squiggle on its edge, rippling now and then (may_wave); with
              auto-hide it slides out of sight until the cursor comes near
-    menu     the squiggle hovered: the buttons for the features this release has (feature list
-             in `features`); Read selection always, Dictate and History when switched on
+    menu     the squiggle hovered: Dictate, Read selection and History
     dictate  the dictation capsule on a screen edge with the wave meter; hands-free it grows a
-             cancel and a finish button; while the speech is turned into text the wave breathes.
-             Only with features["dictate"] on: switched off, a dictation status changes nothing
+             cancel and a finish button; while the speech is turned into text the wave breathes
 
 The card drags freely and never docks by dragging; its tuck button docks it on the nearest edge.
 A docked sliver or pill dragged near an edge docks there, and dropped away from every edge opens
@@ -42,16 +40,16 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import sys
 import threading
 import time
 import weakref
 from collections.abc import Callable
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QGuiApplication, QPainter, QPainterPath, QPixmap, QTransform
+from PySide6.QtGui import QPainter, QPainterPath, QPixmap, QTransform
 from PySide6.QtWidgets import QMenu, QWidget
 
+from .. import host
 from ..player import SPEEDS, Status
 from . import coords, theme
 from .layout.pill import (
@@ -130,7 +128,7 @@ log = logging.getLogger("lyssna.ui.player")
 CHEVRONS = {"left": "chevron.right", "right": "chevron.left", "bottom": "chevron.up"}
 ARROWS = {"left": "left", "right": "right", "bottom": "down"}  # arrow.<x>.to.line.compact
 MENU_POP = 0.5  # a menu shorter than the sliver grows from half its size instead
-FEATURES = ("dictate", "history")  # the idle menu's switchable items; Read selection is always there
+MENU_ITEMS = (("dictate", MENU_MIC_H, MENU_MIC_W), ("read", MENU_DISC, MENU_DISC), ("history", MENU_DISC, MENU_DISC))
 
 
 # -- screens and the mouse (replaced in the tests) -------------------------------------------------
@@ -151,16 +149,9 @@ def _vf(screen=None) -> coords.Rect:
 
 
 def _left_button_down() -> bool:
-    """Is the left mouse button held right now? Windows asks the system, so a release Qt never
-    saw (the stuck-drag case this guards against) still counts."""
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
-        except Exception:
-            return False
-    return bool(QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+    """Is the left mouse button held right now? Asked of the system (host.window), so a release
+    Qt never saw (the stuck-drag case this guards against) still counts."""
+    return host.window.left_button_down()
 
 
 def _post(fn: Callable[[], None]) -> None:
@@ -484,7 +475,6 @@ class MiniPlayer(FloatingPanel):
         self.dictation_layout = {"dock": "", "y": -1.0}  # the idle pill's own spot (player not docked)
         self.dictation_state = "idle"                 # the session state the window shows
         self.hands_free = False
-        self.features = {"dictate": False, "history": False}  # the idle menu's items, and dictation itself
         self.tip = None                               # the tooltip pill (show_beside, hide), set by the wiring
         self._tip_token = None
         self._tip_up = False
@@ -759,15 +749,9 @@ class MiniPlayer(FloatingPanel):
         kit["dictate_host"].shadow_rect = QRectF(kit["dictate_capsule"].geometry())
         self.panel.update()
 
-    def _menu_items(self) -> list[tuple[str, float, float]]:
-        """The idle menu's items in order (name, length along, thickness across), only the ones on."""
-        items = [("dictate", MENU_MIC_H, MENU_MIC_W), ("read", MENU_DISC, MENU_DISC), ("history", MENU_DISC, MENU_DISC)]
-        return [i for i in items if i[0] == "read" or self.features.get(i[0], False)]
-
     def menu_length(self) -> float:
-        """The open menu's length along its edge, for the items that are on."""
-        items = self._menu_items()
-        return sum(length for _, length, _ in items) + DOCK_GAP_V * (len(items) - 1)
+        """The open menu's length along its edge."""
+        return sum(length for _, length, _ in MENU_ITEMS) + DOCK_GAP_V * (len(MENU_ITEMS) - 1)
 
     def _layout_menu_kit(self, content: Shapes, flat: bool) -> float:
         total = self.menu_length()
@@ -775,12 +759,9 @@ class MiniPlayer(FloatingPanel):
         content.resize(round(w), round(h))
         content_h = MENU_W if flat else total
         widgets = {"dictate": content.shapes[0][0], "read": content.shapes[1][0], "history": content.shapes[2][0]}
-        shown = {name for name, _, _ in self._menu_items()}
-        for name, btn in widgets.items():
-            btn.setHidden(name not in shown)
         c = MENU_W / 2
         a = 0.0
-        for name, length, thick in self._menu_items():
+        for name, length, thick in MENU_ITEMS:
             _place(widgets[name], lay(a, length, c - thick / 2, thick, total, flat), content_h)
             a += length + DOCK_GAP_V
         host = content.parentWidget()
@@ -789,7 +770,7 @@ class MiniPlayer(FloatingPanel):
         return total
 
     def _layout_menu(self) -> float:
-        """Lay out both orientations' menus for the current `features`; the length along the edge."""
+        """Lay out both orientations' menus; the length along the edge."""
         for flat, kit in self._kits.items():
             self._layout_menu_kit(kit["menu"], flat)
         self._menu_len = self.menu_length()
@@ -1679,11 +1660,8 @@ class MiniPlayer(FloatingPanel):
     def dictation_update(self, ds) -> None:
         """A DictationStatus, from any thread, up to 20 times a second while recording. The level
         is only stored (the wave's display timer reads it); the GUI thread hears about a state
-        change once, however many updates arrive before it gets there. With features["dictate"]
-        off nothing else happens."""
+        change once, however many updates arrive before it gets there."""
         self._level = float(getattr(ds, "level", 0.0))
-        if not self.features.get("dictate", False):
-            return
         with self._dlock:
             if ds.state == self._dqueued:
                 return
@@ -1700,8 +1678,6 @@ class MiniPlayer(FloatingPanel):
         self._set_dictation(state)
 
     def _set_dictation(self, state: str) -> None:
-        if state in DICTATING and not self.features.get("dictate", False):
-            state = "idle"  # dictation switched off: its form never shows
         prev = self.dictation_state
         if state == prev:
             return
@@ -1842,13 +1818,11 @@ def _reading(state: str = "playing", index: int = 3, total: int = 9, position: f
                   provider="Kokoro · Heart", session=session)
 
 
-def _preview(setup: Callable[[MiniPlayer], None], features: dict | None = None) -> QWidget:
+def _preview(setup: Callable[[MiniPlayer], None]) -> QWidget:
     """A player with fake state, settled and still, for the gallery and the screenshots."""
     mp = MiniPlayer()
     mp.auto_hide = False
     mp.voices_fn = lambda: ([("heart", "Heart"), ("bella", "Bella")], "heart")
-    if features:
-        mp.features = dict(features)
     setup(mp)
     if mp._scale_anim is not None:  # land any growth at its end
         mp._cancel_anim()
@@ -1888,7 +1862,6 @@ def _dictating(edge: str, state: str):
     """The dictate form on `edge` in `state`, its growth landed and its wave a few frames in at a
     middling microphone level, held still for the picture."""
     def setup(mp: MiniPlayer) -> None:
-        mp.features["dictate"] = True
         mp.dictation_layout = {"dock": edge, "y": -1.0}
         mp._level = 0.5
         mp._set_dictation("recording")
@@ -1930,7 +1903,6 @@ PREVIEWS = {
     "player.pill-flat": lambda: _preview(_hovered("bottom")),
     "player.idle": lambda: _preview(_idle(False)),
     "player.idle-menu": lambda: _preview(_idle(True)),
-    "player.idle-menu-all": lambda: _preview(_idle(True), features={"dictate": True, "history": True}),
     "player.dictate": lambda: _preview(_dictating("right", "recording")),
     "player.dictate-flat": lambda: _preview(_dictating("bottom", "recording")),
     "player.dictate-hands-free": lambda: _preview(_dictating("right", "locked")),

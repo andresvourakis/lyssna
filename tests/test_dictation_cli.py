@@ -10,7 +10,7 @@ import httpx
 import numpy as np
 import pytest
 
-from lyssna import cli, config
+from lyssna import cli, config, host
 from lyssna.dictation import vocabulary
 from lyssna.dictation.cleaners import s1mini
 from lyssna.dictation.models import PARAKEET_V2, S1_MINI
@@ -157,8 +157,9 @@ def test_vocab_add_list_remove(quiet, capsys):
 
 def test_dictation_defaults():
     d = config.DEFAULTS
+    keys = {"hotkey": host.DICTATION_KEY_DEFAULT, **({"double_tap": True} if host.DICTATION_DOUBLE_TAP_DEFAULT else {})}
     assert d["dictation"] == {"transcriber": "parakeet", "cleaner": "s1-mini", "cleanup": True, "language": "en",
-                              "hotkey": "fn", "hands_free": "space", "history_days": 30, "auto_learn": True}
+                              **keys, "hands_free": "space", "history_days": 30, "auto_learn": True}
     assert d["parakeet"] == {"model": "v2"}
     assert d["anthropic"] == {"api_key": "", "model": "claude-haiku-5-5"}
     assert d["openai"]["transcribe_model"] == "gpt-transcribe"
