@@ -101,7 +101,7 @@ def on_scheme_change(callback: Callable[[], None]) -> Callable[[], None]:
     def unsubscribe() -> None:
         try:
             n.changed.disconnect(callback)
-        except (RuntimeError, TypeError):
+        except (RuntimeError, TypeError, SystemError):  # SystemError: the subscriber's C++ side went first, at exit
             pass
     return unsubscribe
 
