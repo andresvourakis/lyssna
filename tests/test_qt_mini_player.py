@@ -1,0 +1,937 @@
+"""The Windows player (lyssna/ui/qt/mini_player.py and sliver.py), driven the way
+test_dictation_pill.py drives the Mac one: a fixed fake screen, a recorded order_front instead of
+a real window, and a fake clock and cursor for the hover and auto-hide rules. The checks are on
+forms, frames (Mac-style, as the shared geometry speaks) and widget state, never pixels. Runs on
+the offscreen platform, so it needs no display."""
+
+import os
+import threading
+import time
+
+import pytest
+
+pytest.importorskip("PySide6")
+pytest.importorskip("PySide6.QtWidgets")
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+from PySide6.QtCore import QCoreApplication
+from PySide6.QtWidgets import QApplication
+
+from lyssna.player import Status
+from lyssna.ui.shared.pill import (
+    CAP_W,
+    DOCK_GAP,
+    DOCK_GAP_V,
+    DOCK_W,
+    HIDE_DELAY,
+    HOVER_OUT_DELAY,
+    LINGER_SECS,
+    MARGIN,
+    MENU_DISC,
+    MENU_H,
+    MENU_MIC_H,
+    MENU_W,
+    WAVE_EVERY,
+    along_fraction,
+    pill_len,
+)
+from lyssna.ui.shared.wave import CAPSULE_H, CAPSULE_INSET, CAPSULE_W, SLIVER_H, SLIVER_W, capsule_centre
+
+VF = (0.0, 25.0, 1440.0, 875.0)  # the fake screen's usable area (Mac-style); the tests never see a real one
+ACTIONS = ("toggle", "stop", "back", "forward", "set_speed", "seek_to", "set_voice", "layout", "dictation_layout",
+           "dictate", "dictate_stop", "dictate_cancel", "read_selection", "history")
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    app = QCoreApplication.instance()
+    if app is not None and not isinstance(app, QApplication):
+        pytest.skip("a non-GUI Qt application already exists in this process")
+    return app or QApplication(["lyssna-tests"])
+
+
+def pump(seconds: float = 0.0, until=None) -> None:
+    """Run the Qt event loop for `seconds`, or until `until()` holds (up to five seconds: an
+    animation on a busy CI machine is slower, and a fast machine returns as soon as it ends)."""
+    end = time.monotonic() + (seconds if until is None else 5.0)
+    while time.monotonic() < end:
+        QCoreApplication.processEvents()
+        if until is not None and until():
+            return
+        time.sleep(0.005)
+    assert until is None or until(), "the event loop never got there"
+
+
+@pytest.fixture
+def pill(qapp, monkeypatch):
+    """A MiniPlayer that never reaches the screen, on a fixed fake screen."""
+    from lyssna.ui.qt import mini_player as mp
+
+    monkeypatch.setattr(mp, "_vf", lambda screen=None: VF)
+    monkeypatch.setattr(mp, "_screen_at", lambda x, y: None)
+    monkeypatch.setattr(mp, "_screen_under_mouse", lambda: None)
+    p = mp.MiniPlayer()
+    p.shown = []
+    p.order_front = lambda: p.shown.append(p.form)
+    p.zones = []
+    p.zone.order_front = lambda: p.zones.append("side")
+    p.flat_zone.order_front = lambda: p.zones.append("flat")
+    p.visible = lambda: bool(p.shown)  # as if each order_front had put it on screen
+    p.auto_hide = False  # most tests expect the resting squiggle to stay out; auto-hide has its own
+    p.dictation_layout = {"dock": "right", "y": -1.0}
+    p.fired = []
+    p.actions = {name: (lambda *a, n=name: p.fired.append((n, *a))) for name in ACTIONS}
+    p._reduce_motion = lambda: False
+    p._button_down = lambda: False
+    yield p
+    p._cancel_anim()
+    p._stop_auto_watch()
+    p._stop_wave_timer()
+    for panel in (p, p.zone, p.flat_zone):
+        panel.panel.hide()
+        panel.panel.deleteLater()
+    QCoreApplication.processEvents()
+
+
+def frame(p):
+    return p.frame_mac()
+
+
+def move(p, x, y):
+    """Put the surface's bottom-left corner at the Mac-style point (x, y)."""
+    _, _, w, h = p.frame_mac()
+    p.set_frame_mac((x, y, w, h))
+
+
+def centre(p):
+    x, y, w, h = p.frame_mac()
+    return x + w / 2, y + h / 2
+
+
+def playing(**kw):
+    defaults = dict(state="playing", session=1, total=9, index=3, position=84.0, duration=334.0, speed=1.2,
+                    provider="Kokoro · Heart")
+    defaults.update(kw)
+    return Status(**defaults)
+
+
+def settle(p):
+    pump(until=lambda: p._pending_done is None and p._slide_token is None)
+
+
+# -- forms -------------------------------------------------------------------------------------
+
+
+def test_the_card_has_the_mac_size_and_shows_bottom_right_by_default(pill):
+    assert (pill.width, pill.height, pill.corner_radius) == (400.0, 156.0, 22.0)
+    pill._update(playing())
+    assert pill.form == "card" and pill.content is pill.card and pill.shown == ["card"]
+    x, y, w, h = frame(pill)
+    assert (w, h) == (400.0, 156.0)
+    assert (x, y) == (1440 - 400 - MARGIN, 25 + MARGIN)
+
+
+@pytest.mark.parametrize(("layout", "idle_pill", "form"), [
+    ({"dock": "", "x": -1.0, "y": -1.0}, True, "card"),
+    ({"dock": "left", "x": 0.0, "y": 0.5}, True, "sliver"),
+    ({"dock": "bottom", "x": 0.0, "y": 0.5}, False, "sliver"),
+])
+def test_a_reading_shows_the_card_or_the_docked_sliver(pill, layout, idle_pill, form):
+    pill.layout = layout
+    pill.idle_pill = idle_pill
+    pill._update(playing())
+    assert pill.form == form
+
+
+def test_idle_shows_the_resting_squiggle_or_nothing(pill):
+    pill.show_idle()
+    assert pill.form == "rest" and pill.content is pill.rest and pill.rest.rest
+    x, _y, w, h = frame(pill)
+    assert (w, h) == (SLIVER_W, SLIVER_H) and x == 1440 - SLIVER_W  # flush with the right edge
+    assert pill.margin == 0  # no shadow around the squiggle
+    pill._update(playing())
+    assert pill.form == "card"
+    pill._update(Status())
+    assert pill.form == "rest"
+    pill.set_idle_pill(False)
+    assert pill.form == "rest" and pill.shown[-1] == "rest"  # hide() only takes the window away
+    other = pill.shown[:]
+    pill.show_idle()
+    assert pill.shown == other  # nothing new shown with the idle pill off
+
+
+def test_a_fresh_config_rests_at_the_bottom_centre(pill):
+    pill.dictation_layout = {"dock": "", "y": -1.0}
+    pill.show_idle()
+    x, y, w, h = frame(pill)
+    assert (w, h) == (SLIVER_H, SLIVER_W) and y == 25 and x + w / 2 == pytest.approx(720, abs=1)
+    assert pill.content is pill._kits[True]["rest"] and pill.rest.edge == "bottom"
+
+
+def test_stop_fires_and_hides_at_once(pill):
+    pill._update(playing())
+    pill.buttons["stop"][0].perform_click()
+    assert pill.fired[0] == ("stop",) and pill.form == "rest"
+
+
+# -- the card's text -----------------------------------------------------------------------------
+
+
+def test_times_counts_speed_and_voice(pill):
+    pill._update(playing())
+    assert (pill.elapsed.text(), pill.progress.text(), pill.remaining.text()) == ("1:24", "3 of 9", "-4:10")
+    assert pill.speed_btn.text() == "1.2×" and pill.badge.letter == "H"
+    assert all(b.icon == "pause.fill" for b in pill.buttons["toggle"])
+    pill._update(playing(state="paused", index=128, total=240, position=1834.0, duration=3460.0, speed=1.75))
+    assert (pill.elapsed.text(), pill.progress.text(), pill.remaining.text()) == ("30:34", "128 of 240", "-27:06")
+    assert pill.speed_btn.text() == "1.75×"
+    assert all(b.icon == "play.fill" for b in pill.buttons["toggle"])
+    assert [b.icon_size for b in pill.buttons["toggle"]] == [20.0, 14.0, 14.0]  # the card's, then each pill's
+    pill._update(playing(state="loading", index=0, total=0, position=0.0, duration=0.0, speed=1.0))
+    assert pill.progress.text() == "Loading…" and pill.speed_btn.text() == "1×"
+    assert pill.scrub.fraction == 0.0
+
+
+def test_the_scrub_preview_shows_the_time_at_the_knob(pill):
+    pill._update(playing())
+    pill.scrub.scrubbing = True
+    pill._scrub_preview(0.5)
+    assert (pill.elapsed.text(), pill.remaining.text()) == ("2:47", "-2:47")
+    pill._update(playing(position=100.0))
+    assert pill.elapsed.text() == "2:47"  # playback does not fight the hand
+    pill.scrub.scrubbing = False
+    pill._update(playing(position=100.0))
+    assert pill.elapsed.text() == "1:40"
+
+
+def test_the_badge_opens_a_voice_menu_only_with_voices(pill):
+    pill._update(playing())
+    assert not pill.badge.pickable and pill.badge.glow is None and pill.badge.toolTip() == "Kokoro · Heart"
+    pill.badge.perform_click()
+    assert pill._popup is None
+    pill.voices_fn = lambda: ([("heart", "Heart"), ("bella", "Bella")], "heart")
+    pill._update(playing())
+    assert pill.badge.pickable and pill.badge.toolTip() == "Change voice"
+    pill.badge.perform_click()
+    acts = pill._popup.actions()
+    assert [a.text() for a in acts] == ["Heart", "Bella"] and [a.isChecked() for a in acts] == [True, False]
+    acts[1].trigger()
+    pill._popup.close()
+    assert pill.fired[-1] == ("set_voice", "bella")
+
+
+def test_the_speed_menu_checks_the_current_speed_and_sets_one(pill):
+    from lyssna.player import SPEEDS
+
+    pill._update(playing())
+    pill.speed_btn.perform_click()
+    acts = pill._popup.actions()
+    assert [a.text() for a in acts] == [f"{s:g}×" for s in SPEEDS]
+    assert [a.text() for a in acts if a.isChecked()] == ["1.2×"]
+    acts[-1].trigger()
+    pill._popup.close()
+    assert pill.fired[-1] == ("set_speed", 2.0)
+
+
+def test_every_button_fires_its_action(pill):
+    pill.layout = {"dock": "right", "x": 0.0, "y": 0.5}
+    pill._update(playing())
+    for name in ("back", "toggle", "forward"):
+        assert len(pill.buttons[name]) == 3  # the card's and each orientation's pill
+        for btn in pill.buttons[name]:
+            pill.fired.clear()
+            btn.perform_click()
+            assert pill.fired == [(name,)]
+    for scrub in (pill.scrub, pill._kits[False]["dock_scrub"], pill._kits[True]["dock_scrub"]):
+        pill.fired.clear()
+        scrub.on_seek(0.25)
+        assert pill.fired == [("seek_to", 0.25)]
+    pill.chevron.perform_click()
+    assert pill.form == "card" and pill.fired[-1][0] == "layout"
+    pill.dock_btn.perform_click()
+    assert pill.form == "sliver" and pill.fired[-1][:2] == ("layout", "right")
+    pill.fired.clear()
+    pill._kits[False]["pill"].shapes[-1][0].perform_click()  # the pill's own close disc
+    assert pill.fired == [("stop",)] and pill.form == "rest"
+
+
+def test_tooltips(pill):
+    assert pill.buttons["stop"][0].toolTip() == "Stop"
+    assert pill.dock_btn.toolTip() == "Tuck into the side of the screen"
+    assert pill.scrub.toolTip() == "Drag to scrub"
+    assert pill.chevron.toolTip() == "Expand player"
+    pill.set_tooltips({"toggle": "Pause / resume  Ctrl+Alt+P", "speed": "Speed"})
+    assert {b.toolTip() for b in pill.buttons["toggle"]} == {"Pause / resume  Ctrl+Alt+P"}
+    assert pill.speed_btn.toolTip() == "Speed"
+    pill._update(playing())
+    assert pill.sliver.toolTip() == "3 of 9  ·  -4:10"
+
+
+# -- docking ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("origin", "edge"), [((20, 400), "left"), ((1000, 400), "right"), ((500, 30), "bottom")])
+def test_the_dock_button_tucks_the_card_into_the_nearest_edge(pill, origin, edge):
+    pill._update(playing())
+    move(pill, *origin)
+    pill._refresh_dock_arrow()
+    assert pill.dock_btn.icon == {"left": "arrow.left.to.line.compact", "right": "arrow.right.to.line.compact",
+                                  "bottom": "arrow.down.to.line.compact"}[edge]
+    pill.dock_btn.perform_click()
+    assert pill.dock == edge and pill.form == "sliver" and pill.content is pill.sliver
+    assert pill.fired[-1][:2] == ("layout", edge)
+    x, y, w, h = frame(pill)
+    if edge == "bottom":
+        assert (w, h, y) == (SLIVER_H, SLIVER_W, 25)
+    else:
+        assert (w, h) == (SLIVER_W, SLIVER_H) and x == (0 if edge == "left" else 1440 - SLIVER_W)
+    assert pill.sliver.edge == edge and pill.sliver.fraction == pytest.approx(84 / 334)
+    assert pill.chevron.icon == {"left": "chevron.right", "right": "chevron.left", "bottom": "chevron.up"}[edge]
+
+
+@pytest.mark.parametrize(("origin", "to"), [((-60, 400), (0.0, 400)), ((500, 10), (500, 25.0))])
+def test_the_card_drags_freely_and_never_docks(pill, origin, to):
+    pill._update(playing())
+    pill.drag_began()
+    move(pill, *origin)
+    pill.drag_moved_mac(origin[0] + 20, origin[1] + 20)
+    assert pill.zones == []  # no landing hint: the card never docks by dragging
+    pill.drag_ended_mac(origin[0] + 20, origin[1] + 20)
+    assert pill.dock == "" and pill.form == "card"
+    assert frame(pill)[:2] == to  # pulled back onto the screen, right against the edge
+    name, dock, fx, fy = pill.fired[-1]
+    assert (name, dock) == ("layout", "")
+    assert fx == pytest.approx(to[0] / (1440 - 400)) and fy == pytest.approx((to[1] - 25) / (875 - 156))
+
+
+def test_a_saved_card_spot_comes_back_as_the_same_fractions(pill):
+    pill.layout = {"dock": "", "x": 0.25, "y": 0.75}
+    pill._update(playing())
+    x, y, _, _ = frame(pill)
+    assert (x, y) == pytest.approx((0.25 * (1440 - 400), 25 + 0.75 * (875 - 156)), abs=1)
+
+
+def test_dragging_the_docked_player_onto_the_bottom_docks_it_there(pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill._update(playing())
+    assert pill.form == "sliver" and pill.dock == "left"
+    pill.drag_began()
+    move(pill, 500, 40)
+    pill.drag_moved_mac(600, 80)
+    assert pill.zones == ["flat"]  # the hint lies flat along the bottom edge
+    zx, zy, zw, zh = pill.flat_zone.frame_mac()
+    assert (zw, zh) == (CAPSULE_H + 8, CAPSULE_W + 8) and zy == 25 + CAPSULE_INSET - 4
+    pill.drag_ended_mac(600, 80)
+    assert pill.dock == "bottom" and pill.form == "sliver" and pill.content is pill._kits[True]["sliver"]
+    assert pill.fired[-1][:2] == ("layout", "bottom")
+    x, _y, w, _h = frame(pill)
+    assert zx + zw / 2 == pytest.approx(x + w / 2, abs=1)  # the hint showed the spot it landed on
+    _, _, fx, fy = pill.fired[-1]
+    assert fx == 0.0 and fy == pytest.approx(along_fraction(VF, "bottom", x + w / 2), abs=0.002)
+
+
+def test_a_docked_player_dropped_away_from_every_edge_becomes_the_card_there(pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill._update(playing())
+    pill.drag_began()
+    move(pill, 600, 400)
+    pill.drag_moved_mac(620, 420)
+    assert pill.zones == []
+    pill.drag_ended_mac(620, 420)
+    assert pill.dock == "" and pill.form == "card"
+    assert centre(pill) == pytest.approx((620, 420), abs=1)
+    assert pill.fired[-1][:2] == ("layout", "")
+
+
+def test_the_pill_opened_by_the_chevron_expands_away_from_the_edge(pill):
+    pill.layout = {"dock": "right", "x": 0.0, "y": 0.5}
+    pill._update(playing())
+    sliver_cy = centre(pill)[1]
+    pill.expand()
+    x, y, w, h = frame(pill)
+    assert pill.form == "card" and x + w == 1440 - DOCK_GAP and y + h / 2 == pytest.approx(sliver_cy, abs=1)
+
+
+# -- hover: sliver and pill ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def clocked(pill):
+    pill.clock = [100.0]
+    pill._now = lambda: pill.clock[0]
+    pill.cursor = (720.0, 460.0)  # far from everything
+    pill._cursor = lambda: pill.cursor
+    return pill
+
+
+def test_hovering_the_sliver_opens_the_pill_and_leaving_closes_it_after_the_delay(clocked):
+    p = clocked
+    p.layout = {"dock": "right", "x": 0.0, "y": 0.5}
+    p._update(playing())
+    sliver = frame(p)
+    p.mouse_entered()
+    assert p.form == "pill" and p.content is p.pill_host and p._watch is not None
+    x, y, w, h = frame(p)
+    assert (w, h) == (DOCK_W, pill_len(False)) and x == 1440 - DOCK_GAP - DOCK_W
+    assert y + h / 2 == pytest.approx(sliver[1] + sliver[3] / 2, abs=1)
+    assert p._watch.interval() == 30  # cursor polling, as on the Mac
+    settle(p)
+    assert p.pill_host.scale == 1.0 and p.pill.isVisibleTo(p.panel)
+
+    p.cursor = (x + 10, y + 50)  # on the pill
+    p._hover_tick()
+    assert p._outside_since is None
+    p.cursor = (1438.0, y + h / 2)  # pushed against the screen edge, on the sliver's strip
+    p._hover_tick()
+    assert p._outside_since is None
+    p.cursor = (720.0, 460.0)
+    p._hover_tick()  # left at 100.0
+    p.clock[0] = 100.0 + HOVER_OUT_DELAY - 0.01
+    p._hover_tick()
+    assert p.form == "pill" and p._pending_done is None
+    p.clock[0] = 100.0 + HOVER_OUT_DELAY + 1e-6
+    p._hover_tick()
+    assert p._watch is None and p._pending_done is not None  # shrinking
+    settle(p)
+    assert p.form == "sliver" and frame(p) == pytest.approx(sliver)
+
+
+def test_the_pill_stands_upright_on_the_sides_and_lies_flat_on_the_bottom(pill):
+    pill.layout = {"dock": "bottom", "x": 0.0, "y": 0.5}
+    pill._update(playing())
+    cx = centre(pill)[0]
+    pill.mouse_entered()
+    x, y, w, h = frame(pill)
+    assert pill.form == "pill" and (w, h) == (pill_len(True), DOCK_W)
+    assert y == 25 + DOCK_GAP and x + w / 2 == pytest.approx(cx, abs=1)
+    assert pill.pill is pill._kits[True]["pill"]
+    # left to right: close, expand, previous, play, next, progress
+    stop, chevron = pill.pill.shapes[-1][0], pill.pill.shapes[-2][0]
+    main = pill.pill.shapes[0][0]
+    xs = [stop.x(), chevron.x()]
+    for name in ("back", "toggle", "forward"):
+        btn = pill.buttons[name][2]  # the flat kit's
+        xs.append(main.x() + btn.x())
+    xs.append(main.x() + pill.dock_scrub.x())
+    assert xs == sorted(xs)
+
+
+def test_the_upright_pill_reads_top_to_bottom(pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill._update(playing())
+    pill.mouse_entered()
+    stop, chevron, main = pill.pill.shapes[-1][0], pill.pill.shapes[-2][0], pill.pill.shapes[0][0]
+    ys = [stop.y(), chevron.y()]
+    for name in ("back", "toggle", "forward"):
+        ys.append(main.y() + pill.buttons[name][1].y())
+    ys.append(main.y() + pill.dock_scrub.y())
+    assert ys == sorted(ys)
+    assert main.y() + main.height() == pill.pill.height()  # the capsule sits at the bottom, discs above
+
+
+def test_no_pill_after_the_reading_ended(pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill.idle_pill = False
+    pill.hide = lambda: pill.shown.clear()
+    pill._update(playing())
+    pill._update(Status())
+    assert pill.form == "sliver" and pill.shown == []
+    pill.shown.append("sliver")  # a late enter event on a window still thought visible
+    pill.mouse_entered()
+    assert pill.form == "sliver"
+
+
+# -- the idle menu -------------------------------------------------------------------------------
+
+
+def test_the_menu_holds_only_read_selection_in_this_release(pill):
+    pill.show_idle()
+    rest_cy = centre(pill)[1]
+    pill.mouse_entered()
+    assert pill.form == "menu" and pill.content is pill.menu_host and pill._watch is not None
+    x, y, w, h = frame(pill)
+    assert (w, h) == (MENU_W, MENU_DISC) and x == 1440 - DOCK_GAP - MENU_W
+    assert y + h / 2 == pytest.approx(rest_cy, abs=1)
+    assert pill.menu_dictate.isHidden() and pill.menu_history.isHidden() and not pill.menu_read.isHidden()
+    r = pill.menu_read.geometry()
+    assert (r.width(), r.height()) == (MENU_DISC, MENU_DISC)
+    assert r.center().x() + 0.5 == pytest.approx(MENU_W / 2, abs=0.5)
+    settle(pill)
+
+
+def test_the_menu_with_every_feature_matches_the_mac(pill):
+    pill.features = {"dictate": True, "history": True}
+    pill.show_idle()
+    pill.mouse_entered()
+    _x, _y, w, h = frame(pill)
+    assert (w, h) == (MENU_W, MENU_H)
+    d, r, hi = (v.geometry() for v in (pill.menu_dictate, pill.menu_read, pill.menu_history))
+    # bottom to top: the dictate capsule, read selection, history, DOCK_GAP_V apart
+    assert d.y() + d.height() == MENU_H and (d.width(), d.height()) == (CAP_W, MENU_MIC_H)
+    assert r.y() + r.height() + DOCK_GAP_V == d.y() and hi.y() + hi.height() + DOCK_GAP_V == r.y()
+    for item in (d, r, hi):
+        assert item.x() + item.width() / 2 == pytest.approx(MENU_W / 2)
+
+
+def test_the_bottom_menu_is_a_row(pill):
+    pill.features = {"dictate": True, "history": True}
+    pill.dictation_layout = {"dock": "bottom", "y": 0.3}
+    pill.show_idle()
+    rest_cx = centre(pill)[0]
+    pill.mouse_entered()
+    x, y, w, h = frame(pill)
+    assert (w, h) == (MENU_H, MENU_W) and y == 25 + DOCK_GAP and x + w / 2 == pytest.approx(rest_cx, abs=1)
+    d, r, hi = (v.geometry() for v in (pill.menu_dictate, pill.menu_read, pill.menu_history))
+    assert d.x() == 0 and r.x() == d.width() + DOCK_GAP_V and hi.x() == r.x() + r.width() + DOCK_GAP_V
+
+
+@pytest.mark.parametrize(("item", "fired"), [("menu_read", "read_selection"), ("menu_dictate", "dictate"),
+                                             ("menu_history", "history")])
+def test_a_menu_item_closes_the_menu_then_acts(pill, item, fired):
+    pill.features = {"dictate": True, "history": True}
+    pill.show_idle()
+    pill.mouse_entered()
+    seen = []
+    pill.actions[fired] = lambda: seen.append(pill.form)
+    getattr(pill, item).perform_click()
+    assert seen == ["rest"] and pill.form == "rest"
+
+
+def test_leaving_the_menu_shrinks_it_back_to_the_squiggle(clocked):
+    p = clocked
+    p.show_idle()
+    rest = frame(p)
+    p.mouse_entered()
+    settle(p)
+    p._close_menu()
+    settle(p)
+    assert p.form == "rest" and frame(p) == pytest.approx(rest)
+
+
+def test_a_menu_tip_shows_after_a_hover(pill):
+    shown = []
+
+    class Tip:
+        def show_beside(self, anchor, edge, text, key):
+            shown.append((anchor, edge, text, key))
+
+        def hide(self):
+            shown.append("hidden")
+
+    pill.tip = Tip()
+    pill.read_key = "Ctrl+Alt+S"
+    pill.show_idle()
+    pill.mouse_entered()
+    pill._stop_watch()  # the live hover poll would read the real cursor, away from the menu
+    settle(pill)
+    pill.menu_read.set_hover(True, animate=False)
+    pump(0.6)
+    (anchor, edge, text, key), = shown
+    assert (edge, text, key) == ("right", "Read selection", "Ctrl+Alt+S")
+    x, y, w, h = anchor
+    fx, fy, fw, fh = frame(pill)
+    assert (w, h) == (MENU_DISC, MENU_DISC) and fx <= x and x + w <= fx + fw and fy <= y and y + h <= fy + fh
+    pill.menu_read.set_hover(False, animate=False)
+    assert shown[-1] == "hidden"
+
+
+def test_no_tips_without_a_tip_panel(pill):
+    pill.show_idle()
+    pill.mouse_entered()
+    pill._stop_watch()
+    settle(pill)
+    pill.menu_read.set_hover(True, animate=False)
+    pump(0.5)  # nothing to show it on; nothing fails
+
+
+# -- the idle pill dragged ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("open_menu", [False, True])
+def test_dropping_the_idle_pill_snaps_to_the_nearer_edge_and_is_remembered(pill, open_menu):
+    pill.show_idle()
+    if open_menu:
+        pill.mouse_entered()
+    move(pill, 300, 500)
+    pill.drag_began()
+    pill.drag_ended_mac(320, 520)
+    x, y, w, h = frame(pill)
+    assert pill.form == "rest" and (x, w, h) == (0.0, SLIVER_W, SLIVER_H)
+    name, edge, fy = pill.fired[-1]
+    assert (name, edge) == ("dictation_layout", "left")
+    assert fy == pytest.approx(along_fraction(VF, "left", y + h / 2), abs=0.002)
+    assert pill.dictation_layout == {"dock": "left", "y": fy}
+
+
+def test_dropping_the_idle_pill_moves_a_docked_player_too(pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill.show_idle()
+    move(pill, 1300, 500)
+    pill.drag_began()
+    pill.drag_ended_mac(1320, 520)
+    assert pill.fired[-1][:2] == ("layout", "right") and pill.layout["dock"] == "right"
+
+
+@pytest.mark.parametrize(("origin", "edge", "kind"), [
+    ((60, 500), "left", "side"), ((1350, 300), "right", "side"), ((700, 60), "bottom", "flat"),
+    ((5, 880), "left", "side"),  # near a corner: the hint is kept on screen, like the squiggle
+])
+def test_dragging_the_idle_pill_shows_where_it_lands(pill, origin, edge, kind):
+    pill.show_idle()
+    move(pill, *origin)
+    pill.drag_began()
+    pill.drag_moved_mac(*origin)
+    assert pill.zones == [kind] and pill.shown[-1] == "rest"  # the pill stays above the hint
+    zone = pill.flat_zone if kind == "flat" else pill.zone
+    hint = centre(zone)
+    pill.drag_ended_mac(*origin)
+    assert pill.form == "rest" and pill._edge == edge
+    x, y, _w, _h = frame(pill)
+    cx, cy = capsule_centre(edge)
+    assert hint == pytest.approx((x + cx, y + cy), abs=1)  # around the squiggle, where it landed
+
+
+def test_the_idle_pill_moves_between_all_three_docks(pill):
+    pill.show_idle()
+    for origin, edge in (((700, 30), "bottom"), ((15, 500), "left"), ((1420, 500), "right"), ((700, 26), "bottom")):
+        move(pill, *origin)
+        pill.drag_began()
+        pill.drag_ended_mac(*origin)
+        assert pill.form == "rest" and pill._edge == edge and pill.fired[-1][:2] == ("dictation_layout", edge)
+        assert pill.content is pill._kits[edge == "bottom"]["rest"]
+
+
+# -- auto-hide -----------------------------------------------------------------------------------
+
+REST_X = 1440 - SLIVER_W  # the resting squiggle on the right edge, middle: x and centre y
+REST_CY = 25 + 875 / 2
+FAR = (720.0, 460.0)
+NEAR = (REST_X - 60, REST_CY)
+
+
+@pytest.fixture
+def hiding(clocked):
+    """Auto-hide on; hide() takes it off screen as visible() sees it."""
+    p = clocked
+    p.auto_hide = True
+    p.hide = lambda: p.shown.clear()
+    return p
+
+
+def at(p, t):
+    p.clock[0] = t
+    p._auto_tick()
+
+
+def test_auto_hide_shows_at_idle_then_slides_away_after_the_linger(hiding):
+    p = hiding
+    p.show_idle()
+    assert p.form == "rest" and p.shown == ["rest"] and p._auto_watch is not None
+    assert p._auto_watch.interval() == 100
+    settle(p)
+    at(p, 100.0)
+    at(p, 100.0 + LINGER_SECS - 0.01)
+    assert not p._tucked  # far from it, but lingering so a new user sees where it lives
+    at(p, 100.0 + LINGER_SECS)
+    assert p._tucked and p._slide_token is not None
+    x, _y, w, h = frame(p)
+    assert (x, w, h) == (REST_X, SLIVER_W, SLIVER_H)  # the window stays put: the squiggle slides inside it
+    settle(p)
+    assert p.rest.slide == SLIVER_W and p.shown == [] and p.form == "rest" and p._auto_watch is not None
+
+
+def test_auto_hide_reveals_near_keeps_the_menu_and_hides_after_the_delay(hiding):
+    p = hiding
+    p.show_idle()
+    at(p, 100.0)
+    at(p, 103.0)
+    settle(p)
+    assert p._tucked and p.shown == []
+    p.mouse_entered()  # a stale enter on the hidden window
+    assert p.form == "rest"
+
+    p.cursor = NEAR
+    at(p, 104.0)
+    assert not p._tucked and p.shown == ["rest"] and p.form == "rest"
+    settle(p)
+    assert p.rest.slide == 0.0 and frame(p)[0] == REST_X
+    at(p, 110.0)
+    assert not p._tucked  # near: it stays
+
+    p.mouse_entered()
+    assert p.form == "menu"
+    p.cursor = FAR
+    at(p, 120.0)
+    at(p, 130.0)
+    assert p.form == "menu" and not p._tucked  # never while the menu is open
+
+    p._close_menu_now()
+    assert p.form == "rest" and p.shown[-1] == "rest"
+    at(p, 131.0)
+    at(p, 131.0 + HIDE_DELAY - 0.01)
+    assert not p._tucked  # no linger after the menu, only the delay
+    at(p, 131.0 + HIDE_DELAY)
+    assert p._tucked
+
+
+def test_auto_hide_opens_the_menu_when_it_slides_in_under_the_cursor(hiding):
+    p = hiding
+    p.show_idle()
+    at(p, 100.0)
+    at(p, 103.0)
+    p.cursor = (REST_X + 5, REST_CY)
+    at(p, 104.0)  # revealed
+    assert p.form == "rest"
+    at(p, 104.1)  # arrived on it
+    assert p.form == "menu"
+
+
+def test_auto_hide_switched_live(clocked):
+    p = clocked
+    p.show_idle()
+    p.set_auto_hide(True)
+    assert p._auto_watch is not None and p._linger_until == 100.0 + LINGER_SECS
+    p.set_auto_hide(False)
+    assert p._auto_watch is None and p.form == "rest" and not p._tucked
+
+
+def test_a_reading_while_hidden_shows_its_own_form_and_stops_the_watch(hiding):
+    p = hiding
+    p.show_idle()
+    at(p, 100.0)
+    at(p, 103.0)
+    settle(p)
+    assert p._tucked
+    p._update(playing())
+    assert p.form == "card" and p.shown[-1] == "card" and p._auto_watch is None and not p._tucked
+    p._update(Status())  # the reading ended: back, lingering
+    assert p.form == "rest" and p.shown[-1] == "rest" and p._auto_watch is not None
+    assert p._linger_until == 103.0 + LINGER_SECS
+
+
+def test_dropping_the_idle_pill_with_auto_hide_lingers_where_it_landed(hiding):
+    p = hiding
+    p.show_idle()
+    p.clock[0] = 150.0
+    move(p, 300, 500)
+    p.drag_began()
+    at(p, 150.0)
+    assert not p._tucked  # never during a drag
+    p.drag_ended_mac(320, 520)
+    assert p.form == "rest" and p._edge == "left" and p._linger_until == 150.0 + LINGER_SECS
+    at(p, 151.0)
+    assert not p._tucked
+
+
+# -- the resting ripple --------------------------------------------------------------------------
+
+
+def test_the_resting_squiggle_ripples_on_each_tick_while_it_sits_there(pill):
+    pill.show_idle()
+    assert pill._wave_timer is not None and pill._wave_timer.interval() == WAVE_EVERY * 1000
+    pill._wave_tick()
+    assert pill.rest.waving()
+    pill.rest.stop_wave()
+    pill._reduce_motion = lambda: True
+    pill._wave_tick()
+    assert not pill.rest.waving()
+
+
+def test_the_ripple_switched_off_does_not_ripple_and_cuts_one_in_flight(pill):
+    pill.show_idle()
+    pill._wave_tick()
+    pill.set_wave(False)
+    assert not pill.rest.waving() and pill._wave_timer is not None
+    pill._wave_tick()
+    assert not pill.rest.waving()
+    pill.set_wave(True)
+    pill._wave_tick()
+    assert pill.rest.waving()
+
+
+def test_a_drag_a_reading_or_the_menu_cuts_the_ripple(pill):
+    pill.show_idle()
+    pill._wave_tick()
+    pill.drag_began()
+    assert not pill.rest.waving()
+    pill._wave_tick()
+    assert not pill.rest.waving()  # in the hand
+    pill.drag_ended_mac(1420, 460)
+    pill._wave_tick()
+    assert pill.rest.waving()
+    pill.mouse_entered()
+    assert pill.form == "menu" and pill._wave_timer is None and not pill.rest.waving()
+    pill._close_menu_now()
+    assert pill._wave_timer is not None
+    pill._update(playing())
+    assert pill._wave_timer is None
+
+
+# -- threads -------------------------------------------------------------------------------------
+
+
+def test_updates_from_a_worker_are_coalesced_and_drained_once(pill, monkeypatch):
+    from lyssna.ui.qt import mini_player as mp
+
+    queued = []
+    monkeypatch.setattr(mp, "on_main", lambda fn, *a: queued.append((fn, a)))
+
+    def burst():
+        for i in range(50):
+            pill.update(playing(index=i + 1))
+
+    t = threading.Thread(target=burst)
+    t.start()
+    t.join()
+    assert len(queued) == 1
+    fn, args = queued[0]
+    fn(*args)
+    assert pill.form == "card" and pill.progress.text() == "50 of 9"
+    pill.update(playing(index=2))
+    assert len(queued) == 2  # drained: the next snapshot queues again
+
+
+def test_a_worker_update_lands_on_the_gui_thread(pill):
+    seen = []
+    real = pill._update
+    pill._update = lambda st: (seen.append(threading.current_thread() is threading.main_thread()), real(st))
+    t = threading.Thread(target=lambda: [pill.update(playing(index=i + 1)) for i in range(20)])
+    t.start()
+    t.join()
+    pump(until=lambda: bool(seen))
+    pump(0.05)
+    assert seen == [True] and pill.progress.text() == "20 of 9"
+
+
+def test_the_live_status_wins_over_a_stale_snapshot(pill):
+    pill.status_fn = lambda: playing(index=7)
+    pill.update(playing(index=2))
+    assert pill.progress.text() == "7 of 9"
+
+
+def test_dictation_updates_are_stored_and_change_nothing(pill):
+    from lyssna.dictation.types import DictationStatus
+
+    pill.show_idle()
+    before = (pill.form, list(pill.shown), frame(pill))
+    pill.dictation_update(DictationStatus(state="recording", level=0.6))
+    assert pill._dictation.state == "recording" and pill._level == pytest.approx(0.6)
+    assert (pill.form, list(pill.shown), frame(pill)) == before
+
+
+# -- toasts --------------------------------------------------------------------------------------
+
+
+def test_toast_floor_only_on_the_bottom(pill):
+    assert pill.toast_floor() is None  # not on screen
+    pill.show_idle()  # right edge
+    assert pill.toast_floor() is None
+    pill.dictation_layout = {"dock": "bottom", "y": -1.0}
+    pill.show_idle()
+    _, y, _, h = frame(pill)
+    assert pill.toast_floor() == y + h + 12 and pill.toast_floor(gap=20) == y + h + 20
+
+
+# -- the sliver ----------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sliver(qapp):
+    from lyssna.ui.qt.sliver import Sliver
+
+    s = Sliver(None, "left", seed=1)
+    yield s
+    s.hide()
+    s.deleteLater()
+
+
+def test_the_sliver_animates_only_on_screen_and_playing(sliver, monkeypatch):
+    from lyssna.ui.qt import theme
+
+    sliver.set_state(0.4, False, "left", playing=True)
+    assert not sliver.animating()  # not on screen
+    sliver.show()
+    assert sliver.animating()
+    sliver.hide()
+    assert not sliver.animating()  # every animation stops with the view
+    sliver.show()
+    sliver.set_state(0.4, True, "left", playing=False)
+    pump(until=lambda: not sliver.animating())  # paused: the tween and the sparks aloft finish, then nothing
+    monkeypatch.setattr(theme, "reduce_motion", lambda: True)
+    sliver.set_state(0.5, False, "left", playing=True)
+    assert not sliver.animating()  # Reduce Motion: the still state
+
+
+def test_sparks_are_born_while_playing_and_die_out_when_paused(sliver):
+    sliver.set_state(0.5, False, "left", playing=True)
+    for _ in range(90):
+        sliver.advance(1 / 30)
+    assert 3 <= sliver.sparks() <= 12  # about 2.2 a second, living about 2.4 seconds
+    sliver.set_state(0.5, True, "left", playing=False)
+    for _ in range(120):
+        sliver.advance(1 / 30)
+    assert sliver.sparks() == 0
+
+
+def test_the_waterline_eases_and_a_bloom_only_while_playing(sliver):
+    sliver.show()
+    sliver.set_state(0.2, False, "left", playing=True)
+    sliver.advance(1.0)
+    sliver.set_state(0.8, False, "left", playing=True)
+    sliver.advance(0.1)
+    assert 0.2 < sliver._shown < 0.8
+    sliver.advance(0.3)
+    assert sliver._shown == pytest.approx(0.8)
+    sliver.pulse()
+    assert sliver._bloom == 0.0
+    sliver.set_state(0.8, True, "left", playing=False)
+    sliver._bloom = None
+    sliver.pulse()
+    assert sliver._bloom is None
+
+
+def test_the_squiggle_ripples_once_and_ends_at_rest(sliver):
+    from lyssna.ui.qt.sliver import ripple_phase
+    from lyssna.ui.shared.wave import WAVE_SECS
+
+    rest = sliver.squiggle_path()
+    sliver.wave()
+    assert not sliver.waving()  # only at rest
+    sliver.set_rest(True)
+    sliver.wave()
+    assert sliver.waving()
+    sliver.advance(WAVE_SECS / 2)
+    assert sliver.squiggle_path() != rest
+    sliver.advance(WAVE_SECS / 2)
+    assert not sliver.waving() and sliver.squiggle_path() == rest
+    assert ripple_phase(0.0) == 0.0 and ripple_phase(WAVE_SECS) == pytest.approx(0.0)
+    assert sliver.shadow_path().isEmpty()
+
+
+@pytest.mark.parametrize("edge", ["left", "right", "bottom"])
+def test_the_capsule_sits_on_the_inner_side_and_lies_flat_on_the_bottom(qapp, edge):
+    from lyssna.ui.qt.sliver import Sliver
+
+    s = Sliver(None, edge)
+    s.set_state(0.4, False, edge)
+    b = s.shadow_path().boundingRect()
+    if edge == "bottom":
+        assert (b.width(), b.height()) == pytest.approx((CAPSULE_H, CAPSULE_W))
+        assert b.bottom() == pytest.approx(SLIVER_W - CAPSULE_INSET)  # CAPSULE_INSET above the screen edge
+    else:
+        assert (b.width(), b.height()) == pytest.approx((CAPSULE_W, CAPSULE_H))
+        gap = b.left() if edge == "left" else SLIVER_W - b.right()
+        assert gap == pytest.approx(CAPSULE_INSET)
+    s.deleteLater()
+
+
+def test_previews_build(qapp):
+    from lyssna.ui.qt import mini_player as mp
+
+    for name, factory in mp.PREVIEWS.items():
+        w = factory()
+        assert w.width() > 0 and w.height() > 0, name
+        w.hide()
+        w.deleteLater()
+    QCoreApplication.processEvents()

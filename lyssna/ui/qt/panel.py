@@ -120,7 +120,9 @@ def _blur(img: QImage, radius: float) -> QImage:
     """`img` blurred by `radius` logical pixels (QGraphicsBlurEffect's Gaussian-like blur)."""
     dpr = img.devicePixelRatio()
     scene = QGraphicsScene()
-    item = QGraphicsPixmapItem(QPixmap.fromImage(img))
+    pixmap = QPixmap.fromImage(img)
+    pixmap.setDevicePixelRatio(1.0)  # the scene works in device pixels; keeping the ratio shrinks the shadow on scaled displays
+    item = QGraphicsPixmapItem(pixmap)
     effect = QGraphicsBlurEffect()
     effect.setBlurRadius(radius * dpr)
     effect.setBlurHints(QGraphicsBlurEffect.BlurHint.QualityHint)
