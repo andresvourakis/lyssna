@@ -258,6 +258,17 @@ def test_old_mlx_model_setting_is_ignored():
     assert p.model == "kokoro-v1.0-int8"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the Mac model file")
+def test_mac_keeps_the_int8_model():
+    assert kokoro.FILES[0] == kokoro.ModelFile(
+        "kokoro-v1.0.int8.onnx",
+        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.int8.onnx",
+        "ae315a79b623f244700e4afb9246c46a26066782e049ba174bf3ba433970ee9c", 114_119_327)
+    assert kokoro.MODEL_FILE == "kokoro-v1.0.int8.onnx"
+    assert kokoro.DOWNLOAD_SIZE_TEXT == "140 MB" and kokoro.KokoroProvider.setup_hint == "140 MB download"
+    assert "(about 140 MB)" in config.TEMPLATE
+
+
 # -- espeak path guard ---------------------------------------------------------------------
 
 

@@ -175,7 +175,7 @@ if host.IS_WINDOWS:  # the same file, with the Windows places and without the Ma
 # Settings > API Keys). If the chosen provider has no key, Lyssna switches to kokoro automatically.""",
          """# Which voice provider to use: kokoro | inworld | inworld-flash | cartesia | elevenlabs | openai
 # kokoro is free and runs on this PC: your text never leaves it. It downloads its voice once
-# (about 140 MB) the first time it reads. The others are online services that need an API key;
+# (about 200 MB) the first time it reads. The others are online services that need an API key;
 # add one from the Lyssna icon by the clock (Setup… or Settings > API Keys). If the chosen
 # provider has no key, Lyssna switches to kokoro automatically."""),
         ("Change it live from the menu bar or with", "Change it live from the Lyssna icon by the clock or with"),

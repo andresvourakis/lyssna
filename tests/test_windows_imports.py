@@ -79,6 +79,10 @@ SCRIPT = textwrap.dedent(
     assert "Credential Manager" in config.TEMPLATE
     assert "Library/Caches" not in config.TEMPLATE and "Keychain" not in config.TEMPLATE
     assert "[say]" not in config.TEMPLATE and tomllib.loads(config.TEMPLATE)["provider"] == "kokoro"
+    from lyssna.providers import kokoro
+    assert kokoro.MODEL_FILE == "kokoro-v1.0.fp16.onnx" and kokoro.FILES[0] == kokoro.WINDOWS_MODEL
+    assert kokoro.DOWNLOAD_SIZE_TEXT == "200 MB" and kokoro.KokoroProvider.setup_hint == "200 MB download"
+    assert "about 200 MB" in config.TEMPLATE and "140 MB" not in config.TEMPLATE
     for text in (menu.local_only_title(True), menu.LOCAL_HEADER, *menu.KEY_NAMES.values(), providers.REGISTRY["kokoro"].label,
                  session.COPIED, session.NO_MIC, policy.refusal("X"), config.TEMPLATE):
         assert "Mac" not in text and "⌘" not in text, text

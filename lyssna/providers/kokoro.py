@@ -38,13 +38,25 @@ class ModelFile(NamedTuple):
 
 
 _RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
+_RELEASE_V10 = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+MAC_MODEL = ModelFile("kokoro-v1.0.int8.onnx", f"{_RELEASE}/kokoro-v1.0.int8.onnx",
+                      "ae315a79b623f244700e4afb9246c46a26066782e049ba174bf3ba433970ee9c", 114_119_327)
+# Windows uses the half-precision model instead. On an x86 PC (AMD EPYC, 2 cores, onnxruntime CPU)
+# the int8 model took 3.05 seconds of work per second of speech, the full-precision model 0.262 and
+# the half-precision model 0.245. On an Apple silicon Mac the int8 model takes about 0.09, so the Mac
+# keeps it. This is the file from the v1.0 release, the one that was measured; the v1.1 release has a
+# different fp16 file of another size.
+WINDOWS_MODEL = ModelFile("kokoro-v1.0.fp16.onnx", f"{_RELEASE_V10}/kokoro-v1.0.fp16.onnx",
+                          "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204", 177_464_787)
 FILES: list[ModelFile] = [
-    ModelFile("kokoro-v1.0.int8.onnx", f"{_RELEASE}/kokoro-v1.0.int8.onnx",
-              "ae315a79b623f244700e4afb9246c46a26066782e049ba174bf3ba433970ee9c", 114_119_327),
+    WINDOWS_MODEL if host.IS_WINDOWS else MAC_MODEL,
     ModelFile("voices-v1.0.bin", f"{_RELEASE}/voices-v1.0.bin",
               "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d", 28_214_398),
 ]
 MODEL_FILE, VOICES_FILE = (f.name for f in FILES)
+# The download size as the app says it: the pinned sizes in MiB, rounded to 10 ("140 MB" on the
+# Mac, "200 MB" on Windows).
+DOWNLOAD_SIZE_TEXT = f"{round(sum(f.size for f in FILES) / 2**20, -1):.0f} MB"
 
 DATA_DIR = config.STATE_DIR / "kokoro"  # tests point this into a temp dir
 
@@ -261,7 +273,7 @@ class KokoroProvider(Provider):
     label = f"On this {host.DEVICE} (Kokoro)"
     needs_key = False
     sends_text_off_device = False
-    setup_hint = "140 MB download"
+    setup_hint = f"{DOWNLOAD_SIZE_TEXT} download"
     max_chars = 1500
     price_per_million = 0.0
     default_voice = "af_heart"

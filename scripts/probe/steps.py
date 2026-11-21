@@ -328,8 +328,8 @@ def step_voice(ctx):
     except Exception as e:
         rec.error("windows voice", e)
     ui.set_body("Lyssna also has its own voice, which sounds more natural. Testing it needs a one-time download "
-                "of 140 MB from the internet.")
-    choice = yield Ask("Download the Lyssna voice (140 MB) and test it?", choices=("Yes", "Skip"),
+                "of 200 MB from the internet.")
+    choice = yield Ask("Download the Lyssna voice (200 MB) and test it?", choices=("Yes", "Skip"),
                        key="Download the Lyssna voice?")
     if choice == "Yes":
         try:

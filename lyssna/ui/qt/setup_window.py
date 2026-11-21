@@ -584,7 +584,7 @@ class SetupWindow(LyssnaWindow):
         self.head1 = Label("Voice", c, size=14, weight="semibold")
         self.radio_local = Radio(f"On this {self.device}", c)
         self.local_tag = Tag("Free and private", privacy_symbol(True), c)
-        self.local_note = Label(f"Your text stays on this {self.device}. One download of about 140 MB.", c, size=12,
+        self.local_note = Label(f"Your text stays on this {self.device}. One download of about {kokoro.DOWNLOAD_SIZE_TEXT}.", c, size=12,
                                 color=theme.content_dim, wrap=True)
         self.download = _pill("Download", c, self.on_download)
         self.progress = ProgressBar(c)  # the player's bar, not the blue system one
