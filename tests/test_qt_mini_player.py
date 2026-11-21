@@ -51,6 +51,15 @@ def qapp():
     return app or QApplication(["lyssna-tests"])
 
 
+@pytest.fixture(autouse=True)
+def animations_on(monkeypatch):
+    """These tests are about motion, so the machine's own setting must not decide them: GitHub's
+    Windows machine has animation effects off. A test about reduced motion patches it back."""
+    from lyssna.ui.qt import theme
+
+    monkeypatch.setattr(theme, "reduce_motion", lambda: False)
+
+
 def pump(seconds: float = 0.0, until=None) -> None:
     """Run the Qt event loop for `seconds`, or until `until()` holds (up to five seconds: an
     animation on a busy CI machine is slower, and a fast machine returns as soon as it ends)."""
