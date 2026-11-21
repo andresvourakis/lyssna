@@ -184,7 +184,11 @@ def test_level_callbacks_arrive_while_recording():
     levels = []
     rec.start(on_level=levels.append)
     src.push(tone(300, 16000, 0.1, 0.3))
-    time.sleep(0.2)
+    # The meter thread ticks every 1/LEVEL_HZ s; on a busy CI machine it can be late, so wait for
+    # two ticks (bounded) rather than sleeping a fixed time.
+    deadline = time.monotonic() + 3.0
+    while len(levels) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
     rec.stop()
     count = len(levels)
     assert count >= 2 and max(levels) > 0.3

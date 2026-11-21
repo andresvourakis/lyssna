@@ -309,16 +309,18 @@ def test_com_thread_runs_jobs_and_passes_errors():
 
 def test_com_thread_times_out_and_refuses_while_stuck():
     release = threading.Event()
-    com = capture._ComThread(init=lambda: None, timeout=0.1)
+    com = capture._ComThread(init=lambda: None, timeout=0.4)
     with pytest.raises(TimeoutError):
         com.call(release.wait)
     time.sleep(0.05)
     start = time.monotonic()
     with pytest.raises(TimeoutError):
         com.call(lambda: 1)
-    assert time.monotonic() - start < 0.05  # refused at once, not queued
+    assert time.monotonic() - start < 0.2  # refused at once, not after waiting out the timeout
     release.set()
-    time.sleep(0.05)
+    deadline = time.monotonic() + 3.0  # the worker frees itself once the stuck call returns
+    while com._busy_since is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert com.call(lambda: 2) == 2
 
 
