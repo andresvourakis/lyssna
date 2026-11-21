@@ -12,10 +12,14 @@ from PySide6.QtCore import QCoreApplication
 
 from lyssna.player import Status
 from lyssna.ui.layout.pill import (
+    BUTTON_HIT,
     CAP_W,
+    COMPACT_H,
     DOCK_GAP,
     DOCK_GAP_V,
     DOCK_W,
+    FREE_H,
+    GROW_SECS,
     HIDE_DELAY,
     HOVER_OUT_DELAY,
     LINGER_SECS,
@@ -81,6 +85,10 @@ def pill(qapp, monkeypatch):
     p._cancel_anim()
     p._stop_auto_watch()
     p._stop_wave_timer()
+    for kit in p._kits.values():
+        kit["wave"].stop()
+    if p._grow_anim is not None:
+        p._grow_anim.stop()
     for panel in (p, p.zone, p.flat_zone):
         panel.panel.hide()
         panel.panel.deleteLater()
@@ -803,14 +811,329 @@ def test_the_live_status_wins_over_a_stale_snapshot(pill):
     assert pill.progress.text() == "7 of 9"
 
 
-def test_dictation_updates_are_stored_and_change_nothing(pill):
+# -- dictation -----------------------------------------------------------------------------------
+# The dictation half of legacy/test_dictation_pill.py, on the Qt player.
+
+
+@pytest.fixture
+def dictating(pill):
+    """The player with dictation switched on, as the app does once it ships."""
+    pill.features = {"dictate": True, "history": False}
+    return pill
+
+
+def grown(p):
+    pump(until=lambda: p._grow_anim is None)
+
+
+def size(w):
+    return (w.width(), w.height())
+
+
+def box(view, ancestor):
+    """A widget's rect inside an ancestor, Qt coordinates (y down)."""
+    from PySide6.QtCore import QPoint
+
+    o = view.mapTo(ancestor, QPoint(0, 0))
+    return (o.x(), o.y(), view.width(), view.height())
+
+
+def test_dictation_forms(dictating):
+    p = dictating
+    p.show_idle()
+    p._set_dictation("recording")
+    assert p.form == "dictate" and p.content is p.dictate_host and p.shown[-1] == "dictate"
+    x, _, w, h = frame(p)
+    assert (w, h) == (CAP_W, FREE_H) and x == pytest.approx(1440 - CAPSULE_INSET - CAP_W, abs=1)
+    assert size(p.dictate_capsule) == (CAP_W, COMPACT_H)
+    assert p.wave.running() and p.wave.mode == "recording"
+    assert p.draggable is False  # a drag would fight push-to-talk
+    assert p.cancel_btn.isHidden() and p.finish_btn.isHidden()
+    assert p.margin > 0  # the capsule casts a shadow
+
+    p._set_dictation("locked")
+    grown(p)
+    assert p.hands_free and size(p.dictate_capsule) == (CAP_W, FREE_H)
+    assert not p.cancel_btn.isHidden() and not p.finish_btn.isHidden()
+    assert p.cancel_btn.alpha == p.finish_btn.alpha == 1.0
+    p.finish_btn.perform_click()
+    p.cancel_btn.perform_click()
+    assert p.fired == [("dictate_stop",), ("dictate_cancel",)]
+
+    p._set_dictation("working")
+    grown(p)
+    assert not p.hands_free and size(p.dictate_capsule) == (CAP_W, COMPACT_H)
+    assert p.cancel_btn.isHidden() and p.finish_btn.isHidden()
+    assert p.wave.mode == "working" and p.form == "dictate" and p.wave.running()
+
+    p._set_dictation("idle")
+    assert p.form == "rest" and not p.wave.running() and p.draggable is True
+
+
+def test_the_capsule_grows_about_its_centre_with_easy_buttons(dictating):
+    p = dictating
+    p._set_dictation("recording")
+    c = p.dictate_capsule.geometry()
+    centre = c.y() + c.height() / 2
+    p._set_dictation("locked")
+    grown(p)
+    c = p.dictate_capsule.geometry()
+    assert c.y() + c.height() / 2 == pytest.approx(centre) and c.y() == 0
+    _, y, w, h = box(p.cancel_disc, p.dictate_capsule)
+    assert (w, h) == (22, 22) and y == 6                         # 6 pt from the top
+    _, y, w, h = box(p.finish_disc, p.dictate_capsule)
+    assert (w, h) == (24, 24) and FREE_H - (y + h) == 5          # 5 pt from the bottom
+    for btn, disc in ((p.cancel_btn, p.cancel_disc), (p.finish_btn, p.finish_disc)):
+        assert size(btn) == (CAP_W, BUTTON_HIT)  # the click area, bigger than the disc
+        assert btn.shape_rect().center() == disc.geometry().toRectF().center()
+    cx = box(p.wave, p.dictate_capsule)
+    assert cx[0] + cx[2] / 2 == CAP_W / 2 and cx[1] + cx[3] / 2 == FREE_H / 2  # the wave stays in the middle
+
+
+def test_the_growth_animates_over_grow_secs_and_fades_the_buttons(dictating, monkeypatch):
+    p = dictating
+    p._set_dictation("recording")
+    p._set_dictation("locked")
+    anim = p._grow_anim
+    assert anim is not None and anim.duration() == round(GROW_SECS * 1000)
+    assert not p.cancel_btn.isHidden() and p.cancel_btn.alpha < 1.0  # shown at once, fading in
+    assert p.dictate_host.shadow_rect.height() == COMPACT_H  # the shadow waits for the end, as on the Mac
+    pump(until=lambda: COMPACT_H < p.dictate_capsule.height() < FREE_H)
+    grown(p)
+    assert p.dictate_capsule.height() == FREE_H and p.dictate_host.shadow_rect.height() == FREE_H
+    p._set_dictation("working")
+    assert not p.finish_btn.isHidden()  # fading out first
+    grown(p)
+    assert p.finish_btn.isHidden() and p.finish_btn.alpha == 0.0
+
+    from lyssna.ui import theme
+
+    monkeypatch.setattr(theme, "reduce_motion", lambda: True)
+    p._set_dictation("locked")
+    assert p._grow_anim is None and p.dictate_capsule.height() == FREE_H and p.finish_btn.alpha == 1.0
+
+
+def test_dictation_on_the_bottom_edge_runs_left_to_right(dictating):
+    from lyssna.ui.layout.wave import WAVE_H, WAVE_W
+
+    p = dictating
+    p.dictation_layout = {"dock": "bottom", "y": -1.0}
+    p.show_idle()
+    p._set_dictation("recording")
+    x, y, w, h = frame(p)
+    assert (w, h) == (FREE_H, CAP_W) and y == pytest.approx(25 + CAPSULE_INSET, abs=1)
+    assert x + w / 2 == pytest.approx(720, abs=1)
+    assert p.dictate_host is p._kits[True]["dictate_host"]
+    assert size(p.dictate_capsule) == (COMPACT_H, CAP_W)
+    assert p.wave.horizontal and size(p.wave) == (WAVE_H, WAVE_W)
+    p._set_dictation("locked")
+    grown(p)
+    c = p.dictate_capsule.geometry()
+    assert (c.width(), c.height(), c.x()) == (FREE_H, CAP_W, 0)
+    cancel, finish = box(p.cancel_disc, p.dictate_capsule), box(p.finish_disc, p.dictate_capsule)
+    assert cancel[0] == 6 and cancel[2] == 22                    # cancel at the left
+    assert FREE_H - (finish[0] + finish[2]) == 5                 # finish at the right
+    for btn in (p.cancel_btn, p.finish_btn):
+        assert size(btn) == (BUTTON_HIT, CAP_W)
+    p._set_dictation("working")
+    grown(p)
+    assert size(p.dictate_capsule) == (COMPACT_H, CAP_W)
+    p._set_dictation("idle")
+    assert p.form == "rest" and p.rest.edge == "bottom"
+
+
+def test_a_dictation_during_a_card_reading_brings_the_card_back(dictating):
+    p = dictating
+    p._update(playing())
+    assert p.form == "card"
+    before = frame(p)
+    p._set_dictation("recording")
+    assert p.form == "dictate" and p.content is p.dictate_host  # one pill: the card is gone
+    p._update(playing(state="paused"))  # the reading paused meanwhile
+    assert p.form == "dictate"
+    p._set_dictation("working")
+    p._set_dictation("idle")
+    assert p.form == "card" and frame(p) == pytest.approx(before, abs=1)
+    assert all(b.icon == "play.fill" for b in p.buttons["toggle"])  # still paused
+
+
+def test_a_dictation_during_a_docked_reading_uses_the_dock_edge(dictating):
+    p = dictating
+    p.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    p._update(playing())
+    assert p.form == "sliver" and p.dock == "left"
+    sliver = frame(p)
+    p._set_dictation("recording")
+    x, y, _w, h = frame(p)
+    assert x == pytest.approx(CAPSULE_INSET, abs=1)
+    assert y + h / 2 == pytest.approx(sliver[1] + sliver[3] / 2, abs=1)  # the same height as the dock
+    p._set_dictation("idle")
+    assert p.form == "sliver" and frame(p) == pytest.approx(sliver, abs=1)
+
+
+def test_a_dictation_over_the_open_pill_gives_back_the_sliver(dictating):
+    p = dictating
+    p.layout = {"dock": "right", "x": 0.0, "y": 0.5}
+    p._update(playing())
+    sliver = frame(p)
+    p.mouse_entered()
+    assert p.form == "pill"
+    p._set_dictation("recording")
+    assert p.form == "dictate" and p._watch is None and p._pending_done is None
+    p._set_dictation("idle")
+    assert p.form == "sliver" and frame(p) == pytest.approx(sliver, abs=1)
+
+
+def test_a_reading_that_ends_during_a_dictation_leaves_the_idle_pill(dictating):
+    p = dictating
+    p._update(playing())
+    p._set_dictation("recording")
+    p._update(Status())
+    assert p.form == "dictate" and p._reading_spot is None
+    p._set_dictation("idle")
+    assert p.form == "rest"
+
+
+def test_no_menu_and_no_ripple_during_a_dictation(dictating):
+    p = dictating
+    p.show_idle()
+    assert p._wave_timer is not None
+    p._set_dictation("recording")
+    assert p._wave_timer is None
+    p.mouse_entered()
+    assert p.form == "dictate"
+    p._set_dictation("idle")
+    assert p.form == "rest" and p._wave_timer is not None
+
+
+def test_a_dictation_while_hidden_shows_its_form_and_stops_the_watch(dictating):
+    p = dictating
+    p.auto_hide = True
+    p.clock = [100.0]
+    p._now = lambda: p.clock[0]
+    p._cursor = lambda: FAR
+    p.hide = lambda: p.shown.clear()
+    p.show_idle()
+    at(p, 100.0)
+    at(p, 100.0 + LINGER_SECS)
+    settle(p)
+    assert p._tucked and p.shown == []
+    p._set_dictation("recording")
+    assert p.form == "dictate" and p.shown[-1] == "dictate" and p._auto_watch is None and not p._tucked
+    p._set_dictation("idle")
+    assert p.form == "rest" and p._auto_watch is not None and not p._tucked
+
+
+def test_level_updates_do_not_flood_the_gui_thread(dictating, monkeypatch):
+    from lyssna.dictation.types import DictationStatus
+    from lyssna.ui import mini_player as mp
+
+    p = dictating
+    queued = []
+    monkeypatch.setattr(mp, "_post", lambda fn: queued.append(fn))
+
+    def burst():
+        for i in range(50):
+            p.dictation_update(DictationStatus(state="recording", level=i / 50))
+
+    t = threading.Thread(target=burst)
+    t.start()
+    t.join()
+    assert len(queued) == 1 and p._level == pytest.approx(49 / 50)
+    queued[0]()
+    assert p.form == "dictate"
+    p.dictation_update(DictationStatus(state="recording", level=0.2))
+    assert len(queued) == 1  # same state: only the level is stored
+    p.dictation_update(DictationStatus(state="locked", level=0.2))
+    p.dictation_update(DictationStatus(state="idle"))
+    assert len(queued) == 2  # two changes before the drain: one hop, and the latest wins
+    queued[1]()
+    assert p.form == "rest" and p.dictation_state == "idle"
+
+
+def test_a_dictation_update_never_runs_inline(dictating):
     from lyssna.dictation.types import DictationStatus
 
+    p = dictating
+    p.show_idle()
+    p.dictation_update(DictationStatus(state="recording", level=0.4))  # on the GUI thread itself
+    assert p.form == "rest"  # posted, not run inside the caller (it may be a key hook)
+    pump(until=lambda: p.form == "dictate")
+    t = threading.Thread(target=lambda: p.dictation_update(DictationStatus(state="idle")))
+    t.start()
+    t.join()
+    pump(until=lambda: p.form == "rest")
+
+
+def test_with_dictation_off_a_status_changes_nothing(pill, monkeypatch):
+    from lyssna.dictation.types import DictationStatus
+    from lyssna.ui import mini_player as mp
+
+    queued = []
+    monkeypatch.setattr(mp, "_post", lambda fn: queued.append(fn))
     pill.show_idle()
     before = (pill.form, list(pill.shown), frame(pill))
     pill.dictation_update(DictationStatus(state="recording", level=0.6))
-    assert pill._dictation.state == "recording" and pill._level == pytest.approx(0.6)
-    assert (pill.form, list(pill.shown), frame(pill)) == before
+    assert queued == [] and pill._level == pytest.approx(0.6)
+    pill._set_dictation("recording")  # even reached directly, the form never shows
+    assert (pill.form, list(pill.shown), frame(pill)) == before and pill.dictation_state == "idle"
+
+
+def test_wave_reads_the_stored_level_and_breathes_while_working(dictating):
+    from lyssna.ui.layout.wave import AMP_MAX, WORK_AMP
+
+    p = dictating
+    p._set_dictation("recording")
+    p.wave.stop()
+    p._level = 1.0
+    p.wave._last = 0.0
+    for i in range(1, 30):
+        p.wave.tick(i / 30)
+    assert p.wave.amplitude == pytest.approx(AMP_MAX, abs=0.1) and p.wave.opacity == 1.0
+    p._set_dictation("working")
+    p.wave._breath_start = 1.0
+    seen = set()
+    for i in range(30, 120):
+        p.wave.tick(i / 30)
+        seen.add(round(p.wave.opacity, 2))
+    assert p.wave.amplitude == pytest.approx(WORK_AMP, abs=0.1)
+    assert min(seen) < 0.6 and max(seen) > 0.95  # it breathes
+
+
+@pytest.mark.parametrize(("btn", "text", "key"), [("finish_btn", "Finish", "Ctrl+Win"), ("cancel_btn", "Cancel", "esc")])
+def test_hands_free_tips(dictating, btn, text, key):
+    shown = []
+
+    class Tip:
+        def show_beside(self, anchor, edge, text, key):
+            shown.append((anchor, edge, text, key))
+
+        def hide(self):
+            shown.append("hidden")
+
+    p = dictating
+    p.tip = Tip()
+    p.key_name = "Ctrl+Win"
+    p._set_dictation("recording")
+    p._set_dictation("locked")
+    grown(p)
+    button = getattr(p, btn)
+    button.set_hover(True, animate=False)
+    pump(0.6)
+    (anchor, edge, t, k), = shown
+    assert (edge, t, k) == ("right", text, key)
+    disc = p.finish_disc if btn == "finish_btn" else p.cancel_disc
+    assert anchor[2:] == (disc.width(), disc.height())  # beside the disc, not the whole strip
+    button.perform_click()
+    assert shown[-1] == "hidden"
+
+
+def test_toast_floor_above_a_bottom_dictation(dictating):
+    p = dictating
+    p.dictation_layout = {"dock": "bottom", "y": -1.0}
+    p._set_dictation("recording")
+    _, y, _, h = frame(p)
+    assert p.toast_floor() == y + h + 12
 
 
 # -- toasts --------------------------------------------------------------------------------------

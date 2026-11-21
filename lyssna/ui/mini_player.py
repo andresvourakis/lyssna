@@ -11,13 +11,20 @@ One window, one form in it at a time, every switch through _show_form:
              auto-hide it slides out of sight until the cursor comes near
     menu     the squiggle hovered: the buttons for the features this release has (feature list
              in `features`); Read selection always, Dictate and History when switched on
-    dictate  the dictation capsule: not in this release (task D5); pick_form keeps its slot
+    dictate  the dictation capsule on a screen edge with the wave meter; hands-free it grows a
+             cancel and a finish button; while the speech is turned into text the wave breathes.
+             Only with features["dictate"] on: switched off, a dictation status changes nothing
 
 The card drags freely and never docks by dragging; its tuck button docks it on the nearest edge.
 A docked sliver or pill dragged near an edge docks there, and dropped away from every edge opens
 the card at that spot. The idle squiggle snaps to the nearest edge. Places are saved through the
 `layout` and `dictation_layout` actions as the same fractions the Mac saves, so a config file means
 the same spot on either system.
+
+Dictation wins, as on the Mac: when one starts during a reading its form goes away, and when it
+ends the reading form comes back where it was, still paused (the app pauses it). The dictation
+form sits on the edge pick_form and dictation_spot name: the docked player's, else the idle
+form's own saved spot, else the bottom centre.
 
 Coordinates: the rules in layout/pill.py work in Mac-style rectangles (y up from the bottom of the
 primary screen). So does this file, almost line for line with the Mac's: frames go through
@@ -28,8 +35,8 @@ on the Mac.
 
 Motion: the hover growth scales a picture of the pill or the menu inside a window already sized
 for the open form (the Mac scales a layer the same way), the auto-hide slide moves the squiggle
-inside a window that stays put and clips it at the screen edge, and nothing resizes a window per
-frame. Window frames never animate."""
+inside a window that stays put and clips it at the screen edge, the dictation capsule grows inside a
+window already FREE_H long, and nothing resizes a window per frame. Window frames never animate."""
 
 from __future__ import annotations
 
@@ -50,9 +57,14 @@ from . import coords, theme
 from .layout.pill import (
     AUTO_HIDE_POLL,
     BADGE,
+    BUTTON_HIT,
+    CANCEL_D,
+    CANCEL_TOP,
+    CAP_W,
     CLOSE,
     CLOSE_GAP,
     CLOSE_TOP,
+    COMPACT_H,
     DICTATING,
     DISC,
     DOCK_BAR,
@@ -62,6 +74,10 @@ from .layout.pill import (
     DOCK_SKIP,
     DOCK_W,
     DOCKS,
+    FINISH_BOTTOM,
+    FINISH_D,
+    FREE_H,
+    GROW_SECS,
     HIDE_DELAY,  # noqa: F401  (re-exported for the tests)
     HOVER_OUT_DELAY,
     HOVER_POLL,
@@ -102,10 +118,11 @@ from .layout.pill import (
     snap_edge,
     tuck_due,
 )
-from .layout.wave import BAR_H, CAPSULE_H, CAPSULE_INSET, CAPSULE_W, SLIVER_H, SLIVER_W
-from .mainthread import on_main
+from .layout.wave import BAR_H, CAPSULE_H, CAPSULE_INSET, CAPSULE_W, SLIVER_H, SLIVER_W, WAVE_H, WAVE_W
+from .mainthread import is_main_thread, on_main
 from .panel import FloatingPanel
 from .sliver import EASE_IN, EASE_OUT, Sliver
+from .wave import WaveView
 from .widgets import HoverView, IconButton, ScrubBar, rounded
 
 log = logging.getLogger("lyssna.ui.player")
@@ -144,6 +161,16 @@ def _left_button_down() -> bool:
         except Exception:
             return False
     return bool(QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+
+
+def _post(fn: Callable[[], None]) -> None:
+    """Run fn on the GUI thread on a later turn of the event loop, never inline (the Mac posts to
+    its main queue the same way): a dictation status may arrive from inside a key hook, which
+    must return at once."""
+    if is_main_thread():
+        QTimer.singleShot(0, fn)
+    else:
+        on_main(fn)
 
 
 def _place(widget: QWidget, rect, parent_h: float) -> None:
@@ -348,6 +375,46 @@ class ScaleHost(QWidget):
         return self._transform(self.shadow_scale).map(path)
 
 
+class FadeButton(IconButton):
+    """The dictation capsule's cancel and finish: a disc inside a longer click strip that fades
+    in and out with the hands-free capsule (the Mac animates the strip's alphaValue)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.alpha = 0.0
+
+    def set_alpha(self, alpha: float) -> None:
+        self.alpha = max(0.0, min(1.0, float(alpha)))
+        self.update()
+
+    def paintEvent(self, ev) -> None:
+        if self.alpha <= 0.0:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setOpacity(self.alpha)
+        self.paint_shape(p)
+        self.paint_content(p)
+        p.end()
+
+
+class DictateHost(QWidget):
+    """The dictate form: a transparent strip FREE_H long that holds the capsule centred in it, so
+    the capsule grows about its centre without the window changing size. The shadow follows the
+    capsule's settled size (set by _settle_dictate), as the Mac invalidates its shadow only when
+    the growth ends."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.capsule: QWidget | None = None
+        self.shadow_rect = QRectF()
+
+    def shadow_path(self) -> QPainterPath:
+        if self.shadow_rect.isEmpty():
+            return QPainterPath()
+        return rounded(self.shadow_rect, CAP_W / 2)
+
+
 class DropZone(FloatingPanel):
     """Faint content-coloured pill shown on a side edge while a drag hovers near it."""
 
@@ -373,7 +440,8 @@ class FlatDropZone(DropZone):
 
 # The widgets that exist once per orientation; _orient points these attributes at one set.
 ORIENTED = ("pill", "pill_host", "dock_scrub", "chevron", "sliver", "rest", "menu", "menu_host", "menu_dictate",
-            "menu_read", "menu_history", "menu_hovers")
+            "menu_read", "menu_history", "menu_hovers", "dictate_host", "dictate_capsule", "wave", "cancel_btn",
+            "cancel_disc", "finish_btn", "finish_disc")
 
 
 class MiniPlayer(FloatingPanel):
@@ -414,15 +482,19 @@ class MiniPlayer(FloatingPanel):
         self.key_name = "fn"                          # the dictation key, as shown in the tips
         self.read_key = ""                            # the read-selection hotkey, as shown in its tip
         self.dictation_layout = {"dock": "", "y": -1.0}  # the idle pill's own spot (player not docked)
-        self.dictation_state = "idle"                 # always idle until dictation ships (D5)
-        self.features = {"dictate": False, "history": False}  # the idle menu's switchable items
+        self.dictation_state = "idle"                 # the session state the window shows
+        self.hands_free = False
+        self.features = {"dictate": False, "history": False}  # the idle menu's items, and dictation itself
         self.tip = None                               # the tooltip pill (show_beside, hide), set by the wiring
         self._tip_token = None
         self._tip_up = False
-        self._level = 0.0
+        self._level = 0.0                             # latest microphone level; the wave's timer reads it
         self._dlock = threading.Lock()
-        self._dictation = None                        # the latest DictationStatus, stored for D5
-        self._edge = "bottom"                         # the edge the idle form is on
+        self._dqueued = "idle"                        # newest state handed to the GUI thread
+        self._dpending = False
+        self._reading_spot = None                     # where the reading form was when a dictation took over
+        self._grow_anim: QVariantAnimation | None = None  # the hands-free growth or shrink
+        self._edge = "bottom"                         # the edge the idle and dictation forms are on
         self._rest_anchor = (0.0, 0.0)                # (edge coord, centre along) of the resting squiggle
         self._menu_len = 0.0                          # the open menu's length along the edge
         self.auto_hide = True                         # ui.auto_hide: the resting squiggle hides until the cursor comes near
@@ -534,7 +606,10 @@ class MiniPlayer(FloatingPanel):
         self.menu = Shapes(self.panel)
         self.build_menu(self.menu, flat)
         self.menu_host = ScaleHost(self.panel, self.menu)
-        for view in (self.pill_host, self.sliver, self.rest, self.menu_host):
+        self.dictate_host = DictateHost(self.panel)
+        self.dictate_host.resize(*(round(v) for v in oriented(FREE_H, CAP_W, edge)))
+        self.build_dictate(self.dictate_host, flat)
+        for view in (self.pill_host, self.sliver, self.rest, self.menu_host, self.dictate_host):
             view.hide()
         return {name: getattr(self, name) for name in ORIENTED}
 
@@ -629,6 +704,61 @@ class MiniPlayer(FloatingPanel):
                                  self._menu_history, "History", lambda: "")
         self._layout_menu_kit(content, flat)
 
+    def build_dictate(self, host: DictateHost, flat: bool) -> None:
+        """Dictating: a capsule centred in the FREE_H long host. Compact it is COMPACT_H long with
+        only the wave; hands-free it grows to FREE_H about its centre and shows cancel (top, or
+        left when flat) and finish (bottom, or right). Each button keeps its distance to its own
+        end of the capsule as it grows (_lay_dictate), and the capsule clips them. Each button's
+        click area is a strip BUTTON_HIT long across the whole capsule, around its smaller disc."""
+        T = CAP_W
+        capsule = Surface(host, T / 2)
+        capsule.length = COMPACT_H
+        host.capsule = capsule
+        wave = WaveView(capsule, horizontal=flat)
+        wave.level_fn = lambda: self._level
+
+        def button(d: float, fill, glow, icon: str, size: float, tint, clicked, tip: str, key_fn):
+            btn = FadeButton(icon, capsule, diameter=d, fill=fill, glow=glow, icon_size=size, icon_color=tint,
+                             weight="bold", clicked=clicked)
+            btn.resize(*(round(v) for v in oriented(BUTTON_HIT, T, "bottom" if flat else "left")))
+            disc = QWidget(btn)  # the disc's own rect: the tip sits beside it, as on the Mac
+            disc.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            r = btn.shape_rect()
+            disc.setGeometry(round(r.x()), round(r.y()), round(r.width()), round(r.height()))
+            btn.on_hover = lambda on: self._hover_tip(on, disc, tip, key_fn)
+            btn.hide()
+            return btn, disc
+
+        self.cancel_btn, self.cancel_disc = button(CANCEL_D, theme.fill_soft, None, "xmark", 9.0, theme.content_dim,
+                                                   self._dictate_cancel, "Cancel", lambda: "esc")
+        self.finish_btn, self.finish_disc = button(FINISH_D, theme.content, theme.white_glow, "checkmark", 11.0,
+                                                   theme.surface, self._dictate_finish, "Finish", lambda: self.key_name)
+        self.dictate_capsule, self.wave = capsule, wave
+        kit = {"dictate_host": host, "dictate_capsule": capsule, "wave": wave, "cancel_btn": self.cancel_btn,
+               "finish_btn": self.finish_btn}
+        self._lay_dictate(kit, flat, COMPACT_H, 0.0)
+        self._settle_dictate(kit)
+
+    def _lay_dictate(self, kit: dict, flat: bool, length: float, alpha: float) -> None:
+        """The dictate capsule `length` long, centred in its host, with the wave in its middle and
+        cancel and finish (at `alpha`) each the same distance from its own end as when compact."""
+        T = CAP_W
+        capsule = kit["dictate_capsule"]
+        capsule.length = length
+        _place(capsule, lay((FREE_H - length) / 2, length, 0, T, FREE_H, flat), T if flat else FREE_H)
+        inner_h = T if flat else length
+        _place(kit["wave"], lay((length - WAVE_H) / 2, WAVE_H, (T - WAVE_W) / 2, WAVE_W, length, flat), inner_h)
+        cancel_at = length - CANCEL_TOP - CANCEL_D - (BUTTON_HIT - CANCEL_D) / 2
+        finish_at = FINISH_BOTTOM - (BUTTON_HIT - FINISH_D) / 2
+        for btn, along in ((kit["cancel_btn"], cancel_at), (kit["finish_btn"], finish_at)):
+            _place(btn, lay(along, BUTTON_HIT, 0, T, length, flat, flip=True), inner_h)
+            btn.set_alpha(alpha)
+
+    def _settle_dictate(self, kit: dict) -> None:
+        """The growth ended: the shadow takes the capsule's new size."""
+        kit["dictate_host"].shadow_rect = QRectF(kit["dictate_capsule"].geometry())
+        self.panel.update()
+
     def _menu_items(self) -> list[tuple[str, float, float]]:
         """The idle menu's items in order (name, length along, thickness across), only the ones on."""
         items = [("dictate", MENU_MIC_H, MENU_MIC_W), ("read", MENU_DISC, MENU_DISC), ("history", MENU_DISC, MENU_DISC)]
@@ -717,6 +847,14 @@ class MiniPlayer(FloatingPanel):
     def _menu_history(self) -> None:
         self._close_menu_now()
         self._fire("history")
+
+    def _dictate_cancel(self) -> None:
+        self._hide_tip()
+        self._fire("dictate_cancel")
+
+    def _dictate_finish(self) -> None:
+        self._hide_tip()
+        self._fire("dictate_stop")
 
     def _dock_side(self) -> None:
         """Collapse the card onto the nearest edge of the screen it's on."""
@@ -851,8 +989,8 @@ class MiniPlayer(FloatingPanel):
             self._watch = None
 
     def form_edge(self, name: str | None = None) -> str:
-        """The edge a form sits on: the dock for the reading's docked forms, the idle (and later
-        dictation) edge for those; "" for the card."""
+        """The edge a form sits on: the dock for the reading's docked forms, the idle and
+        dictation edge for those; "" for the card."""
         name = name or self.form
         if name in ("sliver", "pill"):
             return self.dock
@@ -862,8 +1000,10 @@ class MiniPlayer(FloatingPanel):
 
     def _show_form(self, name: str) -> None:
         """The one way the window changes form: put that form's widget in and nothing else. A
-        docked form comes from the widget set for its edge's orientation. The dictate form arrives
-        with dictation (task D5): pick_form already names it, and its widget slots in here."""
+        docked form comes from the widget set for its edge's orientation."""
+        if name != "dictate":
+            for kit in self._kits.values():
+                kit["wave"].stop()
         if name != "menu":
             for kit in self._kits.values():
                 for hv in kit["menu_hovers"]:
@@ -871,10 +1011,8 @@ class MiniPlayer(FloatingPanel):
         edge = self.form_edge(name)
         if edge:
             self._orient(is_flat(edge))
-        views = {"card": self.card, "pill": self.pill_host, "sliver": self.sliver, "rest": self.rest, "menu": self.menu_host}
-        if name not in views:
-            log.warning("no %r form in this release", name)
-            return
+        views = {"card": self.card, "pill": self.pill_host, "sliver": self.sliver, "rest": self.rest, "menu": self.menu_host,
+                 "dictate": self.dictate_host}
         self._hide_tip()
         self._tucked = False  # a new form is a shown form; only _tuck hides the rest form
         self._slide_token = None  # and a slide still running belongs to the old one
@@ -882,7 +1020,7 @@ class MiniPlayer(FloatingPanel):
             self._slide_anim.stop()
             self._slide_anim = None
         if name not in ("rest", "menu"):
-            self._stop_auto_watch()  # a reading owns the window: nothing to auto-hide
+            self._stop_auto_watch()  # a reading or a dictation owns the window: nothing to auto-hide
         if name == "rest":
             self._start_wave_timer()  # (re)shown: the countdown starts over
         else:
@@ -1225,6 +1363,7 @@ class MiniPlayer(FloatingPanel):
         if st.state == "idle":
             self._status = None
             if self.dictation_state in DICTATING:
+                self._reading_spot = None  # nothing to bring back when the dictation ends
                 return
             self._cancel_anim()
             self._hide_zones()
@@ -1535,15 +1674,128 @@ class MiniPlayer(FloatingPanel):
             self.dictation_layout = {"dock": edge, "y": fy}
             self._fire("dictation_layout", edge, fy)
 
-    # -- dictation (the second Windows release) -----------------------------------------
+    # -- dictation -----------------------------------------------------------------------
 
     def dictation_update(self, ds) -> None:
-        """A DictationStatus, from any thread. This release has no dictation, so the status is only
-        stored. Task D5 brings the dictate form: the coalesced drain to the GUI thread, the capsule
-        with the wave meter (wave.py) and the hands-free buttons, as in legacy/ui/mini_player.py."""
+        """A DictationStatus, from any thread, up to 20 times a second while recording. The level
+        is only stored (the wave's display timer reads it); the GUI thread hears about a state
+        change once, however many updates arrive before it gets there. With features["dictate"]
+        off nothing else happens."""
         self._level = float(getattr(ds, "level", 0.0))
+        if not self.features.get("dictate", False):
+            return
         with self._dlock:
-            self._dictation = ds
+            if ds.state == self._dqueued:
+                return
+            self._dqueued = ds.state
+            if self._dpending:
+                return
+            self._dpending = True
+        _post(self._drain_dictation)
+
+    def _drain_dictation(self) -> None:
+        with self._dlock:
+            state = self._dqueued
+            self._dpending = False
+        self._set_dictation(state)
+
+    def _set_dictation(self, state: str) -> None:
+        if state in DICTATING and not self.features.get("dictate", False):
+            state = "idle"  # dictation switched off: its form never shows
+        prev = self.dictation_state
+        if state == prev:
+            return
+        self.dictation_state = state
+        log.info("pill: dictation %s", state)
+        if state in DICTATING:
+            if prev not in DICTATING:
+                self._enter_dictation()
+            self.wave.set_mode("working" if state == "working" else "recording")
+            self._set_hands_free(state == "locked", animate=True)
+        elif prev in DICTATING:
+            self._leave_dictation()
+
+    def _enter_dictation(self) -> None:
+        """Take the window for the dictate form, remembering where the reading form was."""
+        self._cancel_anim()
+        self._hide_zones()
+        if self._moving:
+            self._clear_drag()
+        self._reading_spot = None
+        if self._status is not None and self.visible() and self.form in ("card", "sliver", "pill"):
+            self._reading_spot = (self.dock, _centre(self.frame_mac()), self._anchor[1])
+        edge, fy = dictation_spot(self.layout, self.dictation_layout)
+        self._edge = edge
+        self._show_form("dictate")
+        self._set_hands_free(False, animate=False)
+        self.set_frame_mac(edge_frame(_vf(_screen_under_mouse()), edge, fy, FREE_H, CAP_W))
+        self.wave.reset()
+        self.wave.start()
+        self.order_front()
+
+    def _leave_dictation(self) -> None:
+        """Back to the reading form (still paused) where it was, or to idle."""
+        self.wave.stop()
+        self._set_hands_free(False, animate=False)
+        spot, self._reading_spot = self._reading_spot, None
+        if self._status is None:
+            self.hide()
+            self.show_idle()
+            return
+        self._session = self._status.session
+        if spot is None:
+            self.place()
+        elif spot[0]:
+            self._collapse(spot[0], _screen_at(*spot[1]), spot[2])
+        else:
+            self._expand_at(*spot[1])
+
+    def _set_hands_free(self, on: bool, animate: bool) -> None:
+        """Grow the capsule to FREE_H with cancel and finish fading in (or shrink it back), about
+        its centre, over GROW_SECS easing out."""
+        if on == self.hands_free and animate:
+            return
+        self.hands_free = on
+        if not on:
+            self._hide_tip()
+        if self._grow_anim is not None:
+            self._grow_anim.stop()
+            self._grow_anim = None
+        kit, flat = self._kits[self._flat], self._flat
+        buttons = (kit["cancel_btn"], kit["finish_btn"])
+        length, alpha = (FREE_H, 1.0) if on else (COMPACT_H, 0.0)
+        if on:
+            for b in buttons:
+                b.show()
+
+        def settled() -> None:
+            if not self.hands_free:
+                for b in buttons:
+                    b.hide()
+                    b.set_hover(False, animate=False)
+            self._settle_dictate(kit)
+
+        if not animate or theme.reduce_motion():
+            self._lay_dictate(kit, flat, length, alpha)
+            settled()
+            return
+        from_len, from_alpha = kit["dictate_capsule"].length, buttons[0].alpha
+        anim = QVariantAnimation(self.panel)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(round(GROW_SECS * 1000))
+        anim.setEasingCurve(EASE_OUT)
+        anim.valueChanged.connect(lambda v: self._lay_dictate(kit, flat, from_len + (length - from_len) * float(v),
+                                                              from_alpha + (alpha - from_alpha) * float(v)))
+
+        def finished() -> None:
+            self._lay_dictate(kit, flat, length, alpha)
+            if self._grow_anim is anim:
+                self._grow_anim = None
+                settled()
+        anim.finished.connect(finished)
+        self._grow_anim = anim
+        anim.start()
 
     def toast_floor(self, gap: float = 12.0) -> float | None:
         """When the pill is on screen on the bottom edge, the lowest y (Mac-style, y up) a toast may
@@ -1632,6 +1884,23 @@ def _idle(menu: bool):
     return setup
 
 
+def _dictating(edge: str, state: str):
+    """The dictate form on `edge` in `state`, its growth landed and its wave a few frames in at a
+    middling microphone level, held still for the picture."""
+    def setup(mp: MiniPlayer) -> None:
+        mp.features["dictate"] = True
+        mp.dictation_layout = {"dock": edge, "y": -1.0}
+        mp._level = 0.5
+        mp._set_dictation("recording")
+        mp._set_dictation(state)
+        mp._set_hands_free(state == "locked", animate=False)
+        mp.wave.stop()
+        mp.wave._last = mp.wave._breath_start = 0.0
+        for i in range(1, 13):
+            mp.wave.tick(i / 30)
+    return setup
+
+
 def _scrubbing(mp: MiniPlayer) -> None:
     mp._update(_reading())
     mp.scrub.set_hover(True)
@@ -1662,5 +1931,11 @@ PREVIEWS = {
     "player.idle": lambda: _preview(_idle(False)),
     "player.idle-menu": lambda: _preview(_idle(True)),
     "player.idle-menu-all": lambda: _preview(_idle(True), features={"dictate": True, "history": True}),
+    "player.dictate": lambda: _preview(_dictating("right", "recording")),
+    "player.dictate-flat": lambda: _preview(_dictating("bottom", "recording")),
+    "player.dictate-hands-free": lambda: _preview(_dictating("right", "locked")),
+    "player.dictate-hands-free-flat": lambda: _preview(_dictating("bottom", "locked")),
+    "player.dictate-working": lambda: _preview(_dictating("right", "working")),
+    "player.dictate-working-flat": lambda: _preview(_dictating("bottom", "working")),
     "player.drop-zone": _drop_zone,
 }
