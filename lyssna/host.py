@@ -43,6 +43,8 @@ HAS_GLOBE_KEY = not IS_WINDOWS  # the fn key doubles as the Globe key, and a sys
 STATUS_TEXT_BESIDE_ICON = not IS_WINDOWS  # the menu bar can show text (the reading progress) next to the icon
 FAST_INT8 = not IS_WINDOWS  # 8-bit model maths is fast here (Apple silicon); x86 PCs run the half-precision model faster
 SYSTEM_VOICE: str | None = "sapi" if IS_WINDOWS else "say" if IS_MAC else None  # the built-in voice's provider name
+DICTATION_KEY_DEFAULT = "ctrl+win" if IS_WINDOWS else "fn"  # [dictation] hotkey: the key held to dictate
+DICTATION_DOUBLE_TAP_DEFAULT = IS_WINDOWS  # [dictation] double_tap: two quick taps of that key start hands-free
 
 # Settings pages the app opens. None where the system has no such page.
 MIC_SETTINGS_URL = (
@@ -106,9 +108,10 @@ MODULES: dict[str, tuple[str | None, str | None]] = {
     "window": ("lyssna.mac.window", "lyssna.win.window"),       # floating panels that never take focus, Dock icon, title bar
     "statusbar": ("lyssna.mac.statusbar", "lyssna.win.statusbar"),  # the menu bar or tray item: title, icon, headers, shortcuts
     "appearance": ("lyssna.mac.appearance", "lyssna.win.appearance"),  # the fonts, their tracking, reduce_motion()
-    "mic": ("lyssna.mac.mic", None),                          # the microphone and its permission
-    "insert": ("lyssna.mac.insert", None),                      # the paste pieces dictation uses
-    "field_probe": ("lyssna.mac.fieldprobe", None),             # FieldProbe: reads the text field a dictation went into
+    "mic": ("lyssna.mac.mic", "lyssna.win.mic"),                # the microphone and its permission
+    "insert": ("lyssna.mac.insert", "lyssna.win.insert"),       # the paste pieces dictation uses
+    "field_probe": ("lyssna.mac.fieldprobe", "lyssna.win.fieldprobe"),  # FieldProbe: reads the text field a dictation went into
+    "pushtotalk": ("lyssna.mac.pushtotalk", "lyssna.win.pushtotalk"),  # attach(): the dictation key, hold to talk
     "globe": ("lyssna.mac.globe", None),                        # globe_key_action(): the system's Globe key setting
     "launch_agent": ("lyssna.mac.launch_agent", None),          # start at login from source, for the command line
     "speechy": ("lyssna.mac.speechy", None),                    # the carry-over from the app's old name

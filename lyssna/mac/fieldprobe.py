@@ -1,6 +1,7 @@
 """The reads lyssna.dictation.learn.EditWatcher makes of the text field a dictation was pasted
 into, on the Mac: through Accessibility, with a short timeout on each element so a busy app
-never holds us up. lyssna.host hands this out as host.field_probe."""
+never holds us up. lyssna.host hands this out as host.field_probe; lyssna/win/fieldprobe.py is
+its Windows twin."""
 
 from __future__ import annotations
 

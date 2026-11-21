@@ -235,10 +235,27 @@ def test_both_twins_define_what_the_shared_code_uses():
     checked = {name: attrs for name, attrs in used.items() if name in paired}
     # Every pair the shared code reaches is seen here, so the scan itself is not silently empty.
     assert {"capture", "audio", "hotkey_table", "credentials", "policy", "autostart", "ipc", "events", "app", "instance",
-            "window"} <= set(checked)
+            "window", "mic", "insert", "field_probe"} <= set(checked)
     missing = []
     for name, attrs in sorted(checked.items()):
         for module in paired[name]:
             defined = _defined(module)
             missing += [f"{module}.{attr}" for attr in sorted(attrs) if attr not in defined]
     assert not missing, missing
+
+
+def _public(module: str) -> tuple[set[str], dict[str, set[str]]]:
+    """The public top-level functions of a module, and the public methods of each public class."""
+    tree = ast.parse(Path(importlib.util.find_spec(module).origin).read_text(encoding="utf-8"))
+    functions = {n.name for n in tree.body if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")}
+    classes = {c.name: {f.name for f in c.body if isinstance(f, ast.FunctionDef) and not f.name.startswith("_")}
+               for c in tree.body if isinstance(c, ast.ClassDef) and not c.name.startswith("_")}
+    return functions, classes
+
+
+def test_the_typing_and_field_probe_twins_match():
+    """Dictation's typing and its correction watcher see the same operations on both systems."""
+    assert _public("lyssna.mac.insert") == _public("lyssna.win.insert") == (
+        {"text_target", "put_text", "snapshot", "restore_unless_changed", "paste"}, {})
+    assert _public("lyssna.mac.fieldprobe") == _public("lyssna.win.fieldprobe") == (
+        set(), {"FieldProbe": {"focused", "value", "same", "front_pid"}})

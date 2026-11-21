@@ -225,6 +225,60 @@ def test_raw_listener_sees_everything_first_and_can_swallow(ran):
     assert tap.push_to_talk is None
 
 
+class RecordingPTT:
+    """Stands in for lyssna.win.pushtotalk.PushToTalk: records what the tap hands it."""
+
+    def __init__(self, swallow=True):
+        self.calls = []
+        self.swallow = swallow
+
+    def key_event(self, vk, down, held, t):
+        self.calls.append((vk, down, held))
+        return self.swallow
+
+
+def test_push_to_talk_sees_every_key_with_the_held_modifiers_but_never_swallows_one(ran):
+    tap = KeyboardTap()
+    tap.push_to_talk = ptt = RecordingPTT(swallow=True)
+    assert press(tap, VK_LCONTROL) is False  # a modifier always goes through
+    assert press(tap, VK_LWIN) is False
+    assert press(tap, 0x20) is True  # a key it takes is swallowed, down and up
+    assert release(tap, 0x20) is True
+    assert release(tap, VK_LWIN) is False
+    assert ptt.calls == [
+        (VK_LCONTROL, True, frozenset({VK_LCONTROL})),
+        (VK_LWIN, True, frozenset({VK_LCONTROL, VK_LWIN})),
+        (0x20, True, frozenset({VK_LCONTROL, VK_LWIN})),
+        (0x20, False, frozenset({VK_LCONTROL, VK_LWIN})),
+        (VK_LWIN, False, frozenset({VK_LCONTROL})),
+    ]
+
+
+def test_push_to_talk_returning_false_lets_bindings_run(ran):
+    tap = KeyboardTap()
+    fired = []
+    tap.bind("ctrl+alt+s", lambda: fired.append(1))
+    tap.push_to_talk = RecordingPTT(swallow=False)
+    press(tap, VK_LCONTROL)
+    press(tap, VK_LMENU)
+    assert press(tap, VK_S) is True
+    assert fired == [1]
+
+
+def test_a_modifier_press_resyncs_the_held_keys_only_with_push_to_talk(ran):
+    tap = KeyboardTap()
+    press(tap, VK_LCONTROL)
+    tap.modifiers_now = lambda: set()  # left Ctrl was let go where the hook could not see it
+    press(tap, VK_LWIN)
+    assert tap._held == {VK_LCONTROL, VK_LWIN}  # without push-to-talk nothing changes here
+    tap = KeyboardTap()
+    tap.push_to_talk = ptt = RecordingPTT(swallow=False)
+    press(tap, VK_LCONTROL)
+    tap.modifiers_now = lambda: set()
+    press(tap, VK_LWIN)
+    assert tap._held == {VK_LWIN} and ptt.calls[-1] == (VK_LWIN, True, frozenset({VK_LWIN}))
+
+
 def test_raw_listener_returning_false_lets_bindings_run(ran):
     tap = KeyboardTap()
     fired = []

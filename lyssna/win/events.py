@@ -206,9 +206,11 @@ class KeyboardTap(_Hook):
         self._bindings: dict[tuple[int, int], Callable[[], None]] = {}
         self.on_any_key: Callable[[], None] | None = None
         # Called first for every key event that is not injected, as raw_listener(vk, down, t);
-        # returning True swallows the event. The seam push-to-talk will use.
+        # returning True swallows the event. The probe in scripts/probe uses it.
         self.raw_listener: Callable[[int, bool, float], bool] | None = None
-        # Nothing reads this yet; the dictation task wires push-to-talk through raw_listener.
+        # A lyssna.win.pushtotalk.PushToTalk, set by its attach(). It sees every key event that
+        # is not injected, after raw_listener, as key_event(vk, down, held, t), and decides
+        # whether a key that is not a modifier is swallowed. Modifiers always go through.
         self.push_to_talk = None
         # Returns the modifier keys Windows says are held right now. Set by start() to read
         # GetAsyncKeyState; when set, a non-modifier key-down resyncs the held set from it.
@@ -239,6 +241,17 @@ class KeyboardTap(_Hook):
             if not down:
                 self._swallowed.pop(vk, None)
             return True
+        ptt = self.push_to_talk
+        if ptt is not None:
+            if is_modifier and down and self.modifiers_now is not None:
+                # A modifier released while an elevated window had focus would otherwise stay
+                # held here and could make a lone Win press look like Ctrl+Win. Windows updates
+                # its key state after the hook runs, so the key going down is added by hand.
+                self._held = set(self.modifiers_now()) | {vk}
+            if ptt.key_event(vk, down, frozenset(self._held), t) and not is_modifier:
+                if not down:
+                    self._swallowed.pop(vk, None)
+                return True
         if is_modifier:
             return False
         if not down:

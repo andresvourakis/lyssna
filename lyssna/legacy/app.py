@@ -763,7 +763,7 @@ class LyssnaApp:
     def _attach_push_to_talk(self) -> None:
         """Hold the dictation key ([dictation] hotkey, Fn by default) to dictate; the hands-free
         key while holding keeps it recording. The controller keeps it in step with the session."""
-        from ..dictation.hotkey import PushToTalk
+        from ..mac.pushtotalk import PushToTalk
 
         section = self.ctl.cfg.get("dictation", {})
         try:

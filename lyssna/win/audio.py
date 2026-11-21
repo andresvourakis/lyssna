@@ -300,6 +300,33 @@ def _get_loop() -> _Loop:
         return _loop
 
 
+def run_on_audio_thread(fn: Callable[[], object], timeout: float) -> object:
+    """Run fn on the private audio thread and return what it returns, or raise what it raises.
+    Called from the audio thread itself, it runs at once (waiting there would deadlock). Shared
+    with lyssna/win/mic.py: Qt's audio input has the same need for one thread with a Qt event
+    loop, and one such thread is enough. Raises TimeoutError when fn has not finished in time."""
+    loop = _get_loop()
+    if threading.current_thread() is loop.thread:
+        return fn()
+    outcome: dict = {}
+    done = threading.Event()
+
+    def call() -> None:
+        try:
+            outcome["value"] = fn()
+        except BaseException as e:
+            outcome["error"] = e
+        finally:
+            done.set()
+
+    loop.post(call)
+    if not done.wait(timeout):
+        raise TimeoutError(f"the audio thread did not answer within {timeout:g} seconds")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("value")
+
+
 def _log_pitch_once() -> None:
     global _pitch_logged
     if _pitch_logged:

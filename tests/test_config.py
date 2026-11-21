@@ -119,3 +119,19 @@ def test_toml_value_escapes_quotes_backslashes_and_newlines():
 def test_toml_value_escapes_other_control_characters():
     s = "a\x01b\x7fc\td"
     assert tomllib.loads(f"x = {config._toml_value(s)}")["x"] == s
+
+
+def test_dictation_key_defaults_come_from_host_and_the_mac_keeps_fn():
+    """The Mac: fn, no double tap, and the template's lines as they always were. The PC's
+    values are checked in tests/test_windows_imports.py, in a pretend-Windows interpreter."""
+    from lyssna import host
+
+    section = config.DEFAULTS["dictation"]
+    assert section["hotkey"] == host.DICTATION_KEY_DEFAULT
+    assert section.get("double_tap", host.DICTATION_DOUBLE_TAP_DEFAULT) is host.DICTATION_DOUBLE_TAP_DEFAULT
+    assert section["hands_free"] == "space"
+    if sys.platform == "darwin":
+        assert section["hotkey"] == "fn" and "double_tap" not in section and host.DICTATION_DOUBLE_TAP_DEFAULT is False
+        template = tomllib.loads(config.TEMPLATE)["dictation"]
+        assert template["hotkey"] == "fn" and "double_tap" not in template
+        assert 'hotkey = "fn"              # hold to dictate: fn | right_option | right_command | right_control\n' in config.TEMPLATE

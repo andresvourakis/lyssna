@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import host
+from .hotkeys import tokens
 
 LOCAL_ONLY_TITLE = f"Keep Everything on This {host.DEVICE}"
 LOCAL_ONLY_MANAGED_TITLE = f"{LOCAL_ONLY_TITLE} (Set by Your Organization)"
@@ -76,8 +77,14 @@ def menubar_text_allowed(s: MenuState) -> bool:
 
 
 def key_name(hotkey: str) -> str:
-    """The dictation key as people read it: "fn", "right ⌥"."""
-    return KEY_NAMES.get(hotkey, hotkey)
+    """The dictation key as people read it: "fn", "right ⌥", "right Ctrl". A chord such as
+    ctrl+win is not in KEY_NAMES (the setup window shows it as one cap per key) and is written
+    the way the system writes shortcuts: "Ctrl+Win"."""
+    if hotkey in KEY_NAMES:
+        return KEY_NAMES[hotkey]
+    if "+" in hotkey:
+        return host.hotkey_table.pretty(tokens(hotkey))
+    return hotkey
 
 
 def dictation_title(hotkey: str, recording: bool) -> str:

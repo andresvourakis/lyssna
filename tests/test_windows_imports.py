@@ -84,7 +84,23 @@ SCRIPT = textwrap.dedent(
     assert host.window.__name__ == "lyssna.win.window"
     assert public_functions(host.window) == public_functions(mac_window), (public_functions(host.window), public_functions(mac_window))
     assert host.window.POINTS_ARE_PHYSICAL is True and mac_window.POINTS_ARE_PHYSICAL is False
-    for name in ("mic", "insert", "field_probe", "globe", "launch_agent", "speechy"):
+    from lyssna.mac import mic as mac_mic  # its AVFoundation loads only inside its functions
+
+    def public_classes(module):
+        return {n: {m for m in vars(c) if not m.startswith("_")} for n, c in vars(module).items()
+                if inspect.isclass(c) and c.__module__ == module.__name__ and not n.startswith("_")}
+    assert host.mic.__name__ == "lyssna.win.mic"
+    assert public_functions(host.mic) == public_functions(mac_mic) == {"microphone_status", "request_microphone"}
+    assert public_classes(host.mic) == public_classes(mac_mic) == {"EngineInput": {"warm", "open", "close"}}
+    assert "PySide6.QtMultimedia" not in sys.modules  # the Windows microphone loads Qt only when it opens
+    # Typing and the correction watcher: the Mac twins load Quartz, so their names are compared
+    # in tests/test_architecture.py; here the Windows ones must be what dictation reaches.
+    assert host.insert.__name__ == "lyssna.win.insert" and host.field_probe.__name__ == "lyssna.win.fieldprobe"
+    assert public_functions(host.insert) == {"text_target", "put_text", "snapshot", "restore_unless_changed", "paste"}
+    probe = host.field_probe.FieldProbe
+    assert {m for m in vars(probe) if not m.startswith("_") and callable(getattr(probe, m))} == {"focused", "value", "same", "front_pid"}
+    assert host.insert.text_target() == "maybe"  # no Win32 here: UI Automation cannot say, so paste
+    for name in ("globe", "launch_agent", "speechy"):
         try:
             host.require(name)
         except NotImplementedError:
@@ -124,6 +140,20 @@ SCRIPT = textwrap.dedent(
     for text in (menu.local_only_title(True), menu.LOCAL_HEADER, *menu.KEY_NAMES.values(), providers.REGISTRY["kokoro"].label,
                  session.COPIED, session.NO_MIC, policy.refusal("X"), config.TEMPLATE):
         assert "Mac" not in text and "⌘" not in text, text
+    # The dictation key: Ctrl+Win held, double tap on, named the way Windows writes keys.
+    from lyssna.mac import pushtotalk as mac_pushtotalk  # pure key codes, no Quartz
+    assert host.pushtotalk.__name__ == "lyssna.win.pushtotalk"
+    assert public_functions(host.pushtotalk) == public_functions(mac_pushtotalk) == {"attach"}
+    from lyssna.dictation import hotkey
+    assert issubclass(host.pushtotalk.PushToTalk, hotkey.PushToTalk) and issubclass(mac_pushtotalk.PushToTalk, hotkey.PushToTalk)
+    assert host.DICTATION_KEY_DEFAULT == "ctrl+win" and host.DICTATION_DOUBLE_TAP_DEFAULT is True
+    dictation_defaults = config.DEFAULTS["dictation"]
+    assert (dictation_defaults["hotkey"], dictation_defaults["hands_free"], dictation_defaults["double_tap"]) == ("ctrl+win", "space", True)
+    template_dictation = tomllib.loads(config.TEMPLATE)["dictation"]
+    assert (template_dictation["hotkey"], template_dictation["hands_free"], template_dictation["double_tap"]) == ("ctrl+win", "space", True)
+    assert "right_option" not in config.TEMPLATE and "fn |" not in config.TEMPLATE
+    assert menu.key_name("ctrl+win") == "Ctrl+Win" and menu.key_name("right_control") == "right Ctrl"
+    assert menu.dictation_title("ctrl+win", recording=False) == "Start Dictation · hold Ctrl+Win"
     blocked = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED)
     assert not blocked, blocked
     print("imported", len(sys.argv) - 1, "modules")

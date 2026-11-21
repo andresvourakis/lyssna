@@ -182,9 +182,10 @@ class _ComThread:
         self._lock = threading.Lock()
         self._busy_since: float | None = None
 
-    def call(self, fn: Callable[[], object]):
+    def call(self, fn: Callable[[], object], timeout: float | None = None):
         """Run `fn` on the COM thread and return its result. Raises TimeoutError when the
-        thread does not answer in time, and whatever `fn` raised."""
+        thread does not answer within `timeout` (the thread's own limit when left out), and
+        whatever `fn` raised."""
         with self._lock:
             busy = self._busy_since
             if busy is not None and time.monotonic() - busy > self._timeout:
@@ -195,7 +196,7 @@ class _ComThread:
         box: dict = {}
         done = threading.Event()
         self._jobs.put((fn, box, done))
-        if not done.wait(self._timeout):
+        if not done.wait(self._timeout if timeout is None else min(timeout, self._timeout)):
             raise TimeoutError("UI Automation did not answer in time")
         if "error" in box:
             raise box["error"]
@@ -255,6 +256,18 @@ def _com_init() -> None:
 
 
 _com = _ComThread(_com_init)
+
+
+def ui_automation(fn: Callable[[object, object], object], timeout: float | None = None):
+    """Run `fn(UIA, automation)` on the UI Automation thread and return its result. This is the
+    one door lyssna.win.insert and lyssna.win.fieldprobe use, so the thread, its automation
+    object and the own-process gate stay in this module. Raises PermissionError, without
+    touching COM, when our own window is in front or its owner is unknown; TimeoutError when
+    the thread does not answer within `timeout`; and whatever `fn` raised. `fn` must check the
+    focused element's process itself, since focus can move between the gate and the call."""
+    if _own_window_in_front():
+        raise PermissionError("our own window is in front")
+    return _com.call(lambda: fn(_uia["UIA"], _uia["automation"]), timeout)
 
 
 def _rects(doubles) -> list[Bounds]:
@@ -594,35 +607,3 @@ def selection_or_clipboard() -> tuple[str, str]:
         return text, "selection (copy)"
     return clipboard_text(), "clipboard"
 
-
-# Dictation on Windows (typing the result at the cursor, learning corrections) is task D3 of
-# the Windows plan. Until then its element helpers raise.
-_NO_DICTATION = "Windows dictation is not built yet (task D3)"
-
-
-def focused_element():
-    raise NotImplementedError(_NO_DICTATION)
-
-
-def ax_attribute(element, name: str):
-    raise NotImplementedError(_NO_DICTATION)
-
-
-def ax_settable(element, name: str) -> bool:
-    raise NotImplementedError(_NO_DICTATION)
-
-
-def ax_role(element) -> str | None:
-    raise NotImplementedError(_NO_DICTATION)
-
-
-def ax_text_value(element) -> str | None:
-    raise NotImplementedError(_NO_DICTATION)
-
-
-def ax_pid(element) -> int | None:
-    raise NotImplementedError(_NO_DICTATION)
-
-
-def ax_set_timeout(element, seconds: float) -> None:
-    raise NotImplementedError(_NO_DICTATION)

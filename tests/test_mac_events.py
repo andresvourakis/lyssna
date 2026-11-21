@@ -147,3 +147,33 @@ def test_push_to_talk_can_swallow_and_bindings_then_do_not_run(monkeypatch):
     assert tap.handle(Quartz.kCGEventKeyDown, key_event(49, Quartz.kCGEventKeyDown)) is None
     assert tap.handle(Quartz.kCGEventKeyUp, key_event(49, Quartz.kCGEventKeyUp)) is None
     assert ran == []  # the space binding was not reached
+
+
+def test_attached_dictation_keys_see_real_quartz_events(monkeypatch):
+    """fn held, Space pressed: the real Mac push-to-talk locks and the Space is swallowed,
+    while the fn change itself goes through. Built events, never posted."""
+    from lyssna.mac import pushtotalk
+
+    inline_spawn(monkeypatch)
+    tap = KeyboardTap()
+    calls = []
+    ptt = pushtotalk.attach(tap, {"dictation": {"hotkey": "fn", "hands_free": "space", "double_tap": False}},
+                            lambda: calls.append("start"), lambda: calls.append("stop"), lambda: calls.append("lock"),
+                            lambda quiet: calls.append("cancel"))
+    assert tap.push_to_talk is ptt
+    fn = key_event(63, Quartz.kCGEventFlagsChanged, 0x800000)
+    assert tap.handle(Quartz.kCGEventFlagsChanged, fn) is fn
+    assert tap.handle(Quartz.kCGEventKeyDown, key_event(49, Quartz.kCGEventKeyDown)) is None
+    assert tap.handle(Quartz.kCGEventKeyUp, key_event(49, Quartz.kCGEventKeyUp)) is None
+    fn_up = key_event(63, Quartz.kCGEventFlagsChanged, 0)
+    assert tap.handle(Quartz.kCGEventFlagsChanged, fn_up) is fn_up
+    assert calls == ["start", "lock"] and ptt.state == "locked"
+
+
+def test_the_mac_dictation_key_names_are_unchanged():
+    from lyssna import menu
+
+    names = {k: menu.key_name(k) for k in ("fn", "right_option", "right_command", "right_control")}
+    assert names == {"fn": "fn", "right_option": "right ⌥", "right_command": "right ⌘", "right_control": "right ⌃"}
+    assert menu.dictation_title("fn", recording=False) == "Start Dictation · hold fn"
+    assert menu.key_name("caps_lock") == "caps_lock"  # an unknown single key is shown as written

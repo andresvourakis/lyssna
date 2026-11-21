@@ -15,7 +15,8 @@ each pair once. Values stay in memory; the log gets counts only. Reads go throug
 timeout and the watcher stops if the app answers slowly, so typing is never held up.
 
 The reads themselves are the system's: host.field_probe.FieldProbe (lyssna/mac/fieldprobe.py
-on the Mac), built on first use, so a watcher can exist where the system has none yet."""
+or lyssna/win/fieldprobe.py), built on first use rather than when the watcher is made, so
+building a watcher never loads a platform framework."""
 
 from __future__ import annotations
 
@@ -134,7 +135,7 @@ class EditWatcher:
     def probe(self):
         """The reads of the focused field: focused(), value(element), same(a, b), front_pid()."""
         if self._probe is None:
-            self._probe = host.require("field_probe").FieldProbe()
+            self._probe = host.field_probe.FieldProbe()
         return self._probe
 
     def watch(self, text: str, background: bool = True) -> None:

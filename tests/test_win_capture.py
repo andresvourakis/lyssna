@@ -1,6 +1,7 @@
 """lyssna/win/capture.py with every Win32 and COM call faked, so it runs on any system: the order
 of the three routes, the console guard, the own-process gate, the clipboard bookkeeping, the
-save and restore around Ctrl+C, the modifier wait, and the key events sent for Ctrl+C."""
+save and restore around Ctrl+C, the modifier wait, the key events sent for Ctrl+C, and the one
+door to the UI Automation thread that dictation's typing and correction watcher use."""
 
 import os
 import threading
@@ -332,10 +333,47 @@ def test_com_init_failure_is_not_supported(machine, monkeypatch):
     assert capture._uia_selection() == AXSelection(False, "")
 
 
-def test_dictation_helpers_not_built():
-    for fn, args in ((capture.focused_element, ()), (capture.ax_role, (None,)), (capture.ax_set_timeout, (None, 1.0))):
-        with pytest.raises(NotImplementedError, match="dictation"):
-            fn(*args)
+def test_com_thread_call_can_wait_less_than_its_limit():
+    release = threading.Event()
+    com = capture._ComThread(init=lambda: None, timeout=2.0)
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        com.call(release.wait, timeout=0.1)
+    assert time.monotonic() - start < 1.0
+    release.set()
+
+
+class InlineCom:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, fn, timeout=None):
+        self.calls.append(timeout)
+        return fn()
+
+
+def test_ui_automation_runs_on_the_com_thread_with_the_automation_object(machine, monkeypatch):
+    com = InlineCom()
+    monkeypatch.setattr(capture, "_com", com)
+    monkeypatch.setitem(capture._uia, "UIA", "the module")
+    monkeypatch.setitem(capture._uia, "automation", "the automation")
+    assert capture.ui_automation(lambda UIA, automation: (UIA, automation), 0.2) == ("the module", "the automation")
+    assert com.calls == [0.2]
+
+
+@pytest.mark.parametrize("pid", [OWN, None])
+def test_ui_automation_refuses_our_own_window_without_touching_com(machine, monkeypatch, pid):
+    com = InlineCom()
+    monkeypatch.setattr(capture, "_com", com)
+    machine["pid"] = pid
+    with pytest.raises(PermissionError):
+        capture.ui_automation(lambda UIA, automation: pytest.fail("must not run"))
+    assert com.calls == []
+
+
+def test_the_dictation_stubs_are_gone():
+    for name in ("focused_element", "ax_attribute", "ax_settable", "ax_role", "ax_text_value", "ax_pid", "ax_set_timeout"):
+        assert not hasattr(capture, name), name
 
 
 def test_wake_is_a_no_op():

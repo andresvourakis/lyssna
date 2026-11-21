@@ -301,7 +301,8 @@ def test_our_paste_and_restore_are_noted_as_ours(monkeypatch):
 
     monkeypatch.setattr(capture, "_own_counts", capture.deque(maxlen=64))
     board = Board()
-    count = insert.put_text(board, "dictated words", transient=True)
+    monkeypatch.setattr(insert, "_pasteboard", lambda: board)
+    count = insert.put_text("dictated words", transient=True)
     assert count == 5 and capture.own_change(4) and capture.own_change(5)
     capture.restore_pasteboard(board, [{"public.utf8-plain-text": b"before"}])
     assert capture.own_change(board.changeCount())

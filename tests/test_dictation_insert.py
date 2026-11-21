@@ -1,7 +1,8 @@
 """Paste at the cursor, with fakes only: no key is ever posted and the user's clipboard is
 never touched (a fake pasteboard, and once a private, uniquely named one). The Inserter is the
-engine's (lyssna/dictation/insert.py); the clipboard writes and the text-field question are the
-Mac's (lyssna/mac/insert.py)."""
+engine's (lyssna/dictation/insert.py); the clipboard writes, the paste key and the text-field
+question are the Mac's (lyssna/mac/insert.py), wired in as the Inserter's system. The generic
+flow against a fake system, on any computer, is in tests/test_dictation_inserter.py."""
 
 import pytest
 import Quartz
@@ -9,7 +10,7 @@ from AppKit import NSPasteboard
 
 from lyssna.dictation.insert import Inserter
 from lyssna.mac import capture, insert
-from lyssna.mac.insert import CONCEALED_TYPE, TRANSIENT_TYPE, text_target
+from lyssna.mac.insert import CONCEALED_TYPE, TRANSIENT_TYPE
 
 PLAIN = "public.utf8-plain-text"
 
@@ -55,23 +56,22 @@ def contents(pb):
 
 
 @pytest.fixture
-def machine():
-    """An Inserter wired to fakes; the delayed clipboard restore is collected in state["later"]
-    and run by the test. Items are real (detached) NSPasteboardItems on a fake pasteboard."""
+def machine(monkeypatch):
+    """An Inserter wired to the Mac twin with its machine calls faked; the delayed clipboard
+    restore is collected in state["later"] and run by the test. Items are real (detached)
+    NSPasteboardItems on a fake pasteboard."""
     state = {"keys": [], "waited": 0, "later": [], "target": "text"}
     pb = FakePasteboard([FakeItem({PLAIN: b"what was there", "public.rtf": b"{\\rtf1 x}"})])
 
     def wait():
         state["waited"] += 1
 
-    inserter = Inserter(
-        pasteboard=pb,
-        focused=lambda: object(),
-        target=lambda element: state["target"],
-        send_key=lambda key, flags: state["keys"].append((key, flags)),
-        wait_for_modifiers=wait,
-        later=lambda delay, fn: state["later"].append(fn),
-    )
+    monkeypatch.setattr(insert, "_pasteboard", lambda: pb)
+    monkeypatch.setattr(capture, "focused_element", lambda: object())
+    monkeypatch.setattr(insert, "_classify", lambda element: state["target"])
+    monkeypatch.setattr(capture, "send_key", lambda key, flags: state["keys"].append((key, flags)))
+    monkeypatch.setattr(capture, "_wait_for_modifiers_release", wait)
+    inserter = Inserter(system=insert, later=lambda delay, fn: state["later"].append(fn))
     return inserter, pb, state
 
 
@@ -151,17 +151,23 @@ def fake_ax(monkeypatch):
     ],
 )
 def test_text_target(fake_ax, element, expected):
-    assert text_target(element) == expected
+    assert insert._classify(element) == expected
 
 
-def test_the_clipboard_entry_is_marked_for_clipboard_managers_on_a_private_pasteboard():
+def test_text_target_asks_about_the_focused_element(monkeypatch, fake_ax):
+    monkeypatch.setattr(capture, "focused_element", lambda: Element("AXTextField", "abc", value_settable=True))
+    assert insert.text_target() == "text"
+
+
+def test_the_clipboard_entry_is_marked_for_clipboard_managers_on_a_private_pasteboard(monkeypatch):
     pb = NSPasteboard.pasteboardWithUniqueName()
+    monkeypatch.setattr(insert, "_pasteboard", lambda: pb)
     try:
-        insert.put_text(pb, "secret words", transient=True)
+        insert.put_text("secret words", transient=True)
         types = {str(t) for t in pb.types()}
         assert {TRANSIENT_TYPE, CONCEALED_TYPE} <= types
         assert pb.stringForType_("public.utf8-plain-text") == "secret words"
-        insert.put_text(pb, "keep me", transient=False)
+        insert.put_text("keep me", transient=False)
         assert TRANSIENT_TYPE not in {str(t) for t in pb.types()}
     finally:
         pb.releaseGlobally()

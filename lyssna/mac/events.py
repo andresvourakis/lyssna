@@ -80,7 +80,7 @@ class KeyboardTap(_EventTap):
         super().__init__()
         self._bindings: dict[tuple[int, int], Callable[[], None]] = {}
         self.on_any_key: Callable[[], None] | None = None
-        # A lyssna.dictation.hotkey.PushToTalk. Its methods run inline in the tap callback,
+        # A lyssna.mac.pushtotalk.PushToTalk, set by its attach(). Its methods run inline in the tap callback,
         # so they must stay quick; it decides whether each event is swallowed.
         self.push_to_talk = None
 

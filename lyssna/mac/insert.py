@@ -1,6 +1,7 @@
-"""The Mac pieces of pasting dictated text: the clipboard writes, the paste key and the question
-"does the focused element take text?". lyssna.dictation.insert decides what to do with them
-and reaches this module through lyssna.host.
+"""The Mac pieces of pasting dictated text: the question "does the focused element take text?",
+the clipboard writes, and the paste key. lyssna.dictation.insert decides what to do with them
+and reaches this module through lyssna.host; lyssna/win/insert.py is its Windows twin, with the
+same five functions.
 
 Our clipboard entry carries the nspasteboard.org markers `org.nspasteboard.TransientType` (it
 is about to be replaced) and `org.nspasteboard.ConcealedType` (do not show or keep it), so
@@ -34,9 +35,13 @@ CONCEALED_TYPE = "org.nspasteboard.ConcealedType"
 CONTAINER_ROLES = {"AXWindow", "AXGroup", "AXWebArea", "AXUnknown", "AXApplication", "AXLayoutArea", "AXSplitGroup"}
 
 
-def text_target(element) -> str:
-    """"text" when the element takes typed text, "maybe" when we cannot tell, "none" when it
-    clearly does not (a list, a button, the desktop)."""
+def text_target() -> str:
+    """"text" when the focused element in the front app takes typed text, "maybe" when we
+    cannot tell, "none" when it clearly does not (a list, a button, the desktop)."""
+    return _classify(capture.focused_element())
+
+
+def _classify(element) -> str:
     if element is None:
         return "maybe"  # nothing exposed: common in Electron apps and some browsers
     if capture.ax_settable(element, "AXValue") and capture.ax_text_value(element) is not None:
@@ -49,12 +54,7 @@ def text_target(element) -> str:
     return "none"
 
 
-def focused_element():
-    """The element that has keyboard focus in the app in front, or None."""
-    return capture.focused_element()
-
-
-def pasteboard():
+def _pasteboard():
     """The general pasteboard, the one Cmd+V reads."""
     from AppKit import NSPasteboard
 
@@ -72,9 +72,11 @@ def _text_item(text: str, transient: bool):
     return item
 
 
-def put_text(pb, text: str, transient: bool) -> int:
-    """Replace the clipboard with `text`; returns the pasteboard's change count afterwards.
-    The change is noted as Lyssna's own, so it never passes for a selection the user copied."""
+def put_text(text: str, transient: bool) -> int:
+    """Replace the clipboard with `text`; returns the pasteboard's change count afterwards, the
+    token restore_unless_changed() compares against. The change is noted as Lyssna's own, so
+    it never passes for a selection the user copied."""
+    pb = _pasteboard()
     before = int(pb.changeCount())
     pb.clearContents()
     pb.writeObjects_([_text_item(text, transient)])
@@ -83,30 +85,29 @@ def put_text(pb, text: str, transient: bool) -> int:
     return count
 
 
-def snapshot(pb) -> list[dict[str, bytes]]:
+def snapshot() -> list[dict[str, bytes]]:
     """Every item on the clipboard, in every format, to put back after the paste."""
-    return capture.snapshot_pasteboard(pb)
+    return capture.snapshot_pasteboard(_pasteboard())
 
 
-def restore_unless_changed(pb, previous: list[dict[str, bytes]], our_count: int) -> bool:
-    """Put the previous clipboard back, unless something else was copied since our paste."""
-    if int(pb.changeCount()) != our_count:
+def restore_unless_changed(saved: list[dict[str, bytes]], token: int) -> bool:
+    """Put the saved clipboard back, unless something else was copied since our paste."""
+    pb = _pasteboard()
+    if int(pb.changeCount()) != token:
         log.info("clipboard changed after the paste; not restoring it")
         return False
-    capture.restore_pasteboard(pb, previous)
+    capture.restore_pasteboard(pb, saved)
     return True
 
 
-def wait_for_modifiers() -> None:
-    """Wait (briefly) until the user lets go of the modifier keys, so Cmd+V is not Cmd+Option+V."""
+def paste() -> None:
+    """Press Cmd+V in the front app, once the user has let go of the modifier keys (so it is
+    not Cmd+Option+V)."""
     capture._wait_for_modifiers_release()
+    capture.send_key(KEY_V, _paste_flags())
 
 
-def send_key(keycode: int, flags: int = 0) -> None:
-    capture.send_key(keycode, flags)
-
-
-def paste_flags() -> int:
+def _paste_flags() -> int:
     """The modifier flags of the paste shortcut: Command."""
     import Quartz
 

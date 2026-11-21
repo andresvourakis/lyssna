@@ -50,7 +50,10 @@ DEFAULTS: dict = {
     "kokoro": {"voice": "af_heart"},
     "say": {"voice": ""},
     "dictation": {"transcriber": "parakeet", "cleaner": "s1-mini", "cleanup": True, "language": "en",
-                  "hotkey": "fn", "hands_free": "space", "history_days": 30, "auto_learn": True},
+                  "hotkey": host.DICTATION_KEY_DEFAULT, "hands_free": "space", "history_days": 30, "auto_learn": True,
+                  # Only where it is on (the PC): the Mac's template has no double_tap line, and
+                  # the dictation keys read host.DICTATION_DOUBLE_TAP_DEFAULT when it is missing.
+                  **({"double_tap": True} if host.DICTATION_DOUBLE_TAP_DEFAULT else {})},
     "parakeet": {"model": "v2"},
 }
 
@@ -208,6 +211,13 @@ if host.IS_WINDOWS:  # the same file, with the Windows places and without the Ma
 voice = ""                       # empty = best installed system voice (Premium voices win)
 
 """, ""),
+        ("""hotkey = "fn"              # hold to dictate: fn | right_option | right_command | right_control
+hands_free = "space"       # press while holding the hotkey to keep recording without holding it
+""",
+         """hotkey = "ctrl+win"        # hold to dictate: ctrl+win (either Ctrl with either Windows key) | right_control
+hands_free = "space"       # press while holding the hotkey to keep recording without holding it
+double_tap = true          # tap the hotkey twice quickly to keep recording without holding it
+"""),
     ]:
         TEMPLATE = TEMPLATE.replace(_mac, _windows)
 

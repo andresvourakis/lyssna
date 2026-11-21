@@ -7,8 +7,8 @@ import pytest
 
 from lyssna import config
 from lyssna.controller import Controller, Notice
-from lyssna.dictation.hotkey import FN, PushToTalk
 from lyssna.legacy import app as app_mod
+from lyssna.mac.pushtotalk import FN, PushToTalk
 from lyssna.providers import kokoro
 
 pytestmark = pytest.mark.skipif(not AppKit.NSScreen.screens(), reason="no window server")
