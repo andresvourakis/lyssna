@@ -67,6 +67,7 @@ SCRIPT = textwrap.dedent(
     assert type(keychain._backend).__name__ == "CredentialBackend"
     assert server.send({"cmd": "status"}) is None
     assert "say" not in providers.REGISTRY and providers.local_fallback() == "kokoro"
+    assert "sapi" in providers.REGISTRY
 
     import tomllib
     from lyssna import menu, policy

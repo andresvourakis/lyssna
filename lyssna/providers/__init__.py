@@ -20,6 +20,10 @@ if host.IS_MAC:  # the built-in `say` voice exists only on the Mac
     from .macos import MacOSSayProvider
 
     _PROVIDERS.append(MacOSSayProvider)
+elif host.IS_WINDOWS:  # the built-in SAPI voices exist only on Windows
+    from .windows import WindowsVoiceProvider
+
+    _PROVIDERS.append(WindowsVoiceProvider)
 
 REGISTRY: dict[str, type[Provider]] = {p.name: p for p in _PROVIDERS}
 
@@ -46,11 +50,14 @@ def allowed(name: str, config: dict) -> bool:
 
 def local_fallback() -> str:
     """The engine to land on when the chosen one cannot be used: the free Kokoro voice on
-    this computer. On the Mac, the built-in `say` when Kokoro cannot run in this install;
-    elsewhere Kokoro even then (there is no system voice to fall back to yet)."""
-    if KokoroProvider.can_run() or "say" not in REGISTRY:
+    this computer. When Kokoro cannot run in this install, the voice built into the system:
+    `say` on the Mac, SAPI on Windows; elsewhere Kokoro even then (there is no system voice)."""
+    if KokoroProvider.can_run():
         return KokoroProvider.name
-    return "say"
+    for name in ("say", "sapi"):
+        if name in REGISTRY:
+            return name
+    return KokoroProvider.name
 
 
 def effective_provider(config: dict, wait: bool = True) -> str:

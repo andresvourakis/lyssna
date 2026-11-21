@@ -1,0 +1,53 @@
+name: Windows probe
+
+# Runs the probe's self-test on a real Windows machine (from source, then the built app) and
+# builds LyssnaProbe for the owner to run on his PC. Both self-test reports are uploaded with
+# the build, even when a check fails.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows]
+    paths:
+      - scripts/probe_win.py
+      - scripts/probe/**
+      - lyssna-probe.spec
+      - lyssna/win/**
+      - .github/workflows/windows-probe.yml
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group build
+
+      - name: Self-test from source
+        timeout-minutes: 15
+        run: uv run python scripts/probe_win.py --self-test --report-file selftest-source.txt
+
+      - name: Build LyssnaProbe
+        id: build
+        if: success() || failure()
+        run: uv run pyinstaller lyssna-probe.spec --noconfirm
+
+      - name: Self-test of the built app
+        if: (success() || failure()) && steps.build.outcome == 'success'
+        timeout-minutes: 15
+        run: dist\LyssnaProbe\LyssnaProbeConsole.exe --self-test --report-file selftest-frozen.txt
+
+      - name: Zip the app
+        if: (success() || failure()) && steps.build.outcome == 'success'
+        run: Compress-Archive -Path dist\LyssnaProbe -DestinationPath LyssnaProbe-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LyssnaProbe-windows-x64
+          path: |
+            LyssnaProbe-windows-x64.zip
+            selftest-source.txt
+            selftest-frozen.txt
+          if-no-files-found: warn
