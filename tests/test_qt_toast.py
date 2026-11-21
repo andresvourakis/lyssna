@@ -139,7 +139,11 @@ def test_a_failing_action_is_logged_not_raised(toast):
     click(toast.action)  # does not raise
 
 
-def test_same_key_updates_in_place_without_fading_again(toast):
+def test_same_key_updates_in_place_without_fading_again(toast, monkeypatch):
+    from lyssna.ui.qt import theme
+
+    # With animations off in Windows (as on the CI runner) every fade is instant; this test is about the fade.
+    monkeypatch.setattr(theme, "reduce_motion", lambda: False)
     toast.present(Notice("Getting the speech model ready, 10%", key="model"))
     pump(until=lambda: toast.alpha() == 1.0)
     toast.present(Notice("Getting the speech model ready, 20%", key="model"))

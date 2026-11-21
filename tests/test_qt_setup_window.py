@@ -254,7 +254,7 @@ def test_local_only_hides_the_online_card_and_names_the_pc(qapp, ctl, monkeypatc
     assert shown(w.local_only_note)
     assert w.local_only_note.value() == "Online voices are off because “Keep Everything on This PC” is on."
     assert w.radio_local.text() == "On this PC"
-    assert w.local_note.value() == "Your text stays on this PC. One download of about 140 MB."
+    assert w.local_note.value() == f"Your text stays on this PC. One download of about {kokoro.DOWNLOAD_SIZE_TEXT}."
 
 
 def test_the_warning_row_follows_the_shortcuts(make):

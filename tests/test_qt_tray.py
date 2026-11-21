@@ -20,6 +20,8 @@ from lyssna import config, host
 from lyssna.menu import DICTATE_HEADER, LISTEN_HEADER, LOCAL_HEADER, ONLINE_HEADER, local_only_title
 from lyssna.providers import kokoro
 
+KOKORO_ROW = f"Kokoro · {kokoro.DOWNLOAD_SIZE_TEXT} download"  # 140 MB on the Mac, 200 MB on Windows
+
 
 @pytest.fixture(scope="session")
 def qapp():
@@ -154,11 +156,11 @@ def test_hotkeys_show_at_the_right_without_being_shortcuts(tray):
 
 def test_provider_menu_groups_local_and_online(tray):
     r = rows(tray.provider_menu)
-    assert r[0] == LOCAL_HEADER and "Kokoro · 140 MB download" in r[:r.index(ONLINE_HEADER)]
+    assert r[0] == LOCAL_HEADER and KOKORO_ROW in r[:r.index(ONLINE_HEADER)]
     online = r[r.index(ONLINE_HEADER) + 1:]
     assert "Cartesia Sonic · no API key" in online and "Inworld TTS-2 · no API key" in online
     checked = [a.text() for a in tray.provider_menu.actions() if a.isChecked()]
-    assert checked == ["Kokoro · 140 MB download"]
+    assert checked == [KOKORO_ROW]
 
 
 def test_settings_menu(tray):
@@ -176,7 +178,7 @@ def test_local_only_hides_online_rows_and_api_keys(tray):
     tray._refresh_checks()
     assert "API Keys" not in rows(tray.settings_menu)
     r = rows(tray.provider_menu)
-    assert ONLINE_HEADER not in r and r[0] == LOCAL_HEADER and "Kokoro · 140 MB download" in r
+    assert ONLINE_HEADER not in r and r[0] == LOCAL_HEADER and KOKORO_ROW in r
     assert find(tray.settings_menu, local_only_title(False)).isChecked()
     tray.ctl.set_local_only(False)
     tray._refresh_checks()
