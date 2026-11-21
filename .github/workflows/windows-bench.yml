@@ -1,0 +1,130 @@
+name: Windows dictation benchmark
+
+# Measures the two local dictation models on GitHub's Windows machine (scripts/bench_dictation.py):
+# which Parakeet speech model files Windows should use, and whether the S1-mini cleanup model fits
+# the app's cleanup budget on a PC CPU. llama-cpp-python is not a project dependency on Windows,
+# so a CPU build is installed here for the benchmark only. The report is uploaded even when a step
+# fails, and its summary goes into the job summary.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows]
+    paths:
+      - scripts/bench_dictation.py
+      - scripts/bench/**
+      - .github/workflows/windows-bench.yml
+
+jobs:
+  bench:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+
+      - name: Restore the model downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\lyssna-bench
+          key: windows-bench-${{ hashFiles('scripts/bench_dictation.py', 'scripts/bench/**') }}
+          restore-keys: windows-bench-
+
+      - name: Install a CPU build of llama-cpp-python (benchmark only)
+        id: llama
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = "Continue"
+          $py = ".venv\Scripts\python.exe"
+          $index = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+          $pinned = "0.3.37"
+          $route = ""
+          $log = @()
+
+          function Test-Llama {
+            $v = & $py -c "import llama_cpp, jinja2; print(llama_cpp.__version__)" 2>&1
+            if ($LASTEXITCODE -eq 0) { return "$v".Trim() }
+            Write-Host "llama_cpp does not import: $v"
+            return ""
+          }
+
+          # --no-config: the project's [tool.uv.extra-build-variables] turn Metal on for the Mac build.
+          Write-Host "::group::Route 1: prebuilt CPU wheel of llama-cpp-python $pinned"
+          uv pip install --no-config --python $py "llama-cpp-python==$pinned" --extra-index-url $index --only-binary llama-cpp-python
+          if ($LASTEXITCODE -eq 0) { $route = "prebuilt CPU wheel $pinned from $index" } else { $log += "route 1: no prebuilt wheel of $pinned on the CPU index" }
+          Write-Host "::endgroup::"
+
+          if (-not $route) {
+            Write-Host "::group::Route 2: the newest prebuilt CPU wheel for Windows x64 and Python 3.11"
+            try {
+              $page = (Invoke-WebRequest -UseBasicParsing "$index/llama-cpp-python/").Content
+              $versions = [regex]::Matches($page, 'llama_cpp_python-(\d+\.\d+\.\d+)-(?:py3-none|cp311-cp311)-win_amd64\.whl') |
+                ForEach-Object { $_.Groups[1].Value } | Sort-Object { [version]$_ } -Descending | Select-Object -Unique
+              $newest = $versions | Select-Object -First 1
+            } catch { $newest = ""; $log += "route 2: the index page could not be read: $_" }
+            if ($newest) {
+              Write-Host "Newest Windows x64 wheel on the CPU index: $newest"
+              uv pip install --no-config --python $py "llama-cpp-python==$newest" --extra-index-url $index --only-binary llama-cpp-python
+              if ($LASTEXITCODE -eq 0) { $route = "prebuilt CPU wheel $newest from $index (no wheel of $pinned there)" } else { $log += "route 2: installing the $newest wheel failed" }
+            } elseif (-not ($log -match "route 2")) { $log += "route 2: no Windows x64 wheel on the CPU index" }
+            Write-Host "::endgroup::"
+          }
+
+          if (-not $route) {
+            Write-Host "::group::Route 3: build llama-cpp-python $pinned from source with MSVC (GGML_NATIVE=off)"
+            $env:CMAKE_ARGS = "-DGGML_NATIVE=off"
+            uv pip install --no-config --python $py --no-binary llama-cpp-python "llama-cpp-python==$pinned"
+            if ($LASTEXITCODE -eq 0) { $route = "built $pinned from source with MSVC, GGML_NATIVE=off" } else { $log += "route 3: the source build failed (see the log above)" }
+            Write-Host "::endgroup::"
+          }
+
+          $version = ""
+          if ($route) {
+            & $py -c "import jinja2" 2>$null
+            if ($LASTEXITCODE -ne 0) { uv pip install --no-config --python $py jinja2 }
+            $version = Test-Llama
+            if (-not $version) { $log += "installed by: $route, but llama_cpp or jinja2 does not import" }
+          }
+
+          if ($version) {
+            $note = "installed llama-cpp-python $version by: $route"
+            Write-Host "llama-cpp-python: $note"
+            "ok=true" >> $env:GITHUB_OUTPUT
+          } else {
+            $note = "failed: " + ($log -join "; ")
+            Write-Host "::error title=llama-cpp-python not installed::$note"
+            "ok=false" >> $env:GITHUB_OUTPUT
+          }
+          Set-Content -Path llama-install.txt -Value $note -Encoding utf8
+          exit 0
+
+      - name: Run the benchmark
+        shell: pwsh
+        run: |
+          $flags = @()
+          if ("${{ steps.llama.outputs.ok }}" -ne "true") { $flags += "--skip-cleanup" }
+          uv run --no-sync python scripts/bench_dictation.py --out bench-report.txt --summary bench-summary.md `
+            --install-note-file llama-install.txt --work-dir "${{ runner.temp }}\lyssna-bench" @flags
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error title=Benchmark::the benchmark script itself failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
+
+      - name: Job summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path bench-summary.md) { Get-Content bench-summary.md | Add-Content $env:GITHUB_STEP_SUMMARY }
+          else { "## Lyssna dictation benchmark`n`nNo summary was written; see the log." | Add-Content $env:GITHUB_STEP_SUMMARY }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-bench-report
+          path: |
+            bench-report.txt
+            bench-summary.md
+            llama-install.txt
+          if-no-files-found: warn
