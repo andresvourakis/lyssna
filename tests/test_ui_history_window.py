@@ -101,9 +101,9 @@ def test_figure_has_thousands_separators():
 
 
 @pytest.mark.parametrize("value, mac, pc", [
-    (30, f"Kept for 30 days on this {host.DEVICE}", "Kept for 30 days on this PC"),
+    (30, "Kept for 30 days on this Mac", "Kept for 30 days on this PC"),
     (1, "Kept for 1 day on this Mac", "Kept for 1 day on this PC"),
-    (-1, f"Kept on this {host.DEVICE} until you clear it", "Kept on this PC until you clear it"),
+    (-1, "Kept on this Mac until you clear it", "Kept on this PC until you clear it"),
     (0, "History is off", "History is off"),
 ])
 def test_retention_text_names_the_computer(value, mac, pc):
