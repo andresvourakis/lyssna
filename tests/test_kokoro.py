@@ -336,7 +336,7 @@ def test_privacy_flag_per_engine(name, off_device):
 def ctl(monkeypatch):
     monkeypatch.setattr(kokoro.KokoroProvider, "can_run", classmethod(lambda cls: True))
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
+    config.CONFIG_PATH.write_text(config.TEMPLATE, encoding="utf-8")
     return Controller()
 
 
@@ -357,7 +357,7 @@ def test_new_install_starts_on_kokoro_without_downloading(ctl):
 def test_no_key_falls_back_to_kokoro_at_launch(monkeypatch):
     monkeypatch.setattr(kokoro.KokoroProvider, "can_run", classmethod(lambda cls: True))
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE.replace('provider = "kokoro"', 'provider = "cartesia"'))
+    config.CONFIG_PATH.write_text(config.TEMPLATE.replace('provider = "kokoro"', 'provider = "cartesia"'), encoding="utf-8")
     c = Controller()
     assert c.cfg["provider"] == "kokoro" and c.fell_back_to == "kokoro"
 
@@ -365,7 +365,7 @@ def test_no_key_falls_back_to_kokoro_at_launch(monkeypatch):
 def test_existing_key_user_is_unchanged(fake_keychain, monkeypatch):
     fake_keychain.items["cartesia"] = "ck"
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE.replace('provider = "kokoro"', 'provider = "cartesia"'))
+    config.CONFIG_PATH.write_text(config.TEMPLATE.replace('provider = "kokoro"', 'provider = "cartesia"'), encoding="utf-8")
     c = Controller()
     assert c.cfg["provider"] == "cartesia" and c.fell_back_to == ""
 

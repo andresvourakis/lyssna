@@ -63,7 +63,9 @@ SCRIPT = textwrap.dedent(
     assert host.IS_WINDOWS and host.DEVICE == "PC"
     for name, (_mac, windows) in host.MODULES.items():
         module = getattr(host, name)
-        assert (module is None) if windows is None else (module.__name__ == windows and windows.startswith("lyssna.win.")), name
+        home = "lyssna.app" if name == "app" else "lyssna.win."  # the one app, and the Windows plumbing
+        assert (module is None) if windows is None else (module.__name__ == windows and windows.startswith(home)), name
+    assert host.interface() == "new"
     for name in ("mic", "insert", "field_probe", "globe", "launch_agent", "speechy"):
         try:
             host.require(name)

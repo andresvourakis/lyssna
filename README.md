@@ -165,9 +165,9 @@ Run `make` to list every target. From source, macOS asks for Accessibility for y
 <summary>A short tour of the code</summary>
 
 ```
-cli.py ──socket──▶ controller.py ◀── app.py (menu bar, hotkeys, mouse gestures)
+cli.py ──socket──▶ controller.py ◀── legacy/app.py (menu bar, hotkeys, mouse gestures)
                         │                │
-                     player.py        ui/ (selection_button, mini_player, panel)
+                     player.py        legacy/ui/ (selection_button, mini_player, panel)
                         │
           providers/ + cache.py + keystore.py
 ```

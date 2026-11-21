@@ -9,8 +9,11 @@ Dictation is kept off the machine the same way: its vocabulary and model files l
 temp dir, the speech and cleanup models cannot load, and httpx.post and httpx.get (every
 online engine, and the key checks) refuse unless a test fakes them. Tests that need a config file write their own on top of this.
 The browser is never opened: the website has no address unless a test gives it one, and the
-call that would open a page refuses unless a test fakes it."""
+call that would open a page refuses unless a test fakes it.
+The Qt interface's tests draw on Qt's offscreen platform, so no window ever reaches the screen,
+and share one QApplication (the qapp fixture)."""
 
+import os
 import sys
 
 import httpx
@@ -21,12 +24,14 @@ from lyssna.mac import credentials as mac_credentials
 from lyssna.mac import launch_agent, speechy
 from lyssna.providers import kokoro
 
-# These files need AppKit, Quartz or the Mac-only modules (lyssna.ui, app, lyssna.mac.capture and events), so they cannot run off macOS.
+# These need AppKit, Quartz or the Mac-only modules (the legacy interface in lyssna.legacy, lyssna.mac.capture and
+# events), so they cannot run off macOS.
 collect_ignore = [] if sys.platform == "darwin" else [
-    "test_mac_capture_ax_gate.py", "test_mac_clipboard.py", "test_dictation_insert.py", "test_mac_events.py", "test_dictation_app.py",
-    "test_player.py", "test_keystore_launch.py", "test_menu.py", "test_setup_window.py", "test_history_window.py",
-    "test_dictation_pill.py", "test_panel.py", "test_theme.py", "test_whats_new_window.py", "test_selection.py", "test_host.py",
+    "legacy", "test_mac_capture_ax_gate.py", "test_mac_clipboard.py", "test_dictation_insert.py", "test_mac_events.py",
+    "test_player.py", "test_selection.py", "test_host.py",
 ]
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"  # before any test module imports Qt
 
 
 class FakeKeychain:
@@ -174,3 +179,15 @@ def no_browser(monkeypatch):
     monkeypatch.setattr(support, "SITE_URL", "")
     monkeypatch.delenv(support.SITE_ENV, raising=False)
     monkeypatch.setattr(support, "_open", refuse)
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """The one QApplication the Qt interface's tests share, on the offscreen platform."""
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    app = QCoreApplication.instance()
+    if app is not None and not isinstance(app, QApplication):
+        pytest.skip("a non-GUI Qt application already exists in this process")
+    return app or QApplication(["lyssna-tests"])

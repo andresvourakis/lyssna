@@ -1,4 +1,5 @@
-"""The What's New window: this version's highlights, opened from the menu after an update.
+"""The What's New window on Windows, the twin of legacy/ui/whats_new_window.py: this version's
+highlights, opened from the menu after an update.
 
     [mark] What's new in Lyssna 0.3.0                 (mark + serif headline)
     •  one short line per highlight
@@ -7,34 +8,23 @@
     This update was free. ♥ Support Lyssna     All Changes
 
 It never opens on its own: lyssna.whatsnew decides when the menu offers it. The footer's left
-side is the support sentence and its link (hidden while the website has no address, see
-lyssna.support); All Changes opens the full changelog on GitHub.
-
-The look follows the History window: the brand surface, a serif headline, the system font for
-the rest, a hairline above the footer. The height follows the text. Every measurement is a
-named constant below."""
+side is the support sentence and its link with the heart (hidden while the website has no
+address, see lyssna.support); All Changes opens the full changelog on GitHub. The measurements
+are the Mac's, from layout/whats_new.py, and the height follows the text."""
 
 from __future__ import annotations
 
-import AppKit
-import objc
-from AppKit import NSApp, NSBackingStoreBuffered
-from Foundation import NSMakeRect, NSObject
+from PySide6.QtWidgets import QWidget
 
 from .. import __version__, support, whatsnew
 from ..menu import REPO_URL
 from . import theme
-from .history_window import HistorySurfaceView, HistoryTextButton, _ink_left, _styled_label
-from .mark import MarkView
-from .panel import TintedView, screen_under_mouse
-from .setup_window import EditingWindow, _fit, _font, _label, _serif
-from .shared.whats_new import (
+from .layout.whats_new import (
     BULLET_W,
     CHANGES_TITLE,
     FOOTER_H,
     FOOTER_SIZE,
     HEAD_TO_NOTES,
-    LABEL_INSET,
     MARGIN,
     MARK_GAP,
     MARK_H,
@@ -47,112 +37,103 @@ from .shared.whats_new import (
     TOP,
     W,
 )
+from .window import Hairline, Header, Label, LyssnaWindow, TextButton
 
 CHANGES_URL = f"{REPO_URL}/blob/main/CHANGELOG.md"
 
 
-class WhatsNewWindow(NSObject):
-    """Owns the window. `version` is the running one unless a test sets it before show()."""
+class WhatsNewWindow(LyssnaWindow):
+    """`version` is the running one unless a test sets it before prepare() or show()."""
 
-    def init(self):
-        self = objc.super(WhatsNewWindow, self).init()
-        if self is None:
-            return None
+    def __init__(self):
+        super().__init__("What's New in Lyssna")
         self.version = __version__
-        self.window = None
-        return self
+        self.built = False
 
-    @objc.python_method
     def show(self) -> None:
         self.prepare()
-        if not self.window.isVisible():
-            vf = screen_under_mouse().visibleFrame()
-            f = self.window.frame()
-            x = vf.origin.x + (vf.size.width - f.size.width) / 2
-            y = vf.origin.y + (vf.size.height - f.size.height) * 0.6  # a little above the middle
-            self.window.setFrameOrigin_((round(x), round(max(vf.origin.y, y))))
-        NSApp.activateIgnoringOtherApps_(True)
-        self.window.makeKeyAndOrderFront_(None)
+        self.show_centered()
 
-    @objc.python_method
     def prepare(self) -> None:
         """Build the window if needed, without putting it on screen."""
-        if self.window is None:
+        if not self.built:
             self._build()
 
-    @objc.python_method
     def _build(self) -> None:
-        style = AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
-        win = EditingWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, W, 300), style, NSBackingStoreBuffered, False)
-        win.setTitle_("What's New in Lyssna")
-        win.setTitlebarAppearsTransparent_(True)
-        win.setBackgroundColor_(theme.SURFACE)
-        win.setReleasedWhenClosed_(False)
-        content = HistorySurfaceView.alloc().initWithFrame_(NSMakeRect(0, 0, W, 300))
-        win.setContentView_(content)
-        self.window = win
-        self.content = content
-        add = content.addSubview_
+        self.built = True
         inner = W - 2 * MARGIN
 
-        self.mark = MarkView.make(MARK_H)
-        add(self.mark)
-        self.title = _label(whatsnew.window_title(self.version), TITLE_SIZE)
-        self.title.setFont_(_serif(TITLE_SIZE))
-        add(self.title)
-        _fit(self.title)
-        mw = self.mark.frame().size.width
-        th = self.title.frame().size.height
-        row_h = max(MARK_H, th)
-        y = TOP
-        self.mark.setFrameOrigin_((MARGIN, y + (row_h - MARK_H) / 2))
-        self.title.setFrameOrigin_((MARGIN + mw + MARK_GAP - LABEL_INSET, y + (row_h - th) / 2))
-        y += row_h + HEAD_TO_NOTES
+        self.heading = Header(whatsnew.window_title(self.version), self, mark_h=MARK_H, title_size=TITLE_SIZE,
+                              mark_gap=MARK_GAP)
+        self.heading.move(round(MARGIN), round(TOP))
+        y = TOP + self.heading.fit(inner) + HEAD_TO_NOTES
 
-        self.note_labels = []
+        self.note_labels: list[Label] = []
         for i, text in enumerate(whatsnew.notes(self.version)):
             if i:
                 y += NOTE_GAP
-            bullet = _styled_label("•", _font(NOTE_SIZE), theme.CONTENT_DIM, NOTE_LINE_H, wrap=False)
-            _fit(bullet)
-            bullet.setFrameOrigin_((MARGIN - _ink_left(bullet), y))
-            add(bullet)
-            label = _styled_label(text, _font(NOTE_SIZE), theme.CONTENT, NOTE_LINE_H)
-            _, h = _fit(label, inner - BULLET_W)
-            label.setFrameOrigin_((MARGIN + BULLET_W - LABEL_INSET, y))
-            add(label)
+            bullet = Label("•", self, size=NOTE_SIZE, color=theme.content_dim, line_height=NOTE_LINE_H)
+            bullet.fit()
+            bullet.move(round(MARGIN), round(y))
+            label = Label(text, self, size=NOTE_SIZE, wrap=True, line_height=NOTE_LINE_H)
+            _, h = label.fit(inner - BULLET_W)
+            label.move(round(MARGIN + BULLET_W), round(y))
             self.note_labels.append(label)
             y += h
         y += NOTES_TO_FOOTER
 
-        add(TintedView.make(NSMakeRect(0, y, W, 1), theme.HAIRLINE))
+        self.footer_line = Hairline(self)
+        self.footer_line.setGeometry(0, round(y), round(W), 1)
         footer_top = y
 
-        self.support_label = _label(support.WHATS_NEW_LINE, FOOTER_SIZE, color=theme.CONTENT_DIM)
-        add(self.support_label)
-        self.support_button = HistoryTextButton.make(support.MENU_TITLE, self, "openSupport:", link=True,
-                                                     symbol=support.SYMBOL)
-        add(self.support_button)
-        lw, lh = _fit(self.support_label)
-        left = MARGIN - _ink_left(self.support_label)
-        self.support_label.setFrameOrigin_((left, footer_top + (FOOTER_H - lh) / 2))
-        bh = self.support_button.frame().size.height
-        self.support_button.setFrameOrigin_((left + lw + SUPPORT_GAP, footer_top + (FOOTER_H - bh) / 2))
+        self.support_label = Label(support.WHATS_NEW_LINE, self, size=FOOTER_SIZE, color=theme.content_dim)
+        lw, lh = self.support_label.fit()
+        self.support_label.move(round(MARGIN), round(footer_top + (FOOTER_H - lh) / 2))
+        self.support_button = TextButton(support.MENU_TITLE, self, size=FOOTER_SIZE, link=True, symbol=support.SYMBOL,
+                                         clicked=self.open_support)
+        bh = self.support_button.height()
+        self.support_button.move(round(MARGIN + lw + SUPPORT_GAP + 2), round(footer_top + (FOOTER_H - bh) / 2))
         for view in (self.support_label, self.support_button):
-            view.setHidden_(not support.enabled())
+            view.setVisible(support.enabled())
 
-        self.changes_button = HistoryTextButton.make(CHANGES_TITLE, self, "openChanges:",
-                                                     weight=AppKit.NSFontWeightRegular)
-        add(self.changes_button)
-        cw, ch = self.changes_button.frame().size.width, self.changes_button.frame().size.height
-        self.changes_button.setFrameOrigin_((W - MARGIN - cw + LABEL_INSET * 2, footer_top + (FOOTER_H - ch) / 2))
+        self.changes_button = TextButton(CHANGES_TITLE, self, size=FOOTER_SIZE, weight="regular", clicked=self.open_changes)
+        cw, ch = self.changes_button.width(), self.changes_button.height()
+        self.changes_button.move(round(W - MARGIN - cw), round(footer_top + (FOOTER_H - ch) / 2))
 
-        # The content view is flipped, so growing or shrinking the window keeps the layout.
-        win.setContentSize_((W, footer_top + FOOTER_H))
+        self.setFixedSize(round(W), round(footer_top + FOOTER_H))
 
-    def openSupport_(self, sender):
+    def open_support(self) -> None:
         support.open_support("whats new")
 
-    def openChanges_(self, sender):
+    def open_changes(self) -> None:
         support._open(CHANGES_URL)
+
+
+# -- previews (python -m lyssna.ui.preview) -------------------------------------------------
+
+_PREVIEW_NOTES = (
+    "Lyssna now runs on Windows. Select text anywhere and press Ctrl+Alt+S.",
+    "The free voice on this PC reads without an account or a key.",
+    "The player tucks into the edge of the screen when you are not using it.",
+)
+
+
+def _preview(with_support: bool) -> QWidget:
+    """Three notes, with the support line or without it, whatever the environment says."""
+    import os
+    from unittest import mock
+
+    with mock.patch.dict(whatsnew.NOTES, {"9.9.9": _PREVIEW_NOTES}), \
+            mock.patch.object(support, "SITE_URL", "https://example.test" if with_support else ""), \
+            mock.patch.dict(os.environ):
+        os.environ.pop(support.SITE_ENV, None)
+        w = WhatsNewWindow()
+        w.version = "9.9.9"
+        w.prepare()
+    return w
+
+
+PREVIEWS = {
+    "whats-new": lambda: _preview(False),
+    "whats-new.support": lambda: _preview(True),
+}

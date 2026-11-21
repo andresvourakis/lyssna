@@ -39,7 +39,8 @@ DEFAULTS: dict = {
     },
     "ui": {"selection_button": True, "mini_player": True, "button_timeout": 4.0,
            "player_dock": "", "player_x": -1.0, "player_y": -1.0,
-           "idle_pill": True, "auto_hide": True, "wave": True, "dictation_dock": "", "dictation_y": -1.0},
+           "idle_pill": True, "auto_hide": True, "wave": True, "dictation_dock": "", "dictation_y": -1.0,
+           "interface": "new" if host.IS_WINDOWS else "legacy"},  # which interface runs: host.interface()
     "inworld": {"api_key": "", "voice": "Sarah", "model": "inworld-tts-2"},
     "cartesia": {"api_key": "", "voice": "47c38ca4-5f35-497b-b1a3-415245fb35e1", "model": "sonic-3.6"},
     "elevenlabs": {"api_key": "", "voice": "JBFqnCBsd6RMkjVDRZzb", "model": "eleven_v3"},
@@ -106,6 +107,7 @@ wave = true                # the resting wave ripples now and then; false = it s
 # centre of the screen. Managed by the app.
 dictation_dock = ""
 dictation_y = -1.0
+# interface = "new"        # temporary: try the new interface on this Mac ("legacy", the default, is the one you know)
 
 [dictation]
 # Speech to text: parakeet runs on this Mac (your voice never leaves it; about 630 MB, downloaded
@@ -189,6 +191,8 @@ if host.IS_WINDOWS:  # the same file, with the Windows places and without the Ma
          """# true = never use an online service: only Kokoro for reading, and only the engines on this PC
 # for dictation, so your text and voice stay on this PC.
 # The same as Settings > Keep Everything on This PC in the menu."""),
+        ('# interface = "new"        # temporary: try the new interface on this Mac ("legacy", the default, is the one you know)\n',
+         ""),
         ("parakeet runs on this Mac", "parakeet runs on this PC"),
         ("s1-mini runs on this Mac", "s1-mini runs on this PC"),
         ("""# API keys: add them from the menu bar (Setup… or Settings > API Keys). They are stored in your macOS
@@ -232,8 +236,8 @@ def ensure_dirs() -> None:
 
 
 def _write_private(path: Path, text: str) -> None:
-    """Write a file only its owner can read (it may hold API keys)."""
-    path.write_text(text)
+    """Write a file only its owner can read (it may hold API keys). TOML is UTF-8 on every system."""
+    path.write_text(text, encoding="utf-8")
     os.chmod(path, 0o600)
 
 
@@ -242,7 +246,7 @@ def load() -> dict:
     if not CONFIG_PATH.exists():
         _write_private(CONFIG_PATH, TEMPLATE)
     try:
-        user = tomllib.loads(CONFIG_PATH.read_text())
+        user = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError):
         user = {}
     cfg = _merge(DEFAULTS, user)
@@ -308,7 +312,7 @@ def _set_line(lines: list[str], section: str | None, key: str, value) -> None:
 def file_api_key(section: str) -> str:
     """The api_key written in the config file itself for a section, ignoring the Keychain."""
     try:
-        user = tomllib.loads(CONFIG_PATH.read_text())
+        user = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError):
         return ""
     value = user.get(section, {}).get("api_key", "") if isinstance(user.get(section), dict) else ""
@@ -332,7 +336,7 @@ def save_api_key(section: str, key: str) -> bool:
 def update(**changes) -> dict:
     """Persist settings without clobbering the user's comments. Keys may be dotted for
     sections: update(speed=1.2, **{"ui.selection_button": False})."""
-    text = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else TEMPLATE
+    text = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else TEMPLATE
     lines = text.split("\n")
     for dotted, value in changes.items():
         section, _, key = dotted.rpartition(".")

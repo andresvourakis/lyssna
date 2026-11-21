@@ -8,11 +8,11 @@ from lyssna import config
 
 def test_update_keeps_comments_and_handles_sections(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
-    path.write_text(config.TEMPLATE)
+    path.write_text(config.TEMPLATE, encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_PATH", path)
     monkeypatch.setattr(config, "ensure_dirs", lambda: None)
     cfg = config.update(speed=1.7, **{"ui.selection_button": False, "inworld.voice": "Olivia", "new.key": "v"})
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     data = tomllib.loads(text)
     assert data["speed"] == 1.7 and cfg["speed"] == 1.7
     assert data["ui"]["selection_button"] is False and data["ui"]["mini_player"] is True
@@ -24,25 +24,25 @@ def test_update_keeps_comments_and_handles_sections(tmp_path, monkeypatch):
 
 def test_idle_pill_auto_hide_is_on_by_default_and_round_trips(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
-    path.write_text(config.TEMPLATE)
+    path.write_text(config.TEMPLATE, encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_PATH", path)
     monkeypatch.setattr(config, "ensure_dirs", lambda: None)
     assert config.DEFAULTS["ui"]["auto_hide"] is True
     assert tomllib.loads(config.TEMPLATE)["ui"]["auto_hide"] is True
     assert config.update(**{"ui.auto_hide": False})["ui"]["auto_hide"] is False
-    assert tomllib.loads(path.read_text())["ui"]["auto_hide"] is False
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["ui"]["auto_hide"] is False
     assert config.update(**{"ui.auto_hide": True})["ui"]["auto_hide"] is True
 
 
 def test_idle_pill_wave_is_on_by_default_and_round_trips(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
-    path.write_text(config.TEMPLATE)
+    path.write_text(config.TEMPLATE, encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_PATH", path)
     monkeypatch.setattr(config, "ensure_dirs", lambda: None)
     assert config.DEFAULTS["ui"]["wave"] is True
     assert tomllib.loads(config.TEMPLATE)["ui"]["wave"] is True
     assert config.update(**{"ui.wave": False})["ui"]["wave"] is False
-    assert tomllib.loads(path.read_text())["ui"]["wave"] is False
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["ui"]["wave"] is False
     assert config.update(**{"ui.wave": True})["ui"]["wave"] is True
 
 
@@ -103,7 +103,7 @@ def test_effective_provider_leaves_say_alone():
 @pytest.mark.skipif(sys.platform != "darwin", reason="POSIX file permissions")
 def test_update_writes_config_owner_only(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
-    path.write_text(config.TEMPLATE)
+    path.write_text(config.TEMPLATE, encoding="utf-8")
     path.chmod(0o644)
     monkeypatch.setattr(config, "CONFIG_PATH", path)
     monkeypatch.setattr(config, "ensure_dirs", lambda: None)

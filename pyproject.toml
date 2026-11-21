@@ -1,20 +1,25 @@
 [project]
 name = "lyssna"
 version = "0.3.1"
-description = "Read any text on your Mac aloud with a natural voice, and dictate into any app."
+description = "Read any text aloud with a natural voice, and dictate into any app, on your Mac or PC."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Andres Vourakis" }]
-keywords = ["text-to-speech", "tts", "speech-to-text", "dictation", "macos", "menu-bar", "accessibility"]
+keywords = ["text-to-speech", "tts", "speech-to-text", "dictation", "macos", "windows", "menu-bar", "accessibility"]
 classifiers = [
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Environment :: MacOS X",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
+    # The interface, on both systems: Qt through PySide6.
+    "PySide6-Essentials>=6.10",
+    "PySide6-Addons>=6.10",
+    # The Mac's legacy AppKit interface (lyssna/legacy/) needs rumps until it is removed.
     "rumps>=0.4; sys_platform == 'darwin'",
     "httpx>=0.27",
     "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
@@ -23,9 +28,7 @@ dependencies = [
     "pyobjc-framework-ApplicationServices>=10; sys_platform == 'darwin'",
     "pyobjc-framework-servicemanagement>=12.2.2; sys_platform == 'darwin'",
     "pyobjc-framework-security>=10; sys_platform == 'darwin'",
-    # The Windows app: its interface (Qt through PySide6) and UI Automation for the selected text.
-    "PySide6-Essentials>=6.10; sys_platform == 'win32'",
-    "PySide6-Addons>=6.10; sys_platform == 'win32'",
+    # Windows: UI Automation for the selected text.
     "comtypes>=1.4; sys_platform == 'win32'",
     # The free voice that runs on this Mac (Kokoro-82M through onnxruntime, CPU only).
     "kokoro-onnx>=0.6.1,<0.7",
@@ -63,11 +66,6 @@ dev = [
 ]
 build = [
     "pyinstaller>=6.22",
-]
-# The Windows interface, installable on a Mac so it can be run there for review: uv sync --group qt
-qt = [
-    "PySide6-Essentials>=6.10",
-    "PySide6-Addons>=6.10",
 ]
 
 [tool.uv.extra-build-variables]

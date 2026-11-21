@@ -1,5 +1,7 @@
-"""The shape of the code: the engine stays free of Qt, and the Mac and Windows twins under
-lyssna/mac/ and lyssna/win/ offer the same names wherever the shared code uses them."""
+"""The shape of the code: the engine stays free of Qt, the interface's layout rules stay free of
+Qt and of every platform framework, the legacy interface is reached only through host, and
+the Mac and Windows twins under lyssna/mac/ and lyssna/win/ offer the same names wherever the
+shared code uses them."""
 
 import ast
 import importlib.util
@@ -14,6 +16,7 @@ from lyssna import host
 
 REPO = Path(__file__).resolve().parent.parent
 PACKAGE = REPO / "lyssna"
+TESTS = REPO / "tests"
 
 ENGINE = [
     "lyssna.controller",
@@ -54,6 +57,90 @@ def test_the_engine_imports_without_qt():
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
 
+# -- the layout rules are pure ----------------------------------------------------------------
+
+LAYOUT = sorted(m.name for m in pkgutil.walk_packages([str(PACKAGE / "ui" / "layout")], "lyssna.ui.layout."))
+
+NO_QT_NO_PLATFORM = textwrap.dedent(
+    """
+    import importlib, sys
+
+    BLOCKED = {"PySide6", "shiboken6", "AppKit", "Foundation", "Quartz", "objc", "rumps", "AVFoundation",
+               "ApplicationServices", "CoreFoundation", "Security", "ServiceManagement", "PyObjCTools",
+               "comtypes", "winreg"}
+
+    class Blocked:
+        def find_spec(self, name, path=None, target=None):
+            if name.split(".")[0] in BLOCKED:
+                raise ImportError(f"{name} is blocked: the layout rules must stay pure")
+            return None
+
+    sys.meta_path.insert(0, Blocked())
+    for name in sys.argv[1:]:
+        importlib.import_module(name)
+    loaded = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED)
+    assert not loaded, loaded
+    print("imported", len(sys.argv) - 1, "layout modules")
+    """
+)
+
+
+def test_the_layout_rules_import_without_qt_or_a_platform():
+    assert len(LAYOUT) >= 9, LAYOUT  # the scan itself is not silently empty
+    result = subprocess.run([sys.executable, "-c", NO_QT_NO_PLATFORM, *LAYOUT], cwd=REPO, capture_output=True, text=True,
+                            timeout=120)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+
+# -- the legacy interface is reached only through host ----------------------------------------
+
+
+def _resolved_imports(path: Path, package: str, *, names: bool = False) -> set[str]:
+    """Every module `path` imports (relative imports resolved against `package`, the dotted
+    package the file sits in). With `names`, also every string constant naming a lyssna module,
+    which is how host names the modules it loads."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package.split(".")[: len(package.split(".")) - node.level + 1]
+                module = ".".join([*base, node.module] if node.module else base)
+            else:
+                module = node.module or ""
+            found.add(module)
+            found.update(f"{module}.{alias.name}" for alias in node.names)
+        elif names and isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("lyssna."):
+            found.add(node.value)
+    return found
+
+
+def _package_of(path: Path) -> str:
+    return ".".join(path.relative_to(REPO).with_suffix("").parts[:-1])
+
+
+def _reaches_legacy(path: Path, *, names: bool = False) -> bool:
+    modules = _resolved_imports(path, _package_of(path), names=names)
+    return any(m == "lyssna.legacy" or m.startswith("lyssna.legacy.") for m in modules)
+
+
+def test_the_new_interface_never_imports_the_legacy_one():
+    files = [*sorted((PACKAGE / "ui").rglob("*.py")), PACKAGE / "app.py"]
+    assert not [str(p.relative_to(REPO)) for p in files if _reaches_legacy(p, names=True)]
+
+
+def test_only_host_picks_the_legacy_interface():
+    """In the package, host is the only file that even names lyssna.legacy; outside the legacy
+    tests no test or script imports it."""
+    outside = [p for p in PACKAGE.rglob("*.py") if not p.is_relative_to(PACKAGE / "legacy")]
+    assert sorted(str(p.relative_to(REPO)) for p in outside if _reaches_legacy(p, names=True)) == ["lyssna/host.py"]
+    assert host.MODULES["app"][0] == "lyssna.legacy.app"
+    others = [p for p in [*TESTS.rglob("*.py"), *(REPO / "scripts").rglob("*.py")] if not p.is_relative_to(TESTS / "legacy")]
+    assert not [str(p.relative_to(REPO)) for p in others if _reaches_legacy(p)]
+
+
 # -- the twins offer what the shared code uses ----------------------------------------------
 #
 # Approach: read the shared code with ast (nothing is imported, so this runs the same on any
@@ -63,13 +150,12 @@ def test_the_engine_imports_without_qt():
 # or host.events`). Then, for every neutral name that has both a Mac and a Windows module,
 # each used name must be defined at the top level of both files.
 
-SHARED_SKIP = ("mac", "win", "ui")  # the platform code itself, and the interfaces (checked below)
-SHARED_EXTRA = [PACKAGE / "win" / "app.py", *sorted((PACKAGE / "ui" / "qt").glob("*.py"))]  # the Qt app runs on both
+SHARED_SKIP = ("mac", "win", "legacy")  # the platform code itself, and the Mac-only legacy interface
 
 
 def _shared_files() -> list[Path]:
     files = [p for p in PACKAGE.rglob("*.py") if p.relative_to(PACKAGE).parts[0] not in SHARED_SKIP]
-    return [p for p in files if p.name not in ("app.py", "host.py")] + SHARED_EXTRA
+    return [p for p in files if p.name != "host.py"]
 
 
 def _dotted(node: ast.AST) -> str | None:
@@ -92,7 +178,7 @@ def _platform_module(node: ast.AST) -> str | None:
 
 
 def _uses(path: Path) -> set[tuple[str, str]]:
-    tree = ast.parse(path.read_text(), str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
     aliases: dict[str, str] = {}
     assignments = []
     for node in ast.walk(tree):
@@ -129,7 +215,7 @@ def _uses(path: Path) -> set[tuple[str, str]]:
 def _defined(module: str) -> set[str]:
     origin = importlib.util.find_spec(module).origin
     names = set()
-    for node in ast.parse(Path(origin).read_text()).body:
+    for node in ast.parse(Path(origin).read_text(encoding="utf-8")).body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.add(node.name)
         elif isinstance(node, ast.Assign | ast.AnnAssign):
@@ -148,7 +234,7 @@ def test_both_twins_define_what_the_shared_code_uses():
     paired = {name: pair for name, pair in host.MODULES.items() if all(pair)}
     checked = {name: attrs for name, attrs in used.items() if name in paired}
     # Every pair the shared code reaches is seen here, so the scan itself is not silently empty.
-    assert {"capture", "audio", "hotkey_table", "credentials", "policy", "autostart", "ipc", "events", "app"} <= set(checked)
+    assert {"capture", "audio", "hotkey_table", "credentials", "policy", "autostart", "ipc", "events", "app", "instance"} <= set(checked)
     missing = []
     for name, attrs in sorted(checked.items()):
         for module in paired[name]:

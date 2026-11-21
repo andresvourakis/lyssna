@@ -10,7 +10,7 @@ import time
 import numpy as np
 import pytest
 
-from lyssna import config, controller, keystore
+from lyssna import config, controller, host, keystore
 from lyssna.controller import ASK_MIC, BUSY, GLOBE_HINT, MODEL_READY, NO_MIC, Controller, Notice
 from lyssna.dictation import models
 from lyssna.dictation.types import DictationResult
@@ -116,7 +116,7 @@ def models_here(monkeypatch):
 @pytest.fixture
 def ctl(monkeypatch, models_here):
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
+    config.CONFIG_PATH.write_text(config.TEMPLATE, encoding="utf-8")
     monkeypatch.setattr(controller, "open_url", lambda url: opened.append(url))
     opened: list[str] = []
     c = Controller()
@@ -370,6 +370,7 @@ def test_missing_cleanup_model_does_not_block(ctl, monkeypatch):
     assert s1.starts == 1  # fetched in the background; this dictation uses the rules
 
 
+@pytest.mark.skipif(not host.HAS_GLOBE_KEY, reason="the Globe key and its hint exist on the Mac only")
 def test_globe_hint_shows_once(ctl, monkeypatch):
     monkeypatch.setattr("lyssna.mac.globe.globe_key_action", lambda: "emoji")
     ctl.dictation_start()

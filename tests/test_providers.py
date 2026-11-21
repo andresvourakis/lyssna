@@ -177,7 +177,7 @@ def test_privacy_line_names_the_endpoint_host(fake_keychain, base_url, line):
 
     fake_keychain.items["openai"] = "k"
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
+    config.CONFIG_PATH.write_text(config.TEMPLATE, encoding="utf-8")
     c = Controller()
     c.cfg = config.update(provider="openai", **({"openai.base_url": base_url} if base_url else {}))
     assert c.privacy_note() == line

@@ -15,7 +15,7 @@ def ctl(monkeypatch, fake_keychain):
     monkeypatch.setattr(kokoro.KokoroProvider, "can_run", classmethod(lambda cls: True))
     monkeypatch.setattr(kokoro.KokoroProvider, "prepare", lambda self, on_error=None: None)  # no download
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
+    config.CONFIG_PATH.write_text(config.TEMPLATE, encoding="utf-8")
     fake_keychain.items.update({"inworld": "ik", "cartesia": "ck"})
     return Controller()
 
@@ -46,7 +46,7 @@ def test_a_key_in_the_config_file_is_blanked_too(ctl, fake_keychain):
     assert ctl.has_stored_key("elevenlabs")
     ctl.remove_api_key("elevenlabs")
     assert config.file_api_key("elevenlabs") == "" and not ctl.has_stored_key("elevenlabs")
-    assert "# George" in config.CONFIG_PATH.read_text()  # comments survive
+    assert "# George" in config.CONFIG_PATH.read_text(encoding="utf-8")  # comments survive
 
 
 def test_no_stored_key(ctl):

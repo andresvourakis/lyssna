@@ -26,7 +26,7 @@ class FakeProvider(Provider):
 def ctl(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
     text = config.TEMPLATE.replace('api_key = ""\nvoice = "Sarah"', 'api_key = "k"\nvoice = "Sarah"', 1)
-    path.write_text(text.replace('provider = "kokoro"', 'provider = "inworld"', 1))
+    path.write_text(text.replace('provider = "kokoro"', 'provider = "inworld"', 1), encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_PATH", path)
     monkeypatch.setattr(config, "ensure_dirs", lambda: None)
     monkeypatch.delenv("LYSSNA_PROVIDER", raising=False)
@@ -59,13 +59,13 @@ def test_set_voice_persists_to_config(ctl):
     assert ctl.current_voice() == "Sarah"
     ctl.set_voice("Nate")
     assert ctl.current_voice() == "Nate"
-    assert tomllib.loads(config.CONFIG_PATH.read_text())["inworld"]["voice"] == "Nate"
+    assert tomllib.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))["inworld"]["voice"] == "Nate"
 
 
 def test_flash_engine_writes_the_shared_inworld_section(ctl):
     ctl.set_provider("inworld-flash")
     ctl.set_voice("Sofia")
-    data = tomllib.loads(config.CONFIG_PATH.read_text())
+    data = tomllib.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
     assert data["inworld"]["voice"] == "Sofia" and "inworld-flash" not in data
 
 

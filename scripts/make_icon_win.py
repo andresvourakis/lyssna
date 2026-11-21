@@ -1,5 +1,5 @@
 """Draw Lyssna's Windows icon (scripts/Lyssna.ico): the cream mark on the ink rounded tile, the same
-picture the app uses for its window icon (app_icon in lyssna/ui/qt/window.py).
+picture the app uses for its window icon (app_icon in lyssna/ui/window.py).
 
     python scripts/make_icon_win.py [OUTPUT]      default: scripts/Lyssna.ico
 
@@ -25,9 +25,9 @@ def draw(side: int) -> bytes:
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRectF, Qt
     from PySide6.QtGui import QImage, QPainter
 
-    from lyssna.ui.qt import theme
-    from lyssna.ui.qt.mark import draw_mark
-    from lyssna.ui.shared.tokens import CREAM, INK
+    from lyssna.ui import theme
+    from lyssna.ui.layout.tokens import CREAM, INK
+    from lyssna.ui.mark import draw_mark
 
     image = QImage(side, side, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)

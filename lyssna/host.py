@@ -7,6 +7,9 @@ names and the same public functions, and the engine reaches them only through he
 made in exactly one place. Where the two systems differ in a way the engine or the interface
 must know about, that difference is a named capability below, never a test of the system.
 
+It also picks the interface (`host.app`): the Qt one in lyssna/app.py, or on a Mac, until that
+one matches it, the AppKit one in lyssna/legacy/ (see interface()).
+
 This module imports nothing from the package when it loads. The platform modules load the
 first time they are asked for, so importing host never pulls in a Mac or Windows framework
 by itself."""
@@ -90,7 +93,8 @@ def open_target(target: str) -> None:
 # Neutral name -> (Mac module, Windows module). None means that system has no such piece yet:
 # `host.<name>` is then None, and require() says so.
 MODULES: dict[str, tuple[str | None, str | None]] = {
-    "app": ("lyssna.app", "lyssna.win.app"),                    # run(): the interface
+    "app": ("lyssna.legacy.app", "lyssna.app"),                 # run(): the interface (on a Mac, interface() decides)
+    "instance": ("lyssna.mac.instance", "lyssna.win.instance"),  # SingleInstance, set_app_id(), relaunch()
     "capture": ("lyssna.mac.capture", "lyssna.win.capture"),    # the selected text and the clipboard
     "events": ("lyssna.mac.events", "lyssna.win.events"),       # global keys and mouse, permission check
     "audio": ("lyssna.mac.audio", "lyssna.win.audio"),          # make_player(audio, speed)
@@ -108,6 +112,24 @@ MODULES: dict[str, tuple[str | None, str | None]] = {
 }
 
 
+INTERFACE_ENV = "LYSSNA_INTERFACE"
+
+
+def interface() -> str:
+    """Which interface runs: "new" (the Qt one, lyssna/app.py) or "legacy" (the Mac's AppKit
+    one, lyssna/legacy/app.py). Windows always runs the new one. On a Mac the legacy one runs
+    unless the environment variable LYSSNA_INTERFACE=new, or else interface = "new" under [ui]
+    in the config file, asks for the new one. Temporary: it goes when lyssna/legacy/ does."""
+    if IS_WINDOWS:
+        return "new"
+    choice = os.environ.get(INTERFACE_ENV, "").strip().lower()
+    if not choice:
+        from . import config  # here, not at the top: host imports nothing from the package when it loads
+
+        choice = str(config.load().get("ui", {}).get("interface", "")).strip().lower()
+    return "new" if choice == "new" else "legacy"
+
+
 def require(name: str) -> ModuleType:
     """`host.<name>`, for code that cannot go on without it. Raises NotImplementedError on a
     system that has no such piece yet."""
@@ -121,7 +143,7 @@ def __getattr__(name: str):
     if name not in MODULES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     mac, windows = MODULES[name]
-    target = windows if IS_WINDOWS else mac
+    target = windows if IS_WINDOWS or (name == "app" and interface() == "new") else mac
     module = importlib.import_module(target) if target else None
     globals()[name] = module  # cached: the next lookup is a plain attribute
     return module

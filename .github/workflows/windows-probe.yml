@@ -13,6 +13,7 @@ on:
       - scripts/probe/**
       - lyssna-probe.spec
       - lyssna/win/**
+      - lyssna/app.py
       - .github/workflows/windows-probe.yml
 
 jobs:

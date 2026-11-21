@@ -19,7 +19,7 @@ BODY = f'{{"error": "could not synthesize: {TEXT}"}}'
 @pytest.fixture
 def ctl(monkeypatch, fake_keychain):
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
+    config.CONFIG_PATH.write_text(config.TEMPLATE, encoding="utf-8")
     c = Controller()
     c.notices = []
     monkeypatch.setattr(c, "notify", lambda message, ttl=3.0: c.notices.append(message))

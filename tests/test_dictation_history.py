@@ -131,7 +131,7 @@ def test_retention_is_read_from_the_config_each_time(clock):
     store = HistoryStore(now=clock)
     store.add(result(text="first"))
     assert len(store.entries()) == 1
-    config.CONFIG_PATH.write_text("[dictation]\nhistory_days = 0\n")
+    config.CONFIG_PATH.write_text("[dictation]\nhistory_days = 0\n", encoding="utf-8")
     assert store.entries() == []
     store.add(result(text="second"))
     assert store.entries() == []
@@ -142,7 +142,7 @@ def test_retention_is_read_from_the_config_each_time(clock):
 ])
 def test_configured_days(value, expected):
     config.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    config.CONFIG_PATH.write_text(f"[dictation]\nhistory_days = {value}\n")
+    config.CONFIG_PATH.write_text(f"[dictation]\nhistory_days = {value}\n", encoding="utf-8")
     assert H.configured_days() == expected
 
 

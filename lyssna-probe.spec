@@ -52,8 +52,8 @@ def ffmpeg_dlls():
     return [(path, "PySide6") for pattern in names for path in glob.glob(os.path.join(root, pattern))]
 
 
-LYSSNA_WIN = ["lyssna.win." + m for m in ("app", "audio", "autostart", "capture", "clipboard", "credentials",
-                                           "events", "hotkeys", "ipc", "policy")]
+LYSSNA_WIN = ["lyssna.app", *("lyssna.win." + m for m in ("audio", "autostart", "capture", "clipboard", "credentials",
+                                                         "events", "hotkeys", "ipc", "policy"))]
 PROBE = ["probe." + m for m in ("main", "selftest", "steps", "flow", "ui", "backend", "winapi", "analysis", "report", "speed")]
 
 a = Analysis(

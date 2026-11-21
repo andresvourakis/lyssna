@@ -28,7 +28,7 @@ def llama_libs():
 
 # The Mac modules lyssna.host loads by name (lyssna/mac/).
 LYSSNA_MAC = ["lyssna.mac." + m for m in ("audio", "autostart", "capture", "credentials", "events", "fieldprobe", "globe",
-                                          "hotkeys", "insert", "ipc", "launch_agent", "mic", "policy", "speechy")]
+                                          "hotkeys", "insert", "instance", "ipc", "launch_agent", "mic", "policy", "speechy")]
 
 
 a = Analysis(
@@ -54,8 +54,9 @@ a = Analysis(
         ("THIRD_PARTY_NOTICES.md", "."),
     ],
     # The Keychain module imports Security lazily, and lyssna.host loads the app and the Mac
-    # modules by name, so the analysis cannot see them by itself.
-    hiddenimports=["Security", "lyssna.app", *LYSSNA_MAC],
+    # modules by name, so the analysis cannot see them by itself. The Mac build ships the legacy
+    # (AppKit) interface until the Qt one in lyssna/app.py replaces it.
+    hiddenimports=["Security", "lyssna.legacy.app", *LYSSNA_MAC],
     excludes=[],
     noarchive=False,
 )

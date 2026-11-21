@@ -6,7 +6,8 @@ on:
 
 jobs:
   test:
-    # PyObjC, AppKit and Quartz only exist on macOS.
+    # Everything: the engine, the Mac plumbing, the legacy AppKit interface (PyObjC, AppKit and
+    # Quartz only exist on macOS) and the Qt interface, which its tests draw offscreen.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +17,8 @@ jobs:
       - run: uv run pytest -q
 
   test-windows:
-    # The shared engine on Windows; tests that need the Mac frameworks skip themselves (tests/conftest.py).
+    # The engine, the Windows plumbing and the Qt interface on Windows; tests that need the Mac
+    # frameworks (tests/legacy/ and a few more) are skipped there (tests/conftest.py).
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

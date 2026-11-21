@@ -19,7 +19,7 @@ def ctl(monkeypatch, fake_keychain):
     monkeypatch.setattr(kokoro.KokoroProvider, "can_run", classmethod(lambda cls: True))
     monkeypatch.setattr(kokoro.KokoroProvider, "prepare", lambda self, on_error=None: None)  # no download
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
+    config.CONFIG_PATH.write_text(config.TEMPLATE, encoding="utf-8")
     fake_keychain.items.update({"inworld": "k", "cartesia": "k"})
     return Controller()
 
@@ -65,7 +65,7 @@ def test_launch_falls_back_from_an_online_engine(fake_keychain, monkeypatch):
     fake_keychain.items["cartesia"] = "k"
     config.ensure_dirs()
     config.CONFIG_PATH.write_text(config.TEMPLATE.replace('provider = "kokoro"', 'provider = "cartesia"')
-                                  .replace("local_only = false", "local_only = true"))
+                                  .replace("local_only = false", "local_only = true"), encoding="utf-8")
     c = Controller()
     assert c.cfg["provider"] == "kokoro" and c.fell_back_to == "kokoro"
 
@@ -121,7 +121,7 @@ def no_app(monkeypatch):
 @pytest.mark.skipif(sys.platform != "darwin", reason="asserts the Mac wording; test_windows_imports checks the Windows wording")
 def test_cli_provider_flag_refuses_online_engines(no_app, capsys, monkeypatch):
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE.replace("local_only = false", "local_only = true"))
+    config.CONFIG_PATH.write_text(config.TEMPLATE.replace("local_only = false", "local_only = true"), encoding="utf-8")
     assert cli.main(["-p", "openai", "hello"]) == 2
     assert "Keep Everything on This Mac" in capsys.readouterr().err
     assert no_app == []

@@ -107,7 +107,7 @@ def test_dictate_reports_an_unreadable_file(local_engines, tmp_path, capsys):
 def test_dictate_refuses_online_engines_in_local_only(local_engines, tmp_path, capsys, monkeypatch, fake_keychain, flags):
     fake_keychain.items.update({"openai": "k", "inworld": "k", "anthropic": "k"})
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text("local_only = true\n")
+    config.CONFIG_PATH.write_text("local_only = true\n", encoding="utf-8")
     monkeypatch.setattr(httpx, "post", lambda *a, **k: pytest.fail("an online engine was called"))
     assert cli.main(["dictate", "--file", str(write_wav(tmp_path / "a.wav")), *flags]) == 2
     assert "local-only mode is on" in capsys.readouterr().err
@@ -117,7 +117,7 @@ def test_dictate_falls_back_from_online_engines_named_in_the_config(local_engine
                                                                       fake_keychain):
     fake_keychain.items.update({"openai": "k", "anthropic": "k"})
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text('local_only = true\n[dictation]\ntranscriber = "openai"\ncleaner = "haiku"\n')
+    config.CONFIG_PATH.write_text('local_only = true\n[dictation]\ntranscriber = "openai"\ncleaner = "haiku"\n', encoding="utf-8")
     monkeypatch.setattr(httpx, "post", lambda *a, **k: pytest.fail("an online engine was called"))
     assert cli.main(["dictate", "--file", str(write_wav(tmp_path / "a.wav")), "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -176,4 +176,4 @@ def test_dictation_settings_load_and_update():
     assert cfg["dictation"]["cleaner"] == "s1-mini"
     cfg = config.update(**{"dictation.cleaner": "haiku", "parakeet.model": "v3"})
     assert cfg["dictation"]["cleaner"] == "haiku" and cfg["parakeet"]["model"] == "v3"
-    assert "# Speech to text" in config.CONFIG_PATH.read_text()  # comments kept
+    assert "# Speech to text" in config.CONFIG_PATH.read_text(encoding="utf-8")  # comments kept

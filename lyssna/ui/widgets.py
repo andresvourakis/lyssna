@@ -1,537 +1,556 @@
-"""Reusable pieces of the floating player: hover-glow views, the progress and scrub bars,
-the docked sliver with its living fill, and the Core Animation helpers they share.
+"""Reusable pieces of the floating panels: the hover-glow view, round icon buttons, text pill
+buttons, and the progress and scrub bars. The twin of legacy/ui/widgets.py (HoverView, ProgressBar,
+ScrubBar) and of the PillButton in legacy/ui/setup_window.py; the docked sliver is built with the
+player in mini_player.py.
 
-Colors are resolved in updateLayer from the brand colours in theme.py, so everything
-here follows light/dark mode on its own."""
+Colours may be given as a QColor or as a function returning one (theme.content, theme.fill_soft,
+...). Functions are read at paint time, so everything follows light and dark mode after an
+update(), as the Mac's dynamic colours do. Sizes come from layout/wave.py and layout/setup.py.
+
+Buttons never take focus (Qt.NoFocus): they live in panels that must not activate. Inside a
+draggable FloatingPanel the panel itself decides click versus drag and calls perform_click()
+(or QAbstractButton.click()); elsewhere each button handles its own press and release.
+Animations jump to their end when theme.reduce_motion() is on."""
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 
-import AppKit
-import objc
-import Quartz
-from AppKit import NSColor, NSEvent
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation
+from PySide6.QtGui import QColor, QCursor, QFontMetricsF, QPainter, QPainterPath, QPen, QRadialGradient
+from PySide6.QtWidgets import QPushButton, QWidget
 
-from . import theme
-from .panel import TintedView
-from .shared.tokens import (
-    CLEAR_GLOW_ALPHA,
-    SQUIGGLE_FILL,
-    SQUIGGLE_OUTLINE,
-    WHITE_GLOW_ALPHA,
-)
-from .shared.wave import (
-    BAR_H,
-    CAPSULE_H,
-    CAPSULE_INSET,  # noqa: F401  (re-exported)
-    CAPSULE_W,
-    KNOB,
-    SLIVER_H,  # noqa: F401  (re-exported)
-    SLIVER_W,  # noqa: F401  (re-exported)
-    SQUIGGLE_AMP,  # noqa: F401  (re-exported)
-    SQUIGGLE_HALO,
-    SQUIGGLE_LEN,  # noqa: F401  (re-exported)
-    SQUIGGLE_STROKE,
-    WAVE_CYCLES,
-    WAVE_FRAMES,
-    WAVE_SECS,
-    capsule_centre,
-    squiggle_points,
-    squiggle_size,
-    wave_phases,
-)
+from . import icons, theme
+from .layout.setup import PILL_H, PILL_PAD
+from .layout.wave import BAR_H, KNOB
+
+Color = QColor | Callable[[], QColor] | None
+
+GLOW_IN, GLOW_OUT = 0.14, 0.22  # seconds the hover glow takes to fade in and out
+DISABLED_ALPHA = 0.35           # a disabled button's icon or label
 
 
-def _squiggle_path(phase: float = 0.0):
-    (x, y), *rest = squiggle_points(phase)
-    path = Quartz.CGPathCreateMutable()
-    Quartz.CGPathMoveToPoint(path, None, x, y)
-    for x, y in rest:
-        Quartz.CGPathAddLineToPoint(path, None, x, y)
+def resolve(color: Color) -> QColor | None:
+    """A QColor from a colour or a colour function (None stays None)."""
+    return color() if callable(color) else color
+
+
+def _with_alpha(color: QColor, factor: float) -> QColor:
+    c = QColor(color)
+    c.setAlphaF(max(0.0, min(1.0, c.alphaF() * factor)))
+    return c
+
+
+def rounded(rect: QRectF, radius: float) -> QPainterPath:
+    r = max(0.0, min(radius, rect.width() / 2, rect.height() / 2))
+    path = QPainterPath()
+    path.addRoundedRect(rect, r, r)
     return path
 
 
-def wave_paths(frames: int = WAVE_FRAMES, cycles: float = WAVE_CYCLES) -> list:
-    return [_squiggle_path(p) for p in wave_phases(frames, cycles)]
+class HoverView(QWidget):
+    """A rounded shape that lifts a translucent glow over itself while the cursor is inside, so
+    it brightens softly on hover (in over 0.14 s, out over 0.22 s). With no fill it works as a
+    transparent wrapper that lights up behind a bare button.
 
+    fill, border, glow: colours or colour functions; radius: the corner radius (None for a
+    capsule, half the shorter side). on_hover(bool), when set, hears every hover change."""
 
-def clear_glow():
-    return theme.content(CLEAR_GLOW_ALPHA)
+    def __init__(self, parent: QWidget | None = None, fill: Color = None, radius: float | None = 0.0,
+                 border: Color = None, glow: Color = theme.clear_glow):
+        super().__init__(parent)
+        self.fill = fill
+        self.border = border
+        self.radius = radius
+        self.glow = glow
+        self.on_hover: Callable[[bool], None] | None = None
+        self._on = False
+        self._level = 0.0
+        self._anim: QVariantAnimation | None = None
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
+    # -- shape --------------------------------------------------------------------------------
 
-def white_glow():
-    return NSColor.colorWithWhite_alpha_(1.0, WHITE_GLOW_ALPHA)
+    def shape_rect(self) -> QRectF:
+        """The rect the fill and glow are painted in (the whole view; IconButton centres a disc)."""
+        return QRectF(self.rect())
 
+    def shape_radius(self) -> float:
+        r = self.shape_rect()
+        return min(r.width(), r.height()) / 2 if self.radius is None else float(self.radius)
 
-class HoverView(TintedView):
-    """TintedView that lifts a translucent glow over itself while the cursor is inside, so the
-    whole shape brightens softly on hover. Works as a transparent wrapper around a bare button too."""
+    def shape_path(self) -> QPainterPath:
+        return rounded(self.shape_rect(), self.shape_radius())
 
-    @classmethod
-    @objc.python_method
-    def make(cls, frame, color, radius: float = 0.0, border=None, glow=None):
-        v = TintedView.make.__func__(cls, frame, color, radius, border)
-        v.glow_fn = glow or clear_glow
-        v.glow = AppKit.CALayer.layer()
-        v.glow.setOpacity_(0.0)
-        v.layer().addSublayer_(v.glow)
-        opts = (AppKit.NSTrackingMouseEnteredAndExited | AppKit.NSTrackingActiveAlways | AppKit.NSTrackingInVisibleRect)
-        v.addTrackingArea_(AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(v.bounds(), opts, v, None))
-        return v
+    def glow_level(self) -> float:
+        """The glow's opacity now, 0..1."""
+        return self._level
 
-    def updateLayer(self):
-        objc.super(HoverView, self).updateLayer()
-        Quartz.CATransaction.begin()
-        Quartz.CATransaction.setDisableActions_(True)
-        self.glow.setFrame_(self.bounds())
-        self.glow.setCornerRadius_(self.radius)
-        self.glow.setBackgroundColor_(self.glow_fn().CGColor())
-        Quartz.CATransaction.commit()
+    def hovering(self) -> bool:
+        return self._on
 
-    def mouseEntered_(self, event):
+    # -- painting -----------------------------------------------------------------------------
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self.paint_shape(p)
+        self.paint_content(p)
+        p.end()
+
+    def paint_shape(self, p: QPainter) -> None:
+        path = self.shape_path()
+        fill = resolve(self.fill)
+        if fill is not None and fill.alpha() > 0:
+            p.fillPath(path, fill)
+        border = resolve(self.border)
+        if border is not None and border.alpha() > 0:
+            p.setPen(QPen(border, 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(rounded(self.shape_rect().adjusted(0.5, 0.5, -0.5, -0.5), max(0.0, self.shape_radius() - 0.5)))
+        glow = resolve(self.glow)
+        if glow is not None and self._level > 0.0:
+            p.fillPath(path, _with_alpha(glow, self._level))
+
+    def paint_content(self, p: QPainter) -> None:  # override: drawn above the glow
+        pass
+
+    # -- hover --------------------------------------------------------------------------------
+
+    def enterEvent(self, ev) -> None:
         self.set_hover(True)
+        super().enterEvent(ev)
 
-    def mouseExited_(self, event):
+    def leaveEvent(self, ev) -> None:
         self.set_hover(False)
+        super().leaveEvent(ev)
 
-    @objc.python_method
-    def sync(self) -> None:
-        """Set the glow from where the cursor actually is (enter/exit events can be lost
-        when tracking areas are rebuilt around us)."""
-        w = self.window()
-        if w is None:
-            return
-        p = self.convertPoint_fromView_(w.convertPointFromScreen_(NSEvent.mouseLocation()), None)
-        self.set_hover(AppKit.NSMouseInRect(p, self.bounds(), self.isFlipped()))
-
-    @objc.python_method
-    def set_hover(self, on: bool) -> None:
-        if getattr(self, "_on", False) == on:
+    def set_hover(self, on: bool, animate: bool = True) -> None:
+        on = bool(on) and self.isEnabled()
+        if on == self._on and (animate or self._level == (1.0 if on else 0.0)):
             return
         self._on = on
-        Quartz.CATransaction.begin()
-        Quartz.CATransaction.setAnimationDuration_(0.14 if on else 0.22)
-        self.glow.setOpacity_(1.0 if on else 0.0)
-        Quartz.CATransaction.commit()
-        on_hover = getattr(self, "on_hover", None)  # optional: the owner's tooltip timer
-        if on_hover is not None:
-            on_hover(on)
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+        target = 1.0 if on else 0.0
+        if not animate or theme.reduce_motion() or not self.isVisible():
+            self._set_level(target)
+        else:
+            anim = QVariantAnimation(self)
+            anim.setStartValue(float(self._level))
+            anim.setEndValue(target)
+            anim.setDuration(round((GLOW_IN if on else GLOW_OUT) * 1000))
+            anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            anim.valueChanged.connect(self._set_level)
+            self._anim = anim
+            anim.start()
+        if self.on_hover is not None:
+            self.on_hover(on)
+
+    def _set_level(self, v) -> None:
+        self._level = float(v)
+        self.update()
+
+    def sync(self) -> None:
+        """Set the glow from where the cursor really is (enter and leave can be lost while a
+        window moves or changes form under a still mouse)."""
+        if not self.isVisible():
+            self.set_hover(False)
+            return
+        local = self.mapFromGlobal(QCursor.pos())
+        self.set_hover(self.rect().contains(local))
 
 
-def clear():
-    return NSColor.clearColor()
+class IconButton(HoverView):
+    """A round button holding one icon (the twin of a symbol_button in a HoverView disc).
+
+    icon: an icons.py name; diameter: the disc; hit: a larger square click area around it (the
+    view's size, defaults to the diameter); fill: the disc colour or None for a bare icon that
+    only glows on hover; icon_size and weight as for the SF Symbol; clicked: called on a click.
+    The disc shows a light veil while pressed; disabled, the icon dims and nothing glows."""
+
+    def __init__(self, icon: str, parent: QWidget | None = None, *, diameter: float = 26.0, hit: float | None = None,
+                 fill: Color = None, glow: Color = theme.clear_glow, icon_size: float = 13.0,
+                 icon_color: Color = theme.content, weight: str | None = None, tooltip: str = "",
+                 clicked: Callable[[], None] | None = None, border: Color = None):
+        super().__init__(parent, fill=fill, radius=None, border=border, glow=glow)
+        self.icon = icon
+        self.diameter = float(diameter)
+        self.icon_size = float(icon_size)
+        self.icon_color = icon_color
+        self.weight = weight
+        self.clicked = clicked
+        self.pressed = False
+        side = max(self.diameter, float(hit or 0.0))
+        self.resize(round(side), round(side))
+        if tooltip:
+            self.setToolTip(tooltip)
+
+    def sizeHint(self) -> QSize:
+        return self.size()
+
+    def shape_rect(self) -> QRectF:
+        w, h = self.width(), self.height()
+        d = min(self.diameter, w, h)
+        return QRectF((w - d) / 2, (h - d) / 2, d, d)
+
+    def set_icon(self, name: str, size: float | None = None, weight: str | None = None) -> None:
+        """Change the icon (the Mac set_symbol)."""
+        self.icon = name
+        if size is not None:
+            self.icon_size = float(size)
+        if weight is not None:
+            self.weight = weight
+        self.update()
+
+    def set_pressed(self, on: bool) -> None:
+        self.pressed = bool(on)
+        self.update()
+
+    def changeEvent(self, ev) -> None:
+        if ev.type() == ev.Type.EnabledChange:
+            if not self.isEnabled():
+                self.set_hover(False, animate=False)
+            self.update()
+        super().changeEvent(ev)
+
+    def paint_content(self, p: QPainter) -> None:
+        r = self.shape_rect()
+        if self.pressed:
+            fill = resolve(self.fill)
+            veil = theme.surface(0.18) if fill is not None and fill == theme.content() else theme.content(0.08)
+            p.fillPath(self.shape_path(), veil)
+        color = resolve(self.icon_color) or theme.content()
+        if not self.isEnabled():
+            color = _with_alpha(color, DISABLED_ALPHA)
+        icons.draw_icon(p, self.icon, icons.icon_rect(r.center().x(), r.center().y(), self.icon_size), color, self.weight)
+
+    def perform_click(self) -> None:
+        if self.isEnabled() and self.clicked is not None:
+            self.clicked()
+
+    def mousePressEvent(self, ev) -> None:
+        if ev.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+            self.set_pressed(True)
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:
+        if ev.button() == Qt.MouseButton.LeftButton and self.pressed:
+            self.set_pressed(False)
+            if self.rect().contains(ev.position().toPoint()):
+                self.perform_click()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
 
 
-def _spark_image(size: int = 12):
-    """A soft white dot for the emitter: bright centre, transparent rim."""
-    cs = Quartz.CGColorSpaceCreateDeviceRGB()
-    ctx = Quartz.CGBitmapContextCreate(None, size, size, 8, size * 4, cs, Quartz.kCGImageAlphaPremultipliedLast)
-    grad = Quartz.CGGradientCreateWithColorComponents(cs, [1, 1, 1, 1, 1, 1, 1, 0.55, 1, 1, 1, 0], [0.0, 0.35, 1.0], 3)
-    c = (size / 2, size / 2)
-    Quartz.CGContextDrawRadialGradient(ctx, grad, c, 0.0, c, size / 2, 0)
-    return Quartz.CGBitmapContextCreateImage(ctx)
+class PillButton(QPushButton):
+    """A pill-shaped push button in the brand colours, the twin of PillButton in
+    legacy/ui/setup_window.py: primary is a content pill with surface text (13 medium), secondary a
+    fill_soft pill with a hairline border and content text (13 regular). Pressed, a light veil
+    lies over it. A real QPushButton underneath for the keyboard and accessibility; it takes no
+    focus unless focusable=True (in a normal window, never in a floating panel)."""
+
+    def __init__(self, title: str, parent: QWidget | None = None, *, primary: bool = False,
+                 clicked: Callable[[], None] | None = None, focusable: bool = False):
+        super().__init__(title, parent)
+        self.primary = primary
+        self.setFont(theme.ui_font(13, "medium" if primary else "regular"))
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if focusable else Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        if clicked is not None:
+            self.clicked.connect(lambda _checked=False: clicked())
+        self.size_to_fit()
+
+    def size_to_fit(self) -> None:
+        """Title width plus PILL_PAD either side, PILL_H tall (the Mac sizeToFit)."""
+        self.setFixedSize(self.sizeHint())
+
+    def sizeHint(self) -> QSize:
+        w = QFontMetricsF(self.font()).horizontalAdvance(self.text())
+        return QSize(round(w) + 2 * round(PILL_PAD), round(PILL_H))
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        self.size_to_fit()
+
+    def set_pressed(self, on: bool) -> None:
+        self.setDown(bool(on))
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = rounded(r, r.height() / 2)
+        if not self.isEnabled():
+            p.setOpacity(0.45)
+        p.fillPath(path, theme.content() if self.primary else theme.fill_soft())
+        if not self.primary:
+            p.setPen(QPen(theme.hairline(), 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        if self.isDown():
+            p.fillPath(path, theme.surface(0.18) if self.primary else theme.content(0.08))
+        if self.hasFocus():
+            ring = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+            p.setPen(QPen(theme.content(0.45), 2.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(rounded(ring, ring.height() / 2))
+        p.setPen(theme.surface() if self.primary else theme.content())
+        p.setFont(self.font())
+        p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.text())
+        p.end()
 
 
-def _freeze(layer) -> None:
-    """Pause every animation running inside `layer` (Apple's speed/timeOffset recipe)."""
-    if layer.speed() == 0.0:
-        return
-    layer.setTimeOffset_(layer.convertTime_fromLayer_(Quartz.CACurrentMediaTime(), None))
-    layer.setSpeed_(0.0)
+class ProgressBar(QWidget):
+    """A rounded track (content at 0.15) with a content fill from the left. The fill is never
+    narrower than the bar is tall, so a just-started reading shows a round dot."""
 
-
-def _thaw(layer) -> None:
-    if layer.speed() != 0.0:
-        return
-    paused_at = layer.timeOffset()
-    layer.setSpeed_(1.0)
-    layer.setTimeOffset_(0.0)
-    layer.setBeginTime_(0.0)
-    layer.setBeginTime_(layer.convertTime_fromLayer_(Quartz.CACurrentMediaTime(), None) - paused_at)
-
-
-def _loop(key: str, start, end, secs: float):
-    """A slow ease-in-out ping-pong that never stops; several with unrelated periods
-    layered together stop looking like a loop at all."""
-    a = Quartz.CABasicAnimation.animationWithKeyPath_(key)
-    a.setFromValue_(start)
-    a.setToValue_(end)
-    a.setDuration_(secs)
-    a.setAutoreverses_(True)
-    a.setRepeatCount_(1e9)
-    a.setTimingFunction_(Quartz.CAMediaTimingFunction.functionWithName_(Quartz.kCAMediaTimingFunctionEaseInEaseOut))
-    return a
-
-
-class ProgressBar(AppKit.NSView):
-    def initWithFrame_(self, frame):
-        self = objc.super(ProgressBar, self).initWithFrame_(frame)
-        if self is None:
-            return None
-        self.setWantsLayer_(True)
-        self.layer().setCornerRadius_(BAR_H / 2)
-        self.layer().setMasksToBounds_(True)
-        self.fill = AppKit.CALayer.layer()
-        self.fill.setCornerRadius_(BAR_H / 2)
-        self.layer().addSublayer_(self.fill)
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
         self.fraction = 0.0
-        return self
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.resize(100, round(BAR_H))
 
-    def updateLayer(self):
-        self.layer().setBackgroundColor_(theme.content(0.15).CGColor())
-        self.fill.setBackgroundColor_(theme.CONTENT.CGColor())
-        w, h = self.bounds().size
-        self.fill.setFrame_(((0, 0), (max(h, w * self.fraction), h)))
-
-    def wantsUpdateLayer(self):
-        return True
-
-    @objc.python_method
     def set_fraction(self, f: float) -> None:
-        self.fraction = max(0.0, min(1.0, f))
-        self.setNeedsDisplay_(True)
+        self.fraction = max(0.0, min(1.0, float(f)))
+        self.update()
+
+    def fill_width(self) -> float:
+        w, h = float(self.width()), float(self.height())
+        return min(w, max(h, w * self.fraction))
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        h = float(self.height())
+        p.fillPath(rounded(QRectF(self.rect()), h / 2), theme.content(0.15))
+        p.fillPath(rounded(QRectF(0, 0, self.fill_width(), h), h / 2), theme.content())
+        p.end()
 
 
-class ScrubBar(AppKit.NSView):
-    """Transparent strip holding a ProgressBar; click or drag anywhere on it to seek.
-    Hovering (or scrubbing) shows a round knob at the playhead and thickens the bar, the
-    way every media player does, so it's obvious the bar can be grabbed.
-    `on_scrub(fraction)` fires while dragging (for the time preview), `on_seek(fraction)`
-    on release."""
+class _Knob(QWidget):
+    """The playhead knob: a content disc with a 2 px surface ring and a small soft shadow."""
 
-    consumes_mouse = True  # tell DragPanel this is a control, not a drag handle
+    PAD = 3.0  # room for the shadow
 
-    def initWithFrame_(self, frame):
-        self = objc.super(ScrubBar, self).initWithFrame_(frame)
-        if self is None:
-            return None
-        w, h = frame[1]
-        self.setWantsLayer_(True)
-        self.knob_size = KNOB
-        self.bar = ProgressBar.alloc().initWithFrame_(((0, (h - BAR_H) / 2), (w, BAR_H)))
-        self.bar.setAutoresizingMask_(AppKit.NSViewWidthSizable)
-        self.addSubview_(self.bar)
-        self.knob = AppKit.CALayer.layer()
-        self.knob.setHidden_(True)
-        self.layer().addSublayer_(self.knob)
+    def __init__(self, parent: QWidget, size: float):
+        super().__init__(parent)
+        self.k = float(size)
+        side = round(self.k + 2 * self.PAD)
+        self.resize(side, side)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        c = QPointF(self.width() / 2, self.height() / 2)
+        r = self.k / 2
+        shadow = QRadialGradient(QPointF(c.x(), c.y() + 1.0), r + 2.0)
+        shadow.setColorAt(0.0, QColor.fromRgbF(0, 0, 0, 0.25))
+        shadow.setColorAt(r / (r + 2.0), QColor.fromRgbF(0, 0, 0, 0.18))
+        shadow.setColorAt(1.0, QColor.fromRgbF(0, 0, 0, 0.0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(shadow)
+        p.drawEllipse(QPointF(c.x(), c.y() + 1.0), r + 2.0, r + 2.0)
+        p.setBrush(theme.surface())
+        p.drawEllipse(c, r, r)
+        p.setBrush(theme.content())
+        p.drawEllipse(c, r - 2.0, r - 2.0)
+        p.end()
+
+
+class ScrubBar(QWidget):
+    """A transparent strip holding a ProgressBar; click or drag anywhere on it to seek. Hovered
+    or scrubbing, the bar thickens to 1.5 times and a round knob shows at the playhead.
+    on_scrub(fraction) fires while dragging (for the time preview), on_seek(fraction) on release."""
+
+    consumes_mouse = True  # tells FloatingPanel this is a control, not a drag handle
+
+    def __init__(self, parent: QWidget | None = None, knob: float = KNOB):
+        super().__init__(parent)
+        self.knob_size = float(knob)
+        self.bar = ProgressBar(self)
+        self.knob = _Knob(self, self.knob_size)
+        self.knob.hide()
         self.on_scrub: Callable[[float], None] | None = None
         self.on_seek: Callable[[float], None] | None = None
         self.scrubbing = False
         self.hovering = False
-        opts = (AppKit.NSTrackingMouseEnteredAndExited | AppKit.NSTrackingActiveAlways | AppKit.NSTrackingInVisibleRect)
-        self.addTrackingArea_(AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(self.bounds(), opts, self, None))
-        return self
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._layout()
 
-    def wantsUpdateLayer(self):
-        return True
+    @property
+    def fraction(self) -> float:
+        return self.bar.fraction
 
-    def updateLayer(self):
-        active = self.hovering or self.scrubbing
-        w, h = self.bounds().size
-        bar_h = BAR_H * 1.5 if active else BAR_H
-        self.bar.setFrame_(((0, (h - bar_h) / 2), (w, bar_h)))
-        self.bar.layer().setCornerRadius_(bar_h / 2)
-        self.bar.fill.setCornerRadius_(bar_h / 2)
-        self.bar.setNeedsDisplay_(True)
+    def active(self) -> bool:
+        return self.hovering or self.scrubbing
+
+    def bar_height(self) -> float:
+        return BAR_H * 1.5 if self.active() else BAR_H
+
+    def _layout(self) -> None:
+        w, h = float(self.width()), float(self.height())
+        bh = self.bar_height()
+        self.bar.setGeometry(0, round((h - bh) / 2), round(w), round(bh))
         k = self.knob_size
-        self.knob.setHidden_(not active)
-        self.knob.setCornerRadius_(k / 2)
-        self.knob.setBackgroundColor_(theme.CONTENT.CGColor())
-        self.knob.setBorderWidth_(2.0)
-        self.knob.setBorderColor_(theme.SURFACE.CGColor())
-        self.knob.setShadowOpacity_(0.25)
-        self.knob.setShadowRadius_(2.0)
-        self.knob.setShadowOffset_((0, -1))
-        x = min(max(w * self.bar.fraction, k / 2), w - k / 2) if w > 0 else 0
-        self.knob.setFrame_(((x - k / 2, (h - k) / 2), (k, k)))
+        self.knob.setVisible(self.active())
+        x = min(max(w * self.bar.fraction, k / 2), w - k / 2) if w > 0 else 0.0
+        self.knob.move(round(x - self.knob.width() / 2), round((h - self.knob.height()) / 2))
+        self.knob.raise_()
+        self.bar.update()
+        self.knob.update()
 
-    def mouseEntered_(self, event):
+    def resizeEvent(self, ev) -> None:
+        self._layout()
+        super().resizeEvent(ev)
+
+    def enterEvent(self, ev) -> None:
         self.hovering = True
-        self.setNeedsDisplay_(True)
+        self._layout()
+        super().enterEvent(ev)
 
-    def mouseExited_(self, event):
+    def leaveEvent(self, ev) -> None:
         self.hovering = False
-        self.setNeedsDisplay_(True)
+        self._layout()
+        super().leaveEvent(ev)
 
-    @objc.python_method
-    def _fraction(self, event) -> float:
-        p = self.convertPoint_fromView_(event.locationInWindow(), None)
-        w = self.bounds().size.width
-        return max(0.0, min(1.0, p.x / w)) if w > 0 else 0.0
+    def set_hover(self, on: bool) -> None:
+        self.hovering = bool(on)
+        self._layout()
 
-    def mouseDown_(self, event):
+    def _fraction_at(self, x: float) -> float:
+        w = float(self.width())
+        return max(0.0, min(1.0, x / w)) if w > 0 else 0.0
+
+    def mousePressEvent(self, ev) -> None:
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(ev)
         self.scrubbing = True
-        self._move(event)
+        self._move(ev.position().x())
+        ev.accept()
 
-    def mouseDragged_(self, event):
-        self._move(event)
+    def mouseMoveEvent(self, ev) -> None:
+        if self.scrubbing:
+            self._move(ev.position().x())
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
 
-    def mouseUp_(self, event):
-        f = self._fraction(event)
+    def mouseReleaseEvent(self, ev) -> None:
+        if ev.button() != Qt.MouseButton.LeftButton or not self.scrubbing:
+            return super().mouseReleaseEvent(ev)
+        f = self._fraction_at(ev.position().x())
         self.scrubbing = False
         self.bar.set_fraction(f)
-        self.setNeedsDisplay_(True)
+        self._layout()
         if self.on_seek:
             self.on_seek(f)
+        ev.accept()
 
-    @objc.python_method
-    def _move(self, event) -> None:
-        f = self._fraction(event)
+    def _move(self, x: float) -> None:
+        f = self._fraction_at(x)
         self.bar.set_fraction(f)
-        self.setNeedsDisplay_(True)
+        self._layout()
         if self.on_scrub:
             self.on_scrub(f)
 
-    @objc.python_method
     def set_fraction(self, f: float) -> None:
+        """The playhead from playback; ignored while the user scrubs."""
         if not self.scrubbing:
             self.bar.set_fraction(f)
-            if self.hovering:
-                self.setNeedsDisplay_(True)
+            self._layout()
 
 
-class Sliver(AppKit.NSView):
-    """The docked, resting form: a vertical capsule whose fill shows progress from the
-    bottom up. The fill is alive while reading: a slowly drifting gradient body, tiny
-    sparks rising through it, a breathing glow at the waterline and a small bloom each
-    time a sentence lands. Paused, the sparks stop being born, the drift freezes and
-    the whole fill dims. Transparent around the capsule.
+# -- previews (python -m lyssna.ui.preview) -------------------------------------------------
 
-At rest (set_rest(True), the idle pill when nothing plays) there is no capsule: only the wave
-from the Lyssna logo, slim, centred where the capsule would be. A dark gray line over a
-slightly wider soft white halo, the same in light and dark mode, so it reads on any
-background without asking for attention. It is still but for
-wave(): one ripple running along it, played when the owner asks (about every 10 s, see
-MiniPlayer), on the shapes' paths only, ending on the resting path.
+STATES = ("normal", "hover", "pressed", "disabled")
 
-On the bottom edge (edge "bottom") the view is SLIVER_H wide and SLIVER_W tall and the whole
-capsule layer is turned a quarter clockwise, so the fill grows from the left and the sparks
-drift right: the same layers, lying flat. The idle wave turns the same way and then reads
-left to right like the logo's."""
 
-    CAP = 7.0      # height of the waterline glow
-    BLOOM = 22.0   # diameter of the sentence bloom
+def _set_state(widget: QWidget, state: str) -> None:
+    if state == "hover" and isinstance(widget, HoverView):
+        widget.set_hover(True, animate=False)
+    elif state == "pressed":
+        widget.set_pressed(True)
+    elif state == "disabled":
+        widget.setEnabled(False)
 
-    def initWithFrame_(self, frame):
-        self = objc.super(Sliver, self).initWithFrame_(frame)
-        if self is None:
-            return None
-        self.setWantsLayer_(True)
-        self.capsule = AppKit.CALayer.layer()
-        self.capsule.setCornerRadius_(CAPSULE_W / 2)
-        self.capsule.setMasksToBounds_(True)
-        self.capsule.setBorderWidth_(1.0)
-        self.layer().addSublayer_(self.capsule)
 
-        # clip: the fill's outline, everything below is clipped to it
-        self.clip = AppKit.CALayer.layer()
-        self.clip.setCornerRadius_(CAPSULE_W / 2)
-        self.clip.setMasksToBounds_(True)
-        self.capsule.addSublayer_(self.clip)
+def _preview_buttons() -> QWidget:
+    """Each button kind of the player and the windows, in each state, as they sit on a card."""
+    from .preview import card
 
-        # body: a full-height gradient the clip reveals from the bottom; its own drift
-        # animations live here so they can be frozen as a unit while paused
-        self.body = Quartz.CAGradientLayer.layer()
-        self.body.setFrame_(((0, 0), (CAPSULE_W, CAPSULE_H)))
-        self.body.setStartPoint_((0.0, 0.0))
-        self.body.setEndPoint_((1.0, 1.0))
-        self.body.setLocations_([0.0, 0.5, 1.0])
-        self.clip.addSublayer_(self.body)
+    col_w, row_h, left, top = 92.0, 64.0, 150.0, 34.0
+    kinds = [
+        ("play  50", lambda parent: IconButton("pause.fill", parent, diameter=50, fill=theme.content, glow=theme.white_glow,
+                                               icon_size=20, icon_color=theme.surface)),
+        ("skip  34", lambda parent: IconButton("backward.end.fill", parent, diameter=34, icon_size=17)),
+        ("close  26", lambda parent: IconButton("xmark", parent, diameter=26, fill=theme.fill_soft, icon_size=11,
+                                                icon_color=theme.content_dim, weight="bold")),
+        ("finish  24", lambda parent: IconButton("checkmark", parent, diameter=24, hit=28, fill=theme.content,
+                                                 glow=theme.white_glow, icon_size=11, icon_color=theme.surface, weight="bold")),
+        ("primary", lambda parent: PillButton("Save", parent, primary=True)),
+        ("secondary", lambda parent: PillButton("Cancel", parent)),
+    ]
+    c = card(left + col_w * len(STATES) + 10, top + row_h * len(kinds) + 10)
+    for j, state in enumerate(STATES):
+        c.caption(state, left + j * col_w, 12, col_w, align=Qt.AlignmentFlag.AlignHCenter)
+    for i, (title, make) in enumerate(kinds):
+        y = top + i * row_h
+        c.caption(title, 18, y, 120, row_h)
+        for j, state in enumerate(STATES):
+            b = make(c)
+            b.move(round(left + j * col_w + (col_w - b.width()) / 2), round(y + (row_h - b.height()) / 2))
+            _set_state(b, state)
+    return c
 
-        # sparks: born along the bottom, drifting up, blooming in and fading out
-        cell = Quartz.CAEmitterCell.emitterCell()
-        cell.setContents_(_spark_image())
-        cell.setBirthRate_(2.2)
-        cell.setLifetime_(2.4)
-        cell.setLifetimeRange_(0.8)
-        cell.setVelocity_(11.0)
-        cell.setVelocityRange_(6.0)
-        cell.setEmissionLongitude_(1.5708)  # straight up
-        cell.setEmissionRange_(0.35)        # with a little sway
-        cell.setScale_(0.0)                 # grow from nothing…
-        cell.setScaleSpeed_(0.34)
-        cell.setScaleRange_(0.08)
-        cell.setAlphaSpeed_(-0.42)          # …while fading, so each spark blooms then dissolves
-        cell.setColor_(NSColor.colorWithWhite_alpha_(1.0, 0.95).CGColor())
-        cell.setSpin_(0.0)
-        self.sparks = Quartz.CAEmitterLayer.layer()
-        self.sparks.setFrame_(((0, 0), (CAPSULE_W, CAPSULE_H)))
-        self.sparks.setEmitterShape_(Quartz.kCAEmitterLayerLine)
-        self.sparks.setEmitterMode_(Quartz.kCAEmitterLayerOutline)
-        self.sparks.setEmitterPosition_((CAPSULE_W / 2, 2.0))
-        self.sparks.setEmitterSize_((CAPSULE_W - 3.0, 0.0))
-        self.sparks.setRenderMode_(Quartz.kCAEmitterLayerAdditive)
-        self.sparks.setEmitterCells_([cell])
-        self.sparks.setBirthRate_(0.0)
-        self.clip.addSublayer_(self.sparks)
 
-        # top: rides the waterline; holds the breathing cap glow and the bloom
-        self.top = AppKit.CALayer.layer()
-        self.clip.addSublayer_(self.top)
-        self.cap = Quartz.CAGradientLayer.layer()
-        self.cap.setFrame_(((0, 0), (CAPSULE_W, self.CAP)))
-        self.cap.setStartPoint_((0.5, 0.0))
-        self.cap.setEndPoint_((0.5, 1.0))
-        self.cap.setColors_([NSColor.colorWithWhite_alpha_(1.0, 0.0).CGColor(), NSColor.colorWithWhite_alpha_(1.0, 0.42).CGColor()])
-        self.cap.addAnimation_forKey_(_loop("opacity", 0.45, 1.0, 2.6), "breathe")
-        self.top.addSublayer_(self.cap)
-        self.bloom = AppKit.CALayer.layer()
-        self.bloom.setBounds_(((0, 0), (self.BLOOM, self.BLOOM)))
-        self.bloom.setCornerRadius_(self.BLOOM / 2)
-        self.bloom.setBackgroundColor_(NSColor.colorWithWhite_alpha_(1.0, 1.0).CGColor())
-        self.bloom.setOpacity_(0.0)
-        self.top.addSublayer_(self.bloom)
+def _preview_bars() -> QWidget:
+    """Progress bars at several fractions, and scrub bars at rest and hovered."""
+    from .layout.pill import SCRUB_H
+    from .preview import card
 
-        # squiggle: the idle mark, a halo and a line on the same path, shown only at rest
-        self.squiggle = AppKit.CALayer.layer()
-        self.squiggle.setHidden_(True)
-        self.layer().addSublayer_(self.squiggle)
-        path = _squiggle_path()
-        self.halo = Quartz.CAShapeLayer.layer()
-        self.line = Quartz.CAShapeLayer.layer()
-        for shape, width in ((self.halo, SQUIGGLE_STROKE + SQUIGGLE_HALO), (self.line, SQUIGGLE_STROKE)):
-            shape.setFrame_(((0, 0), squiggle_size()))
-            shape.setPath_(path)
-            shape.setFillColor_(None)
-            shape.setLineWidth_(width)
-            shape.setLineCap_(Quartz.kCALineCapRound)
-            shape.setLineJoin_(Quartz.kCALineJoinRound)
-            self.squiggle.addSublayer_(shape)
+    fractions = (0.0, 0.02, 0.35, 0.75, 1.0)
+    w, left = 280.0, 70.0
+    c = card(left + w + 24, 22 + 26 * len(fractions) + 40 + SCRUB_H + 20)
+    y = 22.0
+    for f in fractions:
+        c.caption(f"{f:g}", 18, y - 6, 50, 14)
+        bar = ProgressBar(c)
+        bar.setGeometry(round(left), round(y), round(w), round(BAR_H))
+        bar.set_fraction(f)
+        y += 26
+    for label, hover in (("scrub", False), ("hover", True)):
+        c.caption(label, 18, y + (SCRUB_H - 14) / 2, 50, 14)
+        s = ScrubBar(c)
+        s.setGeometry(round(left), round(y), round(w), round(SCRUB_H))
+        s.set_fraction(0.42)
+        if hover:
+            s.set_hover(True)
+        y += 40
+    return c
 
-        self.fraction = 0.0
-        self.dim = False
-        self.playing = False
-        self.edge = "left"
-        self.rest = False
-        self._accent = None
-        return self
 
-    @objc.python_method
-    def set_rest(self, on: bool) -> None:
-        self.rest = bool(on)
-        self.setNeedsDisplay_(True)
+def _preview_hover_surface() -> QWidget:
+    """A hover surface (the pill and the menu capsules), at rest and glowing."""
+    from .preview import card
 
-    def wantsUpdateLayer(self):
-        return True
+    c = card(240, 110)
+    for i, on in enumerate((False, True)):
+        v = HoverView(c, fill=lambda: theme.surface(0.97), radius=None, border=theme.hairline)
+        v.setGeometry(40 + i * 100, 18, 46, 74)
+        v.set_hover(on, animate=False)
+    return c
 
-    @objc.python_method
-    def _fill_h(self) -> float:
-        return max(CAPSULE_W, CAPSULE_H * self.fraction)
 
-    @objc.python_method
-    def _tint(self) -> None:
-        """Re-derive the gradient's tones from the content colour and restart its drift.
-        Only runs when that colour actually changes (an appearance flip)."""
-        accent = theme.CONTENT.colorUsingColorSpace_(AppKit.NSColorSpace.sRGBColorSpace())
-        key = tuple(round(c, 3) for c in accent.getRed_green_blue_alpha_(None, None, None, None))
-        if key == self._accent:
-            return
-        self._accent = key
-        white, black = NSColor.whiteColor(), NSColor.blackColor()
-        light = accent.blendedColorWithFraction_ofColor_(0.28, white).CGColor()
-        base = accent.CGColor()
-        deep = accent.blendedColorWithFraction_ofColor_(0.22, black).CGColor()
-        self.body.removeAllAnimations()
-        self.body.setColors_([light, base, deep])
-        # three drifts with unrelated periods: the light wanders, the split shifts, the ends swap
-        self.body.addAnimation_forKey_(_loop("colors", [light, base, deep], [base, light, base], 6.7), "hue")
-        self.body.addAnimation_forKey_(_loop("locations", [0.0, 0.32, 1.0], [0.0, 0.72, 1.0], 5.3), "split")
-        self.body.addAnimation_forKey_(_loop("startPoint", (0.0, 0.0), (1.0, 0.15), 8.1), "swing")
-        self.body.addAnimation_forKey_(_loop("endPoint", (1.0, 1.0), (0.0, 0.85), 8.1), "swing2")
-
-    def updateLayer(self):
-        h = self._fill_h()
-        Quartz.CATransaction.begin()
-        Quartz.CATransaction.setDisableActions_(True)
-        # bounds + position + transform (never frame, which is undefined under a transform)
-        self.capsule.setBounds_(((0, 0), (CAPSULE_W, CAPSULE_H)))
-        self.capsule.setPosition_(capsule_centre(self.edge))
-        self.capsule.setTransform_(Quartz.CATransform3DMakeRotation(-math.pi / 2, 0, 0, 1) if self.edge == "bottom"
-                                   else Quartz.CATransform3DIdentity)
-        self.capsule.setBorderColor_(theme.HAIRLINE.CGColor())
-        self.clip.setHidden_(self.rest)
-        self.capsule.setHidden_(self.rest)
-        self.squiggle.setHidden_(not self.rest)
-        if self.rest:
-            self.squiggle.setBounds_(((0, 0), squiggle_size()))
-            self.squiggle.setPosition_(capsule_centre(self.edge))
-            self.squiggle.setTransform_(self.capsule.transform())
-            w = self.window()
-            scale = w.backingScaleFactor() if w is not None else 2.0
-            self.halo.setStrokeColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(*SQUIGGLE_OUTLINE).CGColor())
-            self.line.setStrokeColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(*SQUIGGLE_FILL).CGColor())
-            for shape in (self.halo, self.line):
-                shape.setContentsScale_(scale)
-            Quartz.CATransaction.commit()
-            _freeze(self.body)
-            _freeze(self.cap)
-            self.sparks.setBirthRate_(0.0)
-            return
-        self.capsule.setBackgroundColor_(theme.surface(0.97).CGColor())
-        self._tint()
-        Quartz.CATransaction.commit()
-        # the waterline itself eases up (or jumps back on a seek)
-        Quartz.CATransaction.begin()
-        Quartz.CATransaction.setAnimationDuration_(0.35)
-        Quartz.CATransaction.setAnimationTimingFunction_(Quartz.CAMediaTimingFunction.functionWithName_(Quartz.kCAMediaTimingFunctionEaseOut))
-        self.clip.setFrame_(((0, 0), (CAPSULE_W, h)))
-        self.top.setFrame_(((0, h - self.CAP), (CAPSULE_W, self.CAP)))
-        self.bloom.setPosition_((CAPSULE_W / 2, self.CAP))
-        self.clip.setOpacity_(0.45 if self.dim else 1.0)
-        Quartz.CATransaction.commit()
-        if self.playing:
-            _thaw(self.body)
-            _thaw(self.cap)
-            self.sparks.setBirthRate_(1.0)
-        else:
-            _freeze(self.body)
-            _freeze(self.cap)
-            self.sparks.setBirthRate_(0.0)  # sparks already aloft finish their drift
-
-    @objc.python_method
-    def set_state(self, fraction: float, dim: bool, edge: str, playing: bool = False) -> None:
-        self.fraction = max(0.0, min(1.0, fraction))
-        self.dim = dim
-        self.edge = edge
-        self.playing = playing
-        self.setNeedsDisplay_(True)
-
-    @objc.python_method
-    def pulse(self) -> None:
-        """A sentence landed: a soft bloom swells out of the waterline and dissolves."""
-        if not self.playing:
-            return
-        grow = Quartz.CABasicAnimation.animationWithKeyPath_("transform.scale")
-        grow.setFromValue_(0.25)
-        grow.setToValue_(1.0)
-        fade = Quartz.CABasicAnimation.animationWithKeyPath_("opacity")
-        fade.setFromValue_(0.7)
-        fade.setToValue_(0.0)
-        group = Quartz.CAAnimationGroup.animation()
-        group.setAnimations_([grow, fade])
-        group.setDuration_(0.75)
-        group.setTimingFunction_(Quartz.CAMediaTimingFunction.functionWithName_(Quartz.kCAMediaTimingFunctionEaseOut))
-        self.bloom.addAnimation_forKey_(group, "bloom")
-
-    @objc.python_method
-    def wave(self) -> None:
-        """At rest: one ripple along the wave. A one-shot keyframe animation of both shapes'
-        paths, so the halo never leaves the line; the model path stays the resting one, so
-        when it ends (or is cut) the wave is exactly as it was. Only the paths move: the
-        squiggle layer's geometry belongs to updateLayer and its opacity to auto-hide's slide."""
-        if not self.rest:
-            return
-        anim = Quartz.CAKeyframeAnimation.animationWithKeyPath_("path")
-        anim.setValues_(wave_paths())
-        anim.setDuration_(WAVE_SECS)
-        Quartz.CATransaction.begin()
-        for shape in (self.halo, self.line):
-            shape.addAnimation_forKey_(anim, "wave")
-        Quartz.CATransaction.commit()
-
-    @objc.python_method
-    def stop_wave(self) -> None:
-        for shape in (self.halo, self.line):
-            shape.removeAnimationForKey_("wave")
+PREVIEWS = {
+    "buttons": _preview_buttons,
+    "bars": _preview_bars,
+    "hover-surface": _preview_hover_surface,
+}

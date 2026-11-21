@@ -131,7 +131,7 @@ def test_save_puts_the_key_in_the_keychain_and_blanks_the_file(fake_keychain):
     assert config.save_api_key("cartesia", "new-key") is True
     assert fake_keychain.items["cartesia"] == "new-key"
     assert config.file_api_key("cartesia") == ""
-    assert "new-key" not in config.CONFIG_PATH.read_text()
+    assert "new-key" not in config.CONFIG_PATH.read_text(encoding="utf-8")
     assert get_provider("cartesia", config.load()).api_key == "new-key"
 
 
@@ -155,7 +155,7 @@ def test_migration_moves_keys_and_blanks_the_file(fake_keychain):
     assert migrate.keys_to_keychain() == ["inworld", "openai"]
     assert fake_keychain.items == {"inworld": "ik", "openai": "ok"}
     assert config.file_api_key("inworld") == "" and config.file_api_key("openai") == ""
-    assert '[inworld]\napi_key = ""\nvoice = "Sarah"' in config.CONFIG_PATH.read_text()  # comments kept
+    assert '[inworld]\napi_key = ""\nvoice = "Sarah"' in config.CONFIG_PATH.read_text(encoding="utf-8")  # comments kept
     assert (config.STATE_DIR / migrate.KEYCHAIN_MARKER).exists()
 
 
@@ -200,10 +200,10 @@ def test_migration_runs_once(fake_keychain):
 @pytest.mark.skipif(sys.platform != "darwin", reason="the Speechy migration runs on the Mac only")
 def test_migration_never_touches_the_old_speechy_config(fake_keychain):
     speechy.OLD_CONFIG_PATH.parent.mkdir(parents=True)
-    speechy.OLD_CONFIG_PATH.write_text('[cartesia]\napi_key = "old"\n')
+    speechy.OLD_CONFIG_PATH.write_text('[cartesia]\napi_key = "old"\n', encoding="utf-8")
     config.load()  # copies the Speechy config over
     assert migrate.keys_to_keychain() == ["cartesia"]
-    assert speechy.OLD_CONFIG_PATH.read_text() == '[cartesia]\napi_key = "old"\n'
+    assert speechy.OLD_CONFIG_PATH.read_text(encoding="utf-8") == '[cartesia]\napi_key = "old"\n'
 
 
 def test_app_start_moves_the_keys(fake_keychain):

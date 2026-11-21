@@ -264,8 +264,8 @@ dependencies = [
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-security", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-servicemanagement", marker = "sys_platform == 'darwin'" },
-    { name = "pyside6-addons", marker = "sys_platform == 'win32'" },
-    { name = "pyside6-essentials", marker = "sys_platform == 'win32'" },
+    { name = "pyside6-addons" },
+    { name = "pyside6-essentials" },
     { name = "rumps", marker = "sys_platform == 'darwin'" },
 ]
 
@@ -275,10 +275,6 @@ build = [
 ]
 dev = [
     { name = "pytest" },
-]
-qt = [
-    { name = "pyside6-addons" },
-    { name = "pyside6-essentials" },
 ]
 
 [package.metadata]
@@ -297,18 +293,14 @@ requires-dist = [
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'", specifier = ">=10" },
     { name = "pyobjc-framework-security", marker = "sys_platform == 'darwin'", specifier = ">=10" },
     { name = "pyobjc-framework-servicemanagement", marker = "sys_platform == 'darwin'", specifier = ">=12.2.2" },
-    { name = "pyside6-addons", marker = "sys_platform == 'win32'", specifier = ">=6.10" },
-    { name = "pyside6-essentials", marker = "sys_platform == 'win32'", specifier = ">=6.10" },
+    { name = "pyside6-addons", specifier = ">=6.10" },
+    { name = "pyside6-essentials", specifier = ">=6.10" },
     { name = "rumps", marker = "sys_platform == 'darwin'", specifier = ">=0.4" },
 ]
 
 [package.metadata.requires-dev]
 build = [{ name = "pyinstaller", specifier = ">=6.22" }]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]
-qt = [
-    { name = "pyside6-addons", specifier = ">=6.10" },
-    { name = "pyside6-essentials", specifier = ">=6.10" },
-]
 
 [[package]]
 name = "macholib"

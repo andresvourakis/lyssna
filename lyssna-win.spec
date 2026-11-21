@@ -113,12 +113,13 @@ def version_file(name: str, original: str) -> str:
     return path
 
 
-# Every module lyssna/host.py can load by name on Windows, and the engine pieces chosen by name.
-LYSSNA_WIN = ["lyssna.win." + m for m in ("app", "audio", "autostart", "capture", "clipboard", "credentials",
-                                           "events", "hotkeys", "instance", "ipc", "policy")]
-# The interface modules lyssna/win/app.py imports inside functions.
-LYSSNA_QT = ["lyssna.ui.qt." + m for m in ("mainthread", "window", "mini_player", "selection_button", "toast",
-                                            "tray", "setup_window", "whats_new_window")]
+# Every module lyssna/host.py can load by name on Windows (the app and the Windows plumbing),
+# and the engine pieces chosen by name.
+LYSSNA_WIN = ["lyssna.app", *("lyssna.win." + m for m in ("audio", "autostart", "capture", "clipboard", "credentials",
+                                                         "events", "hotkeys", "instance", "ipc", "policy"))]
+# The interface modules lyssna/app.py imports inside functions.
+LYSSNA_QT = ["lyssna.ui." + m for m in ("mainthread", "window", "mini_player", "selection_button", "toast",
+                                         "tray", "setup_window", "whats_new_window")]
 
 # Qt modules the app never imports. PyInstaller only bundles what is imported, so this list
 # guards against one of them being pulled in by a dependency. QtNetwork, QtGui and QtCore stay:

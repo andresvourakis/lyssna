@@ -35,7 +35,7 @@ class FakeReader:
 @pytest.fixture
 def ctl(monkeypatch):
     config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
+    config.CONFIG_PATH.write_text(config.TEMPLATE, encoding="utf-8")
     c = Controller()
     c.reader = FakeReader()
     c.notices = []
