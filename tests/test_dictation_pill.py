@@ -8,6 +8,7 @@ half skips without a window server."""
 import itertools
 import math
 import threading
+import time
 
 import AppKit
 import pytest
@@ -98,7 +99,7 @@ def test_dictation_spot_follows_the_docked_player_then_the_idle_pill_then_the_bo
     assert dictation_spot({"dock": "", "y": 0.5}, {"dock": "", "y": 0.4}) == ("bottom", -1.0)  # fresh config
 
 
-VF = (0.0, 25.0, 1440.0, 875.0)
+VF = (0.0, 25.0, 1440.0, 875.0)  # the fake screen's usable area; the tests never see the real one
 EDGES = ("left", "right", "bottom")
 
 
@@ -331,11 +332,33 @@ def nsapp():
     return app
 
 
+def fake_screen(monkeypatch):
+    """Put every screen lookup in lyssna.ui on the fake VF screen. Each module that imported
+    visible_frame holds its own reference, so all of them are replaced, including modules
+    added later. Without this a test reads the real display, and passes or fails with the
+    size of the machine it runs on (a 1024-wide CI Mac, a large laptop screen)."""
+    import importlib
+    import pkgutil
+
+    import lyssna.ui as ui_pkg
+    from lyssna.ui import panel as panel_mod
+
+    vf = AppKit.NSMakeRect(*VF)
+    real = panel_mod.visible_frame
+    patched = []
+    for info in pkgutil.iter_modules(ui_pkg.__path__, "lyssna.ui."):
+        mod = importlib.import_module(info.name)
+        if getattr(mod, "visible_frame", None) is real:
+            monkeypatch.setattr(mod, "visible_frame", lambda screen=None: vf)
+            patched.append(info.name)
+    assert {"lyssna.ui.panel", "lyssna.ui.mini_player", "lyssna.ui.toast"} <= set(patched)
+    return vf
+
+
 @pytest.fixture
 def pill(nsapp, monkeypatch):
     """A MiniPlayer that never reaches the screen, on a fixed fake screen."""
-    vf = AppKit.NSMakeRect(*VF)
-    monkeypatch.setattr(mp_mod, "visible_frame", lambda screen=None: vf)
+    fake_screen(monkeypatch)
     p = mp_mod.MiniPlayer.alloc().init()
     p.shown = []
     p.order_front = lambda: p.shown.append(p.form)
@@ -370,6 +393,16 @@ def centre_y(p):
 
 def pump(seconds):
     NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(seconds))
+
+
+def pump_until(done, what, timeout=5.0):
+    """Run the run loop until done() is true. Animations finish on the render server, which
+    is slower on a busy CI machine, so a fixed wait would pass on a fast Mac and fail there.
+    The timeout only bounds a hang; a fast machine returns as soon as the animation ends."""
+    deadline = time.monotonic() + timeout
+    while not done():
+        assert time.monotonic() < deadline, f"{what} did not finish within {timeout}s"
+        pump(0.02)
 
 
 @appkit
@@ -556,7 +589,7 @@ def test_leaving_the_menu_shrinks_it_back_to_the_sliver(pill):
     rest = frame(pill)
     pill.mouseEntered_(None)
     pill._close_menu()
-    pump(0.4)  # the scale animation's completion
+    pump_until(lambda: pill._pending_done is None, "the shrink animation")
     assert pill.form == "rest" and frame(pill) == rest
 
 
@@ -794,7 +827,7 @@ def test_auto_hide_shows_at_idle_then_slides_away_after_the_linger(hiding):
     assert hiding._tucked and slid_out(hiding) == SLIVER_W
     x, _y, w, h = frame(hiding)
     assert (x, w, h) == (REST_X, SLIVER_W, SLIVER_H)  # the window stays put: the wave slides inside it
-    pump(0.4)  # the slide's completion
+    pump_until(lambda: hiding._slide_token is None, "the slide")
     assert hiding.shown == [] and hiding.form == "rest" and hiding._auto_watch is not None
 
 
@@ -803,7 +836,7 @@ def test_auto_hide_reveals_near_keeps_the_menu_and_hides_after_the_delay(hiding)
     hiding.show_idle()
     at(hiding, 100.0)
     at(hiding, 103.0)
-    pump(0.4)
+    pump_until(lambda: hiding._slide_token is None, "the slide")
     assert hiding._tucked and hiding.shown == []
     hiding.mouseEntered_(None)  # a stale enter on the hidden window
     assert hiding.form == "rest"
@@ -867,7 +900,7 @@ def test_a_reading_or_a_dictation_while_hidden_shows_its_own_form_and_stops_the_
     hiding.show_idle()
     at(hiding, 100.0)
     at(hiding, 103.0)
-    pump(0.4)
+    pump_until(lambda: hiding._slide_token is None, "the slide")
     assert hiding._tucked
     hiding._update(Status(state="playing", session=1, total=3, index=1))
     assert hiding.form == "card" and hiding.shown[-1] == "card"
@@ -889,7 +922,7 @@ def test_no_wave_while_it_slides_or_hides_and_the_countdown_restarts_on_reveal(h
     hiding.show_idle()
     hiding._wave_tick()
     assert not waving(hiding.rest)  # sliding in
-    pump(0.4)
+    pump_until(lambda: hiding._slide_token is None, "the slide")
     hiding._wave_tick()
     assert waving(hiding.rest)
     at(hiding, 100.0)
@@ -897,13 +930,13 @@ def test_no_wave_while_it_slides_or_hides_and_the_countdown_restarts_on_reveal(h
     assert hiding._tucked and hiding._wave_timer is None and not waving(hiding.rest)  # cut as it slides away
     hiding._wave_tick()
     assert not waving(hiding.rest)
-    pump(0.4)
+    pump_until(lambda: hiding._slide_token is None, "the slide")
     hiding.cursor = NEAR
     at(hiding, 104.0)
     assert not hiding._tucked and hiding._wave_timer is not None
     hiding._wave_tick()
     assert not waving(hiding.rest)  # sliding back in
-    pump(0.4)
+    pump_until(lambda: hiding._slide_token is None, "the slide")
     hiding._wave_tick()
     assert waving(hiding.rest)
 
@@ -1010,11 +1043,13 @@ def test_dragging_the_docked_player_onto_the_bottom_docks_it_there(pill):
     pill.panel.setFrameOrigin_((500, 40))
     pill.drag_moved(600, 80)
     assert pill.zones == ["flat"]  # the hint lies flat along the bottom edge
-    _zx, zy, zw, zh = frame(pill.flat_zone)
+    zx, zy, zw, zh = frame(pill.flat_zone)
     assert (zw, zh) == (CAPSULE_H + 8, CAPSULE_W + 8) and zy == 25 + CAPSULE_INSET - 4
     pill.drag_ended(600, 80)
     assert pill.dock == "bottom" and pill.form == "sliver"
     assert pill.fired[-1][:2] == ("layout", "bottom")
+    x, _y, w, _h = frame(pill)
+    assert zx + zw / 2 == pytest.approx(x + w / 2)  # the hint showed the spot along the edge it landed on
 
 
 @appkit
@@ -1145,8 +1180,7 @@ def test_toast_floor_only_on_the_bottom(pill):
 def toast(nsapp, monkeypatch):
     from lyssna.ui import toast as toast_mod
 
-    vf = AppKit.NSMakeRect(*VF)
-    monkeypatch.setattr(toast_mod, "visible_frame", lambda screen=None: vf)
+    fake_screen(monkeypatch)
     monkeypatch.setattr(toast_mod, "later", lambda delay, fn, *args: None)
     t = toast_mod.Toast.alloc().init()
     t.order_front = lambda: None
