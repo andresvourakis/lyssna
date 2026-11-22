@@ -70,7 +70,7 @@ STATE_TEXT = {"loading": "…", "playing": "", "paused": "⏸ "}  # the legacy m
 WARNING_MARK = "⚠︎"  # beside the icon while the permission is missing
 TITLE_MAX = 60  # characters of a message beside the icon, as the legacy app
 NOW_PLAYING_MAX = 80  # characters of the sentence in the now-playing line; the Mac caps a message at the same
-MENU_ICON = 16.0      # privacy, warning and heart icons in the menu
+MENU_ICON = 16.0      # the privacy, warning and heart icons' image in the menu; the symbol inside is host.statusbar.MENU_SYMBOL_POINTS
 CREDITS_PT = 11       # the About panel's credits, as show_about in lyssna/legacy/app.py sets them
 
 
@@ -458,7 +458,10 @@ class Tray:
         """Show an icon in the menu's text colour in front of an item's title. It is a mask too,
         so a native Mac menu draws it as a template image, as set_symbol does in the legacy app."""
         self._icons[action] = symbol
-        icon = QIcon(icons.icon_pixmap(symbol, MENU_ICON, self._icon_color(), "regular"))
+        # Qt gives a native Mac menu item's image the 16 pt icon size, so the symbol is drawn at
+        # its own size inside a MENU_ICON square rather than scaled to fill it.
+        icon = QIcon(icons.icon_pixmap(symbol, host.statusbar.MENU_SYMBOL_POINTS, self._icon_color(), "regular",
+                                       box=MENU_ICON))
         icon.setIsMask(True)
         action.setIcon(icon)
 

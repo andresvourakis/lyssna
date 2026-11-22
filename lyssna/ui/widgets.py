@@ -18,7 +18,7 @@ import math
 from collections.abc import Callable
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QCursor, QFontMetricsF, QPainter, QPainterPath, QPen, QRadialGradient
+from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QPushButton, QWidget
 
 from . import icons, theme
@@ -292,12 +292,18 @@ class PillButton(QPushButton):
         # NSButton.sizeToFit makes a borderless button's frame the title's advance plus its
         # cell's 2 pt inset each side, rounded up to whole points; the Mac's PillButton then
         # adds PILL_PAD each side ("Download" in 13 pt: 60.04 advance, 65, 93 wide).
-        w = QFontMetricsF(self.font()).horizontalAdvance(self.text())
+        w = theme.text_width(self.text(), self.font())
         return QSize(math.ceil(w + 4.0 - 1e-6) + 2 * round(PILL_PAD), round(PILL_H))
 
     def setText(self, text: str) -> None:
         super().setText(text)
         self.size_to_fit()
+
+    def retitle(self, text: str) -> None:
+        """Change the title and keep the frame, as NSButton.setTitle_ does: the Mac's Download
+        button stays Download's width when it says Try Again."""
+        super().setText(text)
+        self.update()
 
     def set_pressed(self, on: bool) -> None:
         self.setDown(bool(on))
@@ -390,9 +396,9 @@ class ProgressBar(QWidget):
     narrower than the bar is tall, so a just-started reading shows a round dot.
 
     As on the Mac, a new fraction (and a new bar height, when the scrub bar thickens) glides the
-    fill there over 0.25 s from where it is shown, once the bar is on screen; set_fraction(f,
-    animate=False) jumps (a drag). The fill sits on the track's bottom edge and is clipped to the
-    track, like the Mac's fill layer inside the bar's rounded, clipping layer."""
+    fill there over 0.25 s from where it is shown, once the bar is on screen (a drag too, as on
+    the Mac); set_fraction(f, animate=False) jumps. The fill sits on the track's bottom edge and
+    is clipped to the track, like the Mac's fill layer inside the bar's rounded, clipping layer."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -478,7 +484,11 @@ class ScrubBar(QWidget):
     track thickens at once while the fill's height glides after it; the knob fades in or out
     over 0.25 s; and playback glides the fill, and the knob while hovered, to the new playhead.
     The knob only follows the playhead while it shows, so on the next hover it slides from where
-    it was last shown while it fades in. A drag moves both at once (no glide)."""
+    it was last shown while it fades in. A drag glides them too, 0.25 s behind the cursor (the
+    Mac's drag sets the same layer frames, read back as 0.25 s position and bounds animations),
+    while the player's preview times follow the cursor at once. The knob's fade is a Core
+    Animation transition, so one that interrupts another starts afresh from fully hidden or
+    fully shown, not from the opacity on screen."""
 
     consumes_mouse = True  # tells FloatingPanel this is a control, not a drag handle
 
@@ -520,11 +530,12 @@ class ScrubBar(QWidget):
         self.bar.setGeometry(0, round((h - bh) / 2), round(w), round(bh))
         self.bar._fill.start(fill_shown, animate)
         k = self.knob_size
-        x_shown, alpha_shown = self._knob_pos.value(), self._knob_alpha.value()
+        x_shown = self._knob_pos.value()
+        alpha_before = (1.0 if self._knob_on else 0.0,)  # a transition starts from the old state, not the shown one
         self._knob_x = min(max(w * self.bar.fraction, k / 2), w - k / 2) if w > 0 else 0.0
         self._knob_on = self.active()
         self._knob_pos.start(x_shown, animate)
-        self._knob_alpha.start(alpha_shown, animate)
+        self._knob_alpha.start(alpha_before, animate)
         self.knob.raise_()
 
     def _place_knob(self) -> None:
@@ -576,7 +587,7 @@ class ScrubBar(QWidget):
             return super().mouseReleaseEvent(ev)
         f = self._fraction_at(ev.position().x())
         self.scrubbing = False
-        self.bar.set_fraction(f, animate=False)
+        self.bar.set_fraction(f)
         self._layout(animate=True)  # released off the bar, it thins and the knob fades out
         if self.on_seek:
             self.on_seek(f)
@@ -584,8 +595,8 @@ class ScrubBar(QWidget):
 
     def _move(self, x: float) -> None:
         f = self._fraction_at(x)
-        self.bar.set_fraction(f, animate=False)
-        self._layout()
+        self.bar.set_fraction(f)
+        self._layout(animate=True)
         if self.on_scrub:
             self.on_scrub(f)
 

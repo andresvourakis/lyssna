@@ -123,6 +123,7 @@ from .panel import FloatingPanel
 from .sliver import EASE_IN, EASE_OUT, Sliver
 from .wave import WaveView
 from .widgets import HoverView, IconButton, ScrubBar, rounded
+from .window import TEXT_INSET
 
 log = logging.getLogger("lyssna.ui.player")
 
@@ -209,7 +210,10 @@ class Text(QWidget):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         p.setFont(self.font_)
         p.setPen(self.color())
-        p.drawText(QRectF(self.rect()), int(self.align | Qt.AlignmentFlag.AlignVCenter), self._text)
+        # The Mac's label is a text field, whose cell draws its text TEXT_INSET in from each side:
+        # a left or right aligned time sits that far in from its frame's edge.
+        box = QRectF(self.rect()).adjusted(TEXT_INSET, 0, -TEXT_INSET, 0)
+        p.drawText(box, int(self.align | Qt.AlignmentFlag.AlignVCenter), self._text)
         p.end()
 
 
@@ -931,20 +935,12 @@ class MiniPlayer(FloatingPanel):
             self._open_menu()
 
     def _mouse_inside(self, margin: float = 6.0) -> bool:
-        """Is the cursor on the open form, or on the resting spot it grew from? The resting spot
-        counts too, so a cursor pushed against the screen edge keeps it open instead of closing
-        and reopening it."""
+        """Is the cursor on the open form's window, or within `margin` of it? The legacy rule
+        exactly: the window's frame only. The open form sits DOCK_GAP in from the edge, so a
+        cursor pressed against the edge itself is outside and the form closes, as on the Mac."""
         px, py = self._cursor()
         x, y, w, h = self.frame_mac()
-        if x - margin <= px <= x + w + margin and y - margin <= py <= y + h + margin:
-            return True
-        if self.form == "menu":
-            spot = docked_frame(self._edge, *self._rest_anchor, SLIVER_H, SLIVER_W, 0.0)
-        elif self.form == "pill":
-            spot = self._docked_frame(SLIVER_H, SLIVER_W, 0.0)
-        else:
-            return False
-        return near_frame(px, py, spot, reach=0.0)
+        return x - margin <= px <= x + w + margin and y - margin <= py <= y + h + margin
 
     def _watch_hover(self) -> None:
         """While the pill or the menu is open, poll the cursor; shrink back once it has been outside

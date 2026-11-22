@@ -216,7 +216,7 @@ class _Text:
         return self._steps[n - 1]
 
     def natural_width(self) -> float:
-        return QFontMetricsF(self.font).horizontalAdvance(self._text)
+        return theme.text_width(self._text, self.font)
 
     def first_baseline(self, width: float) -> float:
         layout = self._lay(width)
@@ -261,8 +261,7 @@ class Segments(QWidget):
         self.titles = titles
         self.on_change = on_change
         self.font_ = theme.ui_font(SEG_SIZE, "medium")
-        fm = QFontMetricsF(self.font_)
-        self.widths = [round(fm.horizontalAdvance(t)) + 2 * SEG_PAD for t in titles]
+        self.widths = [round(theme.text_width(t, self.font_)) + 2 * SEG_PAD for t in titles]
         self.lefts = [sum(self.widths[:i]) for i in range(len(self.widths))]
         self.selected = 0
         self.pos_ = (self.lefts[0], self.widths[0])  # the capsule as drawn: (x, width)

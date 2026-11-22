@@ -9,7 +9,7 @@ import time
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QPointF, QRectF, Qt, QThread
-from PySide6.QtGui import QColor, QImage, QMouseEvent
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
 
 from lyssna.ui.layout.panel import DRAG_SLOP
@@ -426,7 +426,7 @@ def test_labels_are_framed_as_appkit_labels(qapp):
     from lyssna.ui.window import TEXT_INSET, Label, text_frame_width
 
     label = Label("Select text in any app and press", size=13)
-    advance = QFontMetricsF(label.font()).horizontalAdvance(label.value())
+    advance = theme.text_width(label.value(), label.font())  # AppKit's own measure on a Mac
     assert label.fit()[0] == text_frame_width(advance) == math.ceil(advance + 4)
     assert label.contentsRect().left() == TEXT_INSET
     words = "Lyssna reads text aloud and types"
@@ -438,16 +438,17 @@ def test_labels_are_framed_as_appkit_labels(qapp):
 
 
 def test_text_buttons_are_framed_as_borderless_appkit_buttons(qapp):
-    from PySide6.QtGui import QFontMetrics, QFontMetricsF
+    from PySide6.QtGui import QFontMetrics
 
+    from lyssna.ui import theme
     from lyssna.ui.window import TextButton, text_frame_width
 
     plain = TextButton("Clear History…", size=12, weight="regular")
-    advance = QFontMetricsF(plain.font()).horizontalAdvance(plain.text())
+    advance = theme.text_width(plain.text(), plain.font())
     assert plain.sizeHint().width() == text_frame_width(advance)
     assert plain.sizeHint().height() == QFontMetrics(plain.font()).height()
     heart = TextButton("Support it", size=12, link=True, symbol="heart.fill")
-    advance = QFontMetricsF(heart.font()).horizontalAdvance(heart.text())
+    advance = theme.text_width(heart.text(), heart.font())
     assert heart.title_x() == 2 + 12 + 2  # the 10 pt symbol's image is 12 wide
     assert heart.sizeHint().width() == 16 + math.ceil(advance) + 2
 
@@ -470,6 +471,45 @@ def test_every_icon_has_a_path(qapp):
     assert len({pm.toImage().pixel(x, y) for x in range(26) for y in range(26)}) > 1
 
 
+def test_optical_nudges_move_only_their_own_size_and_weight(qapp):
+    """The OPTICAL table shifts an icon's ink where the Mac's sits off centre, for that symbol at
+    that size and weight only, and by less than a pixel."""
+    import numpy as np
+
+    from lyssna.ui import icons
+
+    def ink_centre(name: str, size: float, weight: str) -> tuple[float, float]:
+        img = QImage(96, 96, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(0)
+        p = QPainter(img)
+        p.scale(4, 4)
+        icons.draw_icon(p, name, icons.icon_rect(12, 12, size), QColor("black"), weight)
+        p.end()
+        a = np.frombuffer(img.constBits(), dtype=np.uint8).reshape(96, 96, 4)[..., 3].astype(float)
+        ys, xs = np.mgrid[0:96, 0:96]
+        return (xs * a).sum() / a.sum() / 4, (ys * a).sum() / a.sum() / 4
+
+    for (name, size, weight), (dx, dy) in list(icons.OPTICAL.items()):
+        assert name in icons.NAMES and weight in icons.WEIGHTS and abs(dx) < 1 and abs(dy) < 1
+        cx, cy = ink_centre(name, size, weight)
+        saved = icons.OPTICAL.pop((name, size, weight))
+        try:
+            bx, by = ink_centre(name, size, weight)
+        finally:
+            icons.OPTICAL[(name, size, weight)] = saved
+        assert (cx - bx, cy - by) == pytest.approx((dx, dy), abs=0.01)
+
+
+def test_a_boxed_icon_pixmap_keeps_the_symbol_size(qapp):
+    from lyssna.ui import icons
+
+    pm = icons.icon_pixmap("lock", 13, QColor("black"), "regular", dpr=2.0, box=16)
+    assert pm.width() == 32 and pm.deviceIndependentSize().width() == 16
+    img = pm.toImage()
+    rows = [y for y in range(32) if any(img.pixelColor(x, y).alpha() > 128 for x in range(32))]
+    assert rows[-1] - rows[0] + 1 <= 26  # a 13 point lock (about 12 tall), not stretched to 16
+
+
 # -- bars --------------------------------------------------------------------------------------
 
 
@@ -488,45 +528,86 @@ def test_progress_bar_fill_is_never_shorter_than_its_height(qapp):
 
 def test_pill_button_is_as_wide_as_the_macs(qapp):
     """NSButton.sizeToFit: title advance plus 2 pt each side, rounded up; then PILL_PAD each side."""
-    from PySide6.QtGui import QFontMetricsF
-
+    from lyssna.ui import theme
     from lyssna.ui.layout.setup import PILL_PAD
     from lyssna.ui.widgets import PillButton
 
     for title, primary in (("Download", False), ("Done", True), ("Open Settings…", False)):
         b = PillButton(title, primary=primary)
-        advance = QFontMetricsF(b.font()).horizontalAdvance(title)
+        advance = theme.text_width(title, b.font())
         assert b.width() == math.ceil(advance + 4.0 - 1e-6) + 2 * PILL_PAD
 
 
-def test_playback_glides_the_fill_and_a_drag_jumps(qapp):
-    """The Mac's fill and knob are layers with implicit 0.25 s actions: playback glides them.
-    The brief keeps a drag direct."""
-    from lyssna.ui.widgets import GLIDE_SECS, ScrubBar
+def test_playback_and_drags_glide_the_fill_and_knob(qapp, monkeypatch):
+    """The Mac's fill and knob are layers with implicit 0.25 s actions: playback glides them, and
+    so does a drag (the legacy bar's drag leaves 0.25 s position and bounds animations on both).
+    The knob's fade is a transition: interrupted, it starts afresh rather than from the shown alpha.
+    The glides are stepped by hand, never timed against the clock, and motion is pinned on (a CI
+    machine may have animations switched off)."""
+    from lyssna.ui import theme
+    from lyssna.ui.widgets import ScrubBar
 
+    monkeypatch.setattr(theme, "reduce_motion", lambda: False)
     s = ScrubBar()
     s.resize(200, 22)
     s.show()
-    s.repaint()
-    QApplication.processEvents()
+    s.grab()  # painted once (grab paints at once, whatever the platform's exposure): from now on changes glide
 
-    def settle() -> None:
-        deadline = time.monotonic() + GLIDE_SECS + 1.0
-        while (s.bar._fill.gliding() or s._knob_alpha.gliding()) and time.monotonic() < deadline:
-            QApplication.processEvents()
-            time.sleep(0.01)
+    def glides():
+        return (s.bar._fill, s._knob_pos, s._knob_alpha)
+
+    def at(fraction: float) -> None:
+        """Step every running glide to `fraction` of its duration (1.0 ends it)."""
+        for g in glides():
+            if g._anim is not None:
+                g._anim.setCurrentTime(round(g._anim.duration() * fraction))
 
     s.set_hover(False)
-    settle()
+    at(1.0)
     s.set_fraction(0.5)
-    assert s.bar._fill.gliding() and s.bar.fill_width() < 100
-    settle()
+    assert s.bar._fill.gliding() and s.bar.fill_width() == BAR_H  # still where it was shown
+    at(0.5)
+    assert BAR_H < s.bar.fill_width() < 100
+    at(1.0)
     assert not s.bar._fill.gliding() and s.bar.fill_width() == 100
     s.set_hover(True)  # the knob fades in and the fill's height follows the thicker track
     assert s.knob.isVisible() and s._knob_alpha.gliding() and s.bar._fill.gliding()
+    at(1.0)
     origin = s.mapToGlobal(QPointF(0, 11))
     mouse(s, QEvent.Type.MouseButtonPress, origin.x() + 150, origin.y())
-    assert not s.bar._fill.gliding() and s.bar.fill_width() == 150 and not s._knob_pos.gliding()
+    assert s.bar.fraction == 0.75 and s.bar._fill.gliding() and s._knob_pos.gliding()
+    assert s.bar.fill_width() == 100  # it starts from where it was, 0.25 s behind the cursor
+    at(0.5)
+    assert 100 < s.bar.fill_width() < 150
+    shown = s.bar.fill_width()
+    mouse(s, QEvent.Type.MouseMove, origin.x() + 180, origin.y())
+    assert s.bar._fill.gliding() and s.bar.fill_width() == pytest.approx(shown)  # each move glides afresh from the shown spot
+    mouse(s, QEvent.Type.MouseButtonRelease, origin.x() + 180, origin.y(), Qt.MouseButton.NoButton)
+    at(1.0)
+    assert s.bar.fill_width() == 180
+    s.set_hover(False)  # the knob fades out ...
+    at(0.5)
+    assert 0.0 < s._knob_alpha.value()[0] < 1.0
+    s.set_hover(True)  # ... and, interrupted, fades in again from nothing
+    assert s._knob_alpha.gliding() and s._knob_alpha.value() == (0.0,)
+    at(1.0)
+    s.hide()
+
+
+def test_scrub_bar_jumps_when_motion_is_reduced(qapp, monkeypatch):
+    from lyssna.ui import theme
+    from lyssna.ui.widgets import ScrubBar
+
+    monkeypatch.setattr(theme, "reduce_motion", lambda: True)
+    s = ScrubBar()
+    s.resize(200, 22)
+    s.show()
+    s.grab()
+    s.set_hover(True)
+    s.set_fraction(0.5)
+    origin = s.mapToGlobal(QPointF(0, 11))
+    mouse(s, QEvent.Type.MouseButtonPress, origin.x() + 150, origin.y())
+    assert not any(g.gliding() for g in (s.bar._fill, s._knob_pos, s._knob_alpha)) and s.bar.fill_width() == 150
     mouse(s, QEvent.Type.MouseButtonRelease, origin.x() + 150, origin.y(), Qt.MouseButton.NoButton)
     s.hide()
 

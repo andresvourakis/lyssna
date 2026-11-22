@@ -282,6 +282,34 @@ def _style_font(kind: str, size: int, weight: str) -> QFont:
     return ui_font(size, weight, italic=kind == "italic")
 
 
+def text_style(font: QFont) -> tuple[str, int, str]:
+    """The TEXT_STYLES entry a font from this module was made for, read from the font itself (a
+    widget's font() is a resolved copy, so it cannot be looked up by identity). A font that is
+    not one of the styles raises ValueError: every text-driven size measures a known style."""
+    fonts = _forced or host.appearance
+    if font.family() == fonts.SERIF_FAMILY:
+        kind = "serif"
+    elif font.isFeatureSet(QFont.Tag("tnum")):
+        kind = "digits"
+    else:
+        kind = "italic" if font.italic() else "text"
+    weight = next((name for name, w in _WEIGHTS.items() if w == font.weight()), "")
+    style = (kind, font.pixelSize(), weight)
+    if style not in TEXT_STYLES:
+        raise ValueError(f"{font.family()} {font.pixelSize()} px weight {font.weight()} is not one of the text styles")
+    return style
+
+
+def text_width(text: str, font: QFont) -> float:
+    """How wide `text` is in `font` (one of the text styles) for sizing a frame to it: on the
+    Mac the width AppKit gives, so frames land on the AppKit interface's whole points; on
+    Windows Qt's own. Drawing still lays out glyphs with Qt's advances, so measure with
+    QFontMetricsF where a glyph's position inside a frame is wanted."""
+    fonts = _forced or host.appearance
+    style = text_style(font)
+    return fonts.text_width(text, style, QFontMetricsF(_style_font(*style)).horizontalAdvance)
+
+
 # -- motion ------------------------------------------------------------------------------------
 
 

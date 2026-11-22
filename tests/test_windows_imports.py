@@ -74,7 +74,8 @@ SCRIPT = textwrap.dedent(
         return {n for n, f in vars(module).items() if inspect.isfunction(f) and not n.startswith("_")}
 
     assert host.appearance.__name__ == "lyssna.win.appearance", host.appearance.__name__
-    assert functions(host.appearance) == functions(mac_appearance) == {"font_files", "tracking", "reduce_motion", "short_time"}, (
+    assert functions(host.appearance) == functions(mac_appearance) == {"font_files", "tracking", "text_width", "reduce_motion",
+                                                                        "short_time"}, (
         functions(host.appearance), functions(mac_appearance))
     assert host.appearance.TEXT_FAMILY == "Inter", host.appearance.TEXT_FAMILY
     # A real PC reports its animation setting (a CI runner has animations off); elsewhere there is no Win32, so False.

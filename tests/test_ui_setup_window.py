@@ -349,10 +349,13 @@ def test_a_ready_voice_says_so(window, ctl, monkeypatch):
 
 
 def test_a_failed_download_offers_try_again(window, monkeypatch):
+    from lyssna.ui.widgets import PillButton
+
     monkeypatch.setattr(kokoro.DOWNLOAD, "error", "The download stopped.")
     window._refresh()
     assert shown(window.local_error) and window.local_error.value() == "The download stopped."
     assert shown(window.download) and window.download.text() == "Try Again"
+    assert window.download.width() == PillButton("Download").width()  # NSButton.setTitle_ keeps the frame
 
 
 def test_choosing_the_local_card_uses_the_local_voice(make, ctl, monkeypatch):
@@ -377,18 +380,17 @@ def test_the_dropdown_lists_only_engines_that_need_a_key(window):
 
 
 def test_the_dropdown_is_framed_as_the_macs_pop_up_button(make):
-    """The Mac's NSPopUpButton: 25 tall, the widest item's whole advance plus 67, its bezel 3 in
-    from the left, so Get a key lands where the Mac puts it."""
+    """The Mac's NSPopUpButton: 25 tall, the widest item's whole advance plus 67 (AppKit's
+    sizeToFit for every list of two or more of the engine names), its bezel 3 in from the left,
+    so Get a key lands where the Mac puts it."""
     import math
 
-    from PySide6.QtGui import QFontMetricsF
-
+    from lyssna.ui import theme
     from lyssna.ui.layout.setup import SUB_X
     from lyssna.ui.setup_window import Dropdown
 
     w = make(engine="openai")
-    fm = QFontMetricsF(w.popup.font())
-    widest = max(fm.horizontalAdvance(w.popup.itemText(i)) for i in range(w.popup.count()))
+    widest = max(theme.text_width(w.popup.itemText(i), w.popup.font()) for i in range(w.popup.count()))
     assert w.popup.height() == Dropdown.H == 25
     assert w.popup.width() == math.ceil(round(widest, 3)) + Dropdown.EXTRA
     assert w.popup.x() == round(SUB_X - Dropdown.BEZEL_L)
@@ -397,13 +399,12 @@ def test_the_dropdown_is_framed_as_the_macs_pop_up_button(make):
 
 def test_radios_are_framed_as_the_macs(window):
     """The Mac's radio: its image, a gap of 2, the title as a label frame, 16 tall."""
-    from PySide6.QtGui import QFontMetricsF
-
+    from lyssna.ui import theme
     from lyssna.ui.layout.setup import INDENT, RADIO
     from lyssna.ui.window import text_frame_width
 
     for radio in (window.radio_local, window.radio_key, window.dict_local, window.dict_online):
-        advance = QFontMetricsF(radio.font()).horizontalAdvance(radio.text())
+        advance = theme.text_width(radio.text(), radio.font())
         assert radio.sizeHint().height() == RADIO
         assert radio.sizeHint().width() == INDENT + 2 + text_frame_width(advance)
 
@@ -901,3 +902,21 @@ def test_key_state_never_waits(ctl, fake_keychain):
     keystore.clear_cache()
     assert ctl.dictation_key_state("haiku") is True  # read inline in tests; None while a real read runs
     assert ctl.dictation_key_state("openai") is False
+
+
+def test_key_caps_and_tags_are_drawn_on_the_macs_half_points(window):
+    """AppKit sizes a label to half points, so the Mac's key caps and privacy tags often start on
+    one. These widgets draw themselves, so they draw from that half point inside a whole-pixel frame."""
+    from lyssna.ui import theme
+    from lyssna.ui.layout.setup import CARD_R, TEXT_X
+    from lyssna.ui.window import half_point_width
+
+    caps = window.keycap
+    want = TEXT_X + window.try_text.exact_width() + 8  # where the Mac's row starts
+    assert caps.x() + caps.offset == pytest.approx(want) and 0 <= caps.offset < 1
+    font = theme.ui_font(13, "medium")
+    assert caps._cap_widths() == [max(24.0, half_point_width(theme.text_width(t, font)) + 12) for t in caps.labels]
+    assert caps.width() >= caps.offset + caps.exact_width()
+    tag = window.key_tag if window.key_tag.isVisibleTo(window) else window.local_tag
+    assert tag.x() + tag.width() == CARD_R and tag.width() == tag.natural_width() >= tag.exact_width()
+    assert half_point_width(10.2) == 14.5 and half_point_width(10.5) == 14.5 and half_point_width(10.6) == 15.0

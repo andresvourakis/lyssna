@@ -91,7 +91,7 @@ from .layout.setup import (
 from .mainthread import on_main
 from .mark import MarkView
 from .widgets import BAR_H, PillButton, ProgressBar, rounded
-from .window import TEXT_INSET, Hairline, Label, LyssnaWindow, bad, css, good, text_frame_width
+from .window import TEXT_INSET, Hairline, Label, LyssnaWindow, bad, css, good, half_point_width, text_frame_width
 
 log = logging.getLogger("lyssna.ui.setup")
 
@@ -150,7 +150,7 @@ class Radio(QRadioButton):
         self.resize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
-        advance = QFontMetricsF(self.font()).horizontalAdvance(self.text())
+        advance = theme.text_width(self.text(), self.font())
         return QSize(round(INDENT + self.TITLE_GAP) + text_frame_width(advance), round(RADIO))
 
     def hitButton(self, pos) -> bool:
@@ -209,8 +209,8 @@ class TabButton(QRadioButton):
 
     def preferred_width(self) -> float:
         name, status = self._parts()
-        w = QFontMetricsF(theme.ui_font(13, "medium")).horizontalAdvance(name)
-        w += QFontMetricsF(theme.ui_font(11)).horizontalAdvance(status)
+        w = theme.text_width(name, theme.ui_font(13, "medium"))
+        w += theme.text_width(status, theme.ui_font(11))
         return max(150.0, round(w) + 40.0)
 
     def hitButton(self, pos) -> bool:
@@ -293,8 +293,12 @@ class Tag(QWidget):
         self.symbol = symbol
         self.set(text, symbol)
 
+    def exact_width(self) -> float:
+        """The Mac's width, on half points: its label frame is sized to half points (half_point_width)."""
+        return self.TEXT_X + half_point_width(theme.text_width(self.text, theme.ui_font(11)))
+
     def natural_width(self) -> int:
-        return self.TEXT_X + text_frame_width(QFontMetricsF(theme.ui_font(11)).horizontalAdvance(self.text))
+        return math.ceil(self.exact_width())
 
     def set(self, text: str, symbol: str) -> None:
         self.text, self.symbol = text, symbol
@@ -305,12 +309,18 @@ class Tag(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         color = theme.content_dim()
-        icons.draw_icon(p, self.symbol, QRectF(0, 2, 12, 12), color, "medium")
+        # The tag sits against the card's right edge, so its whole-pixel frame starts up to half a
+        # point left of the Mac's: draw from where the Mac's half-point frame starts.
+        exact = self.exact_width()
+        if self.width() >= exact:
+            p.translate(self.width() - exact, 0)
+        # The Mac's 10 pt symbol, centred in its 12 x 12 image view at (0, 2).
+        icons.draw_icon(p, self.symbol, icons.icon_rect(6, 8, 10), color, "medium")
         font = theme.ui_font(11)
         p.setFont(font)
         p.setPen(color)
         x = self.TEXT_X + TEXT_INSET
-        room = max(0.0, self.width() - x - TEXT_INSET)
+        room = max(0.0, min(float(self.width()), exact) - x - TEXT_INSET)
         words = QFontMetricsF(font).elidedText(self.text, Qt.TextElideMode.ElideRight, room)
         p.drawText(QRectF(x, 0, room + TEXT_INSET, self.H), int(Qt.AlignmentFlag.AlignVCenter), words)
         p.end()
@@ -321,7 +331,7 @@ def _draw_check_disc(p: QPainter, rect: QRectF, color: QColor) -> None:
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(color)
     p.drawEllipse(rect)
-    s = rect.width() * 0.55
+    s = rect.width() * 0.52  # the 13 pt checkmark.circle.fill's check: 6 wide in its 13 disc
     icons.draw_icon(p, "checkmark", icons.icon_rect(rect.center().x(), rect.center().y(), s), QColor(255, 255, 255), "bold")
 
 
@@ -398,7 +408,7 @@ class StatusRow(QWidget):
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = QRectF(1, 2, 14, 14)
+        rect = QRectF(1.5, 2.5, 13, 13)  # the Mac's 13 pt symbol, centred in its 16 x 16 image view at (0, 1)
         if self.done:
             _draw_check_disc(p, rect, good())
         else:
@@ -407,7 +417,9 @@ class StatusRow(QWidget):
 
 
 class KeyCaps(QWidget):
-    """A row of key caps, one per label, e.g. [⌃] [⌥] [S] or [Ctrl] [Alt] [S]."""
+    """A row of key caps, one per label, e.g. [⌃] [⌥] [S] or [Ctrl] [Alt] [S]. The caps are the
+    Mac's, on half points (their labels' frames are), and the row is drawn `offset` in from the
+    frame's left edge: the Mac's row often starts on a half point, which a widget cannot."""
 
     H, GAP, MIN_W = 24, 4, 24
 
@@ -415,25 +427,34 @@ class KeyCaps(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.labels: list[str] = []
+        self.offset = 0.0
         self.set_labels(labels)
 
     def _cap_widths(self) -> list[float]:
-        """Each cap: its label's frame (the advance plus the insets, as on the Mac) and 12, or MIN_W."""
-        fm = QFontMetricsF(theme.ui_font(13, "medium"))
-        return [max(float(self.MIN_W), text_frame_width(fm.horizontalAdvance(t)) + 12.0) for t in self.labels]
+        """Each cap: its label's frame (the advance plus the insets, on half points, as on the Mac) and 12, or MIN_W."""
+        font = theme.ui_font(13, "medium")
+        return [max(float(self.MIN_W), half_point_width(theme.text_width(t, font)) + 12.0) for t in self.labels]
+
+    def exact_width(self) -> float:
+        widths = self._cap_widths()
+        return sum(widths) + self.GAP * max(0, len(widths) - 1)
+
+    def set_offset(self, offset: float) -> None:
+        """Draw the row `offset` in from the left edge (under a pixel), the frame wide enough for it."""
+        self.offset = offset
+        self.resize(math.ceil(round(self.exact_width() + offset, 3)), self.H)
+        self.update()
 
     def set_labels(self, labels: list[str]) -> None:
         self.labels = list(labels)
-        widths = self._cap_widths()
-        self.resize(round(sum(widths) + self.GAP * max(0, len(widths) - 1)), self.H)
+        self.set_offset(self.offset)
         self.setAccessibleName(" ".join(self.labels))
-        self.update()
 
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setFont(theme.ui_font(13, "medium"))
-        x = 0.0
+        x = self.offset
         for text, w in zip(self.labels, self._cap_widths(), strict=True):
             r = QRectF(x, 0, w, self.H)
             path = rounded(r.adjusted(0.5, 0.5, -0.5, -0.5), 6.0)
@@ -458,7 +479,7 @@ class IconPillButton(PillButton):
         super().__init__(title, parent, clicked=clicked, focusable=True)
 
     def title_width(self) -> int:
-        return text_frame_width(QFontMetricsF(self.font()).horizontalAdvance(self.text()))
+        return text_frame_width(theme.text_width(self.text(), self.font()))
 
     def sizeHint(self) -> QSize:
         return QSize(round(2 * PILL_PAD + self.IMAGE_W) + self.title_width(), round(PILL_H))
@@ -515,8 +536,7 @@ class Dropdown(QComboBox):
         self.setFixedSize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
-        fm = QFontMetricsF(self.font())
-        widest = max((fm.horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=60.0)
+        widest = max((theme.text_width(self.itemText(i), self.font()) for i in range(self.count())), default=60.0)
         return QSize(math.ceil(round(widest, 3)) + self.EXTRA, self.H)
 
     def restyle(self) -> None:
@@ -1093,8 +1113,7 @@ class SetupWindow(LyssnaWindow):
             self.progress.set_fraction(progress)
             self.progress_text.set_text(f"{int(progress * 100)}%")
         self.local_error.set_text(error)
-        self.download.setText("Try Again" if error and can_run else "Download")
-        _min_width(self.download)
+        self.download.retitle("Try Again" if error and can_run else "Download")  # keeps Download's width, as on the Mac
 
         provider = ctl.cfg.get("provider", "")
         voice_done = provider in REGISTRY and ctl.provider_configured(provider)
@@ -1189,8 +1208,7 @@ class SetupWindow(LyssnaWindow):
             self.dict_progress.set_fraction(progress)
             self.dict_progress_text.set_text(f"{int(progress * 100)}%")
         self.dict_error.set_text(error)
-        self.dict_download.setText("Try Again" if error and can_run else "Download")
-        _min_width(self.dict_download)
+        self.dict_download.retitle("Try Again" if error and can_run else "Download")  # keeps Download's width, as on the Mac
 
         texts = []
         keys_saved = True
@@ -1242,6 +1260,10 @@ class SetupWindow(LyssnaWindow):
         The views keep the size they have (fit labels first)."""
         h = max(v.height() for v, _ in views_x)
         for v, x in views_x:
+            if isinstance(v, KeyCaps):  # it draws itself, so it can start on the Mac's half point
+                left = math.floor(x)
+                v.set_offset(x - left)
+                x = left
             v.move(round(x), round(y + (h - v.height()) / 2))
             self._visible.add(v)
         return h
@@ -1398,8 +1420,8 @@ class SetupWindow(LyssnaWindow):
 
         # Try it
         y += self._step(self.icon_try, self.head_try, y) + 8
-        tw, _ = self.try_text.fit()
-        y += centre_row([(self.try_text, TEXT_X), (self.keycap, TEXT_X + tw + 8)], y) + 10
+        self.try_text.fit()
+        y += centre_row([(self.try_text, TEXT_X), (self.keycap, TEXT_X + self.try_text.exact_width() + 8)], y) + 10
         y += centre_row([(self.sample, TEXT_X)], y)
         if self.needs_accessibility and show["try_note"]:
             y += 6 + put(self.try_note, TEXT_X, y + 6, TEXT_W)
@@ -1476,8 +1498,8 @@ class SetupWindow(LyssnaWindow):
         y += self._step(self.dicon3, self.dhead3, y) + 8
         y += self._caps_row((self.hold_text, self.hold_keys, self.hold_after), y) + 6
         y += put(self.dictate_body, TEXT_X, y, TEXT_W) + 10
-        fw, _ = self.free_text.fit()
-        y += centre_row([(self.free_text, TEXT_X), (self.free_keys, TEXT_X + fw + 6)], y)
+        self.free_text.fit()
+        y += centre_row([(self.free_text, TEXT_X), (self.free_keys, TEXT_X + self.free_text.exact_width() + 6)], y)
         if self._double_tap():
             y += 6 + self._caps_row((self.tap_text, self.tap_keys, self.tap_after), y)
         return y
@@ -1486,7 +1508,9 @@ class SetupWindow(LyssnaWindow):
         """A sentence with key caps in it ("Hold [fn] and speak."), from TEXT_X; returns its height."""
         row_x, x = [], TEXT_X
         for view, gap in zip(views, (6, 6, 0), strict=True):
-            w = view.fit()[0] if isinstance(view, Label) else view.width()
+            if isinstance(view, Label):
+                view.fit()
+            w = view.exact_width()  # the Mac's half-point frames, so each view starts where the Mac's does
             row_x.append((view, x))
             x += w + gap
         return self.centre_row(row_x, y)

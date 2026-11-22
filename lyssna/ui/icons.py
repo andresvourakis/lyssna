@@ -335,6 +335,19 @@ ICONS: dict[str, Callable[[float], QPainterPath]] = {
 
 NAMES = tuple(ICONS)
 
+# Per-size nudges, in logical pixels (x right, y down), for the icons whose centre still missed
+# the Mac's by more than half a pixel after the shapes were tuned: AppKit sizes each symbol's
+# image to whole quarter points and places it on the pixel grid, which moves its ink a little
+# off the button's centre. The numbers are the Mac's ink-box centre minus ours, measured at 2x
+# by the round 1B icon comparison (scratchpad icons1b/measure.py, after/table.md), keyed by
+# (symbol, point size, weight).
+OPTICAL: dict[tuple[str, float, str], tuple[float, float]] = {
+    ("xmark", 11.0, "bold"): (-0.5, 0.5),                      # card and pill close
+    ("clock.arrow.circlepath", 11.0, "semibold"): (-0.25, 0.5),  # idle menu history
+    ("arrow.up.right", 10.0, "medium"): (-0.5, 0.5),           # setup privacy tag
+    ("arrow.up.right", 10.0, "semibold"): (-0.5, 0.5),         # setup Get a key
+}
+
 _cache: dict[tuple[str, str], QPainterPath] = {}
 _unknown: set[str] = set()
 
@@ -372,8 +385,9 @@ def draw_icon(painter: QPainter, name: str, rect: QRectF, color: QColor, weight:
     if path.isEmpty():
         return
     side = min(rect.width(), rect.height())
-    x = rect.x() + (rect.width() - side) / 2
-    y = rect.y() + (rect.height() - side) / 2
+    dx, dy = OPTICAL.get((name, side, weight or DEFAULT_WEIGHT), (0.0, 0.0))
+    x = rect.x() + (rect.width() - side) / 2 + dx
+    y = rect.y() + (rect.height() - side) / 2 + dy
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.translate(x, y)
@@ -384,17 +398,20 @@ def draw_icon(painter: QPainter, name: str, rect: QRectF, color: QColor, weight:
     painter.restore()
 
 
-def icon_pixmap(name: str, size: float, color: QColor, weight: str | None = None, dpr: float | None = None) -> QPixmap:
-    """The icon as a size x size pixmap (logical pixels) at `dpr`, default the primary screen's."""
+def icon_pixmap(name: str, size: float, color: QColor, weight: str | None = None, dpr: float | None = None,
+                box: float | None = None) -> QPixmap:
+    """The icon as a size x size pixmap (logical pixels) at `dpr`, default the primary screen's.
+    With `box`, the pixmap is box x box with the size-point icon centred in it."""
     if dpr is None:
         screen = QGuiApplication.primaryScreen() if QGuiApplication.instance() is not None else None
         dpr = float(screen.devicePixelRatio()) if screen is not None else 1.0
-    px = max(1, math.ceil(size * dpr))
+    side = max(size, box or 0.0)
+    px = max(1, math.ceil(side * dpr))
     pm = QPixmap(px, px)
     pm.setDevicePixelRatio(dpr)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
-    draw_icon(p, name, QRectF(0, 0, size, size), color, weight)
+    draw_icon(p, name, icon_rect(side / 2, side / 2, size), color, weight)
     p.end()
     return pm
 

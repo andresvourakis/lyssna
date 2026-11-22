@@ -34,6 +34,7 @@ WARNING_DOT = (255, 185, 0)  # the dot on the tray icon when the hooks did not s
 TASKBAR_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 QUIT_SHORTCUT = ""  # Windows tray menus show none
 CLICK_OPENS_MENU = False  # only a right click opens a tray icon's menu by itself
+MENU_SYMBOL_POINTS = 16.0  # the menu's icons fill the 16 px icon column of a Windows menu
 
 _shown: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # tray -> (dark taskbar, warning) its icon shows
 

@@ -49,6 +49,7 @@ class FakeMacStatusbar:
 
     QUIT_SHORTCUT = mac_statusbar.QUIT_SHORTCUT
     CLICK_OPENS_MENU = mac_statusbar.CLICK_OPENS_MENU
+    MENU_SYMBOL_POINTS = mac_statusbar.MENU_SYMBOL_POINTS
     shortcut_text = staticmethod(mac_statusbar.shortcut_text)
     style_header = staticmethod(mac_statusbar.style_header)
 

@@ -383,9 +383,12 @@ def test_hovering_the_sliver_opens_the_pill_and_leaving_closes_it_after_the_dela
     p.cursor = (x + 10, y + 50)  # on the pill
     p._hover_tick()
     assert p._outside_since is None
-    p.cursor = (1438.0, y + h / 2)  # pushed against the screen edge, on the sliver's strip
+    p.cursor = (x + w + 6, y + h / 2)  # within the 6 point margin beside the window
     p._hover_tick()
     assert p._outside_since is None
+    p.cursor = (1438.0, y + h / 2)  # pushed against the screen edge: outside, as the Mac's frame-only rule has it
+    p._hover_tick()
+    assert p._outside_since == 100.0
     p.cursor = (720.0, 460.0)
     p._hover_tick()  # left at 100.0
     p.clock[0] = 100.0 + HOVER_OUT_DELAY - 0.01
@@ -396,6 +399,42 @@ def test_hovering_the_sliver_opens_the_pill_and_leaving_closes_it_after_the_dela
     assert p._watch is None and p._pending_done is not None  # shrinking
     settle(p)
     assert p.form == "sliver" and frame(p) == pytest.approx(sliver)
+
+
+@pytest.mark.parametrize("auto_hide", [False, True])
+def test_a_cursor_pressed_against_the_edge_beside_the_menu_closes_it_once(clocked, auto_hide):
+    """The legacy rule, in the legacy geometry: the open menu sits DOCK_GAP in from the edge and
+    the cursor counts as inside within 6 points of its window, so the last 4 points against the
+    edge (where the resting squiggle's window still reaches) are outside and the menu closes
+    after the delay. Back on the squiggle, nothing the player polls opens it again: only a new
+    enter event would, and that comes from the system's tracking, the same on both interfaces."""
+    p = clocked
+    p.auto_hide = auto_hide
+    p.show_idle(linger=False)
+    settle(p)
+    x, y, w, h = frame(p)
+    assert (x, w) == (1440 - SLIVER_W, SLIVER_W)  # the squiggle's window is flush with the edge
+    p.mouse_entered()
+    settle(p)
+    assert p.form == "menu" and len(p.menu_hovers) == 3
+    mx, _my, mw, _mh = frame(p)
+    assert mx + mw == 1440 - DOCK_GAP
+    p.cursor = (1440 - DOCK_GAP + 6, y + h / 2)  # the edge of the margin: still inside
+    p._hover_tick()
+    assert p._outside_since is None
+    p.cursor = (1439.0, y + h / 2)  # pressed against the edge, at the squiggle's height
+    p._hover_tick()
+    p.clock[0] = 100.0 + HOVER_OUT_DELAY + 1e-6
+    p._hover_tick()
+    settle(p)
+    assert p.form == "rest" and p._watch is None
+    opened = []
+    p._open_menu = lambda: opened.append(p.clock[0])
+    for i in range(1, 40):  # four seconds of polling with the cursor held there
+        p.clock[0] = 100.0 + i * 0.1
+        p._auto_tick()
+        QCoreApplication.processEvents()
+    assert opened == [] and p.form == "rest"
 
 
 def test_the_pill_stands_upright_on_the_sides_and_lies_flat_on_the_bottom(pill):

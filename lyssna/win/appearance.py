@@ -86,6 +86,12 @@ def tracking(kind: str, size: int, weight: str, qt_advance: Callable[[str], floa
     return 0.0
 
 
+def text_width(text: str, style: tuple[str, int, str], qt_advance: Callable[[str], float]) -> float:
+    """How wide `text` is in the text style, for sizing frames: Qt's own measure of the bundled
+    font, qt_advance. The Mac twin asks AppKit instead; Windows has nothing to match but itself."""
+    return qt_advance(text)
+
+
 def short_time(when: datetime) -> str:
     """The time of day in the user's own 12 or 24 hour style: the system locale's short time
     format, which on Windows is the one set under Settings > Time & language > Region."""

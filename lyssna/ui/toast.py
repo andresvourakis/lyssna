@@ -54,7 +54,8 @@ LINE_H = 17.0  # the height of the Mac's text field in the toast and the tip
 
 
 def text_width(text: str, font: QFont) -> float:
-    return float(QFontMetricsF(font).horizontalAdvance(text))
+    """The width a frame is sized to (theme.text_width: AppKit's measure on the Mac)."""
+    return theme.text_width(text, font)
 
 
 class _Text(QWidget):
@@ -95,7 +96,7 @@ class _Text(QWidget):
         runs = [(self.shown_text(), self.runs[0][1])] if self.elide and self.runs else self.runs
         for text, font in runs:
             p.setFont(font)
-            w = text_width(text, font)
+            w = QFontMetricsF(font).horizontalAdvance(text)  # where Qt's glyphs end, for the next run
             if self.line_top is not None:
                 p.drawText(QPointF(x, self.line_top + QFontMetricsF(font).ascent()), text)
             else:

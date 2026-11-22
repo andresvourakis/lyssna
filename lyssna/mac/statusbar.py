@@ -43,6 +43,7 @@ ICON_PATH = Path(__file__).resolve().parent.parent / "ui" / "assets" / "menubar.
 ICON_POINTS = (20, 20)  # the size rumps gives the legacy icon
 QUIT_SHORTCUT = "cmd+q"  # Quit shows ⌘Q, as in the legacy menu
 CLICK_OPENS_MENU = True  # a click on the item opens its menu natively (Qt still reports it as a Trigger)
+MENU_SYMBOL_POINTS = 13.0  # the menu's icons, as the legacy set_symbol gives them: SF Symbols at the default 13 pt, regular
 
 # A hotkey spec's parts as Qt's key sequence text, which Qt turns into the native key equivalent.
 _QT_MODIFIERS = {"ctrl": "Meta", "control": "Meta", "alt": "Alt", "option": "Alt", "opt": "Alt",

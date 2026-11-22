@@ -171,6 +171,47 @@ def test_san_francisco_and_new_york_are_as_wide_as_appkit_draws_them(theme):
     assert checked > 40
 
 
+# -- text widths for sizing ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fontset", ["mac", "windows"])
+def test_every_text_style_is_read_back_from_its_font(theme, fontset):
+    theme.use_fonts(fontset)
+    for style in theme.TEXT_STYLES:
+        assert theme.text_style(theme._style_font(*style)) == style
+    with pytest.raises(ValueError):
+        theme.text_style(QFont("Arial", 13))  # an ad hoc font is never measured
+    with pytest.raises(ValueError):
+        theme.text_width("Save", theme.ui_font(15))  # a size the app does not use
+
+
+def test_windows_sizes_with_qts_own_measure(theme):
+    theme.use_fonts("windows")
+    font = theme.ui_font(13, "medium")
+    assert theme.text_width("Transcript cancelled", font) == QFontMetricsF(font).horizontalAdvance("Transcript cancelled")
+
+
+@on_mac
+def test_the_mac_sizes_with_appkits_own_measure(theme):
+    import AppKit
+
+    theme.use_fonts("mac")
+    for text, (kind, size, weight) in (("Transcript cancelled", ("text", 13, "medium")), ("1,204", ("digits", 28, "semibold")),
+                                       ("Welcome to Lyssna", ("serif", 20, "semibold")), ("heard as: matias", ("italic", 12, "regular"))):
+        font = mac_appearance._appkit_font(kind, size, weight)
+        want = AppKit.NSAttributedString.alloc().initWithString_attributes_(text, {AppKit.NSFontAttributeName: font}).size().width
+        assert theme.text_width(text, theme._style_font(kind, size, weight)) == pytest.approx(want, abs=1e-6), text
+    assert ("Transcript cancelled", ("text", 13, "medium")) in mac_appearance._widths  # remembered
+
+
+def test_the_mac_width_falls_back_to_qt_without_appkit(monkeypatch):
+    def fail(*_args):
+        raise ImportError("no AppKit here")
+
+    monkeypatch.setattr(mac_appearance, "_appkit_font", fail)
+    assert mac_appearance.text_width("never measured before", ("text", 13, "regular"), lambda t: 42.0) == 42.0
+
+
 @on_mac
 def test_new_york_is_loaded_from_the_system(theme):
     theme.use_fonts("mac")

@@ -45,9 +45,17 @@ TEXT_INSET = 2.0
 
 
 def text_frame_width(advance: float) -> int:
-    """The width of a label frame around text `advance` wide: what AppKit's sizeToFit gives,
-    on whole pixels (AppKit keeps half points on a Retina screen, Qt whole pixels)."""
+    """The width of a label frame around text `advance` wide (theme.text_width, AppKit's own
+    measure on the Mac): what AppKit's sizeToFit gives, on whole pixels (AppKit keeps half
+    points on a Retina screen, Qt whole pixels)."""
     return math.ceil(round(advance + 2 * TEXT_INSET, 3))
+
+
+def half_point_width(advance: float) -> float:
+    """The same frame as AppKit really sizes it on a Retina screen: rounded up to half points,
+    not whole ones. Only a widget that paints its own content can use it (painting at the half
+    point inside a whole-pixel frame); child widgets keep text_frame_width."""
+    return math.ceil(round(2 * (advance + 2 * TEXT_INSET), 3)) / 2
 
 
 def ink_left(font, text: str) -> float:
@@ -127,7 +135,12 @@ class Label(QLabel):
         Wrapping and fixed line height labels keep Qt's own measure (margins included)."""
         if self.wordWrap() or self.line_height:
             return super().sizeHint()
-        return QSize(text_frame_width(QFontMetricsF(self.font()).horizontalAdvance(self._plain)), QFontMetrics(self.font()).height())
+        return QSize(text_frame_width(theme.text_width(self._plain, self.font())), QFontMetrics(self.font()).height())
+
+    def exact_width(self) -> float:
+        """One plain line's frame width as AppKit has it, on half points (half_point_width): where
+        whatever follows on the line starts on the Mac."""
+        return half_point_width(theme.text_width(self._plain, self.font()))
 
     def fit(self, width: float | None = None) -> tuple[int, int]:
         """Size the label to its text (wrapped to `width` when it wraps); returns the size."""
@@ -224,7 +237,7 @@ class TextButton(QAbstractButton):
         return self.PAD + self.image_width() + self.PAD if self.symbol else 0.0
 
     def sizeHint(self) -> QSize:
-        advance = QFontMetricsF(self.font()).horizontalAdvance(self.text())
+        advance = theme.text_width(self.text(), self.font())
         if self.symbol:
             w = self.title_x() + math.ceil(round(advance, 3)) + self.PAD
         else:

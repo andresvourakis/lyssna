@@ -8,7 +8,8 @@ wider at 28 px). tracking() measures the AppKit advance of a reference string fo
 style once and returns the per-character difference, which theme.py hands to Qt as letter
 spacing: that brings Qt within about half a percent of AppKit on whole lines. The headline
 serif, New York, is not in Qt's font list on its own: font_files() names its system file so
-theme.py can add it, after which Qt knows it as ".New York".
+theme.py can add it, after which Qt knows it as ".New York". text_width() gives the exact
+AppKit width of a string, so frames sized to text come out as the AppKit interface's.
 
 AppKit and CoreText load inside the functions, so this module imports on any system. The
 Windows twin (lyssna/win/appearance.py) offers the same names."""
@@ -29,6 +30,8 @@ SERIF_FAMILY = ".New York"  # the system serif, once font_files() is loaded
 REFERENCE = "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789"
 
 _tracking: dict[tuple[str, int, str], float] = {}
+WIDTHS_KEPT = 4096  # text_width's memory, emptied when full
+_widths: dict[tuple[str, tuple[str, int, str]], float] = {}
 _time_formatter = None
 
 
@@ -83,6 +86,27 @@ def tracking(kind: str, size: int, weight: str, qt_advance: Callable[[str], floa
             log.debug("could not measure the %s %s %s font in AppKit", kind, size, weight, exc_info=True)
             return 0.0
     return _tracking[key]
+
+
+def text_width(text: str, style: tuple[str, int, str], qt_advance: Callable[[str], float]) -> float:
+    """How wide AppKit draws `text` in the text style (kind, size, weight), in the very font the
+    AppKit interface created for that style, for sizing frames. The letter spacing in tracking()
+    evens Qt out over a whole line, but single strings still differ from AppKit by up to 0.6 px,
+    which moves a frame by a whole point wherever a rounding boundary lies in between; asking
+    AppKit itself gives the Mac's frames exactly. Remembered per text and style; qt_advance
+    (Qt's measure of the text) answers when AppKit cannot be asked."""
+    key = (text, style)
+    width = _widths.get(key)
+    if width is None:
+        try:
+            width = _appkit_advance(text, _appkit_font(*style))
+        except Exception:
+            log.debug("could not measure %r in AppKit", text, exc_info=True)
+            return qt_advance(text)
+        if len(_widths) >= WIDTHS_KEPT:
+            _widths.clear()  # dictations and counting percentages would otherwise grow it forever
+        _widths[key] = width
+    return width
 
 
 def reduce_motion() -> bool:
