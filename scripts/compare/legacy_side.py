@@ -171,6 +171,38 @@ def _text(view) -> str:
     return ""
 
 
+def _attributed(field):
+    """The font and colour of an attributed label's first character (font() and textColor()
+    report the field's defaults, not what an attributed string draws in). (None, None) for a
+    plain label."""
+    try:
+        attr = field.attributedStringValue()
+        if attr is None or attr.length() == 0:
+            return None, None
+        attrs = attr.attributesAtIndex_effectiveRange_(0, None)
+        if isinstance(attrs, tuple):
+            attrs = attrs[0]
+        return attrs.get(AppKit.NSFontAttributeName), attrs.get(AppKit.NSForegroundColorAttributeName)
+    except Exception:
+        return None, None
+
+
+def _attributed_title(button):
+    """An NSButton's title font and colour from its attributed title (font() reports the
+    button's default, not the attributed title it draws, as on the history and What's New
+    link buttons). (None, None) when the title carries neither."""
+    try:
+        attr = button.attributedTitle()
+        if attr is None or attr.length() == 0:
+            return None, None
+        attrs = attr.attributesAtIndex_effectiveRange_(0, None)
+        if isinstance(attrs, tuple):
+            attrs = attrs[0]
+        return attrs.get(AppKit.NSFontAttributeName), attrs.get(AppKit.NSForegroundColorAttributeName)
+    except Exception:
+        return None, None
+
+
 def walk(root, app) -> list[dict]:
     """Every visible view under `root`, in tree order, with what the comparison reads of it."""
     out: list[dict] = []
@@ -188,17 +220,28 @@ def walk(root, app) -> list[dict]:
                 ph = view.placeholderAttributedString().string()
             if ph:
                 e["placeholder"] = str(ph)
-            e["font"] = font_info(view.font())
-            e["color"] = hexcolor(view.textColor(), app)
+            cell = view.cell()
+            if text and not cell.wraps() and cell.lineBreakMode() in (AppKit.NSLineBreakByTruncatingTail,
+                                                                      AppKit.NSLineBreakByTruncatingMiddle,
+                                                                      AppKit.NSLineBreakByTruncatingHead):
+                if cell.cellSize().width > view.frame().size.width + 0.5:
+                    e["cut"] = True  # drawn shortened with an ellipsis
+            font, color = _attributed(view)
+            e["font"] = font_info(font or view.font())
+            e["color"] = hexcolor(color or view.textColor(), app)
             if view.isEditable():
                 e["role"] = "field"
+                editor = view.currentEditor()
+                if editor is not None and editor.selectedRange().length > 0:
+                    e["selected"] = True
         elif isinstance(view, AppKit.NSButton):
             sym = symbol_of(view.image())
             if sym:
                 e["icon"] = sym
+            title_font, title_color = _attributed_title(view) if text else (None, None)
             if text:
-                e["font"] = font_info(view.font())
-            e["color"] = hexcolor(view.contentTintColor(), app)
+                e["font"] = font_info(title_font or view.font())
+            e["color"] = hexcolor(title_color or view.contentTintColor(), app)
             e["enabled"] = bool(view.isEnabled())
             e["role"] = "button"
             if isinstance(view, AppKit.NSPopUpButton):
@@ -331,6 +374,8 @@ def render(view, app, path: Path, method: str = "layer", ages: dict[str, float] 
     w, h = float(view.bounds().size.width), float(view.bounds().size.height)
     pw, ph = max(1, math.ceil(w * SCALE)), max(1, math.ceil(h * SCALE))
     layer = view.layer()
+    if method == "ca":
+        return ca_render(view, app, path, ages or {})
     if method == "layer" and layer is not None:
         target = layer
         if ages is not None:
@@ -345,13 +390,114 @@ def render(view, app, path: Path, method: str = "layer", ages: dict[str, float] 
         _once(view, app, lambda: target.renderInContext_(ctx))
         _png(Quartz.CGBitmapContextCreateImage(ctx), path)
         return w, h, "layer" + (" (presentation, frozen)" if ages is not None else "")
-    rep = AppKit.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(  # noqa: E501
-        None, pw, ph, 8, 4, True, False, AppKit.NSCalibratedRGBColorSpace, 0, 32)
-    rep.setSize_((w, h))
+    rep = srgb_rep(pw, ph, w, h)
     _once(view, app, lambda: view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep))
     data = rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, None)
     data.writeToFile_atomically_(str(path), True)
     return w, h, "cache"
+
+
+_metal: dict = {}
+
+
+def _metal_queue():
+    """The Metal device and command queue CARenderer draws with (made once)."""
+    if not _metal:
+        objc.loadBundle("Metal", globals(), bundle_path="/System/Library/Frameworks/Metal.framework")
+        fns: dict = {}
+        objc.loadBundleFunctions(objc.loadBundle("MetalFunctions", {}, bundle_path="/System/Library/Frameworks/Metal.framework"),
+                                 fns, [("MTLCreateSystemDefaultDevice", b"@")])
+        dev = fns["MTLCreateSystemDefaultDevice"]()
+        _metal.update(device=dev, queue=dev.newCommandQueue())
+    return _metal["device"], _metal["queue"]
+
+
+def ca_render(view, app, path: Path, ages: dict[str, float]) -> tuple[float, float, str]:
+    """Draw `view` at SCALE with Core Animation's own renderer (CARenderer into a Metal
+    texture, the engine the window server uses), with the animations `ages` names at those
+    ages. renderInContext cannot evaluate everything the window server can: the sliver's swing
+    (startPoint and endPoint given as Python tuples) and a CATransition (the scrub knob's fade)
+    come out frozen or skipped there, and come out as on screen here.
+
+    CARenderer takes the layer out of its window's tree while it draws it; it goes back after.
+    The texture is one pixel per point, so the layer sits in a root scaled by SCALE."""
+    import ctypes
+
+    import numpy as np
+
+    window = view.window()
+    if window is not None:
+        window.setAppearance_(app)
+        window.contentView().layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+    view.layoutSubtreeIfNeeded()
+    view.setNeedsDisplay_(True)
+    _once(view, app, view.displayIfNeeded)
+    Quartz.CATransaction.flush()
+    layer = view.layer()
+    w, h = float(view.bounds().size.width), float(view.bounds().size.height)
+    pw, ph = max(1, math.ceil(w * SCALE)), max(1, math.ceil(h * SCALE))
+    _retime(layer, ages)
+    layer.setSpeed_(0.0)  # a stopped clock at T0, as render() uses: the picture and a later presentationLayer agree
+    layer.setTimeOffset_(T0)
+    sup = layer.superlayer()
+    index = list(sup.sublayers()).index(layer) if sup is not None else 0
+    position, anchor = layer.position(), layer.anchorPoint()
+    root = Quartz.CALayer.layer()
+    root.setAnchorPoint_((0, 0))  # the scale below is about the anchor point: the corner, not the middle
+    root.setFrame_(((0, 0), (pw, ph)))
+    root.setSublayerTransform_(Quartz.CATransform3DMakeScale(SCALE, SCALE, 1))
+    root.addSublayer_(layer)
+    layer.setPosition_((w * anchor.x, h * anchor.y))
+    dev, queue = _metal_queue()
+    bpr = -(-pw * 4 // 256) * 256  # Metal wants aligned rows for a buffer-backed texture
+    desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+        80, pw, ph, False)  # 80: BGRA8Unorm
+    desc.setUsage_(0x0001 | 0x0004)  # shader read, render target
+    desc.setStorageMode_(0)  # shared: the CPU reads it back
+    buf = dev.newBufferWithLength_options_(bpr * ph, 0)
+    tex = buf.newTextureWithDescriptor_offset_bytesPerRow_(desc, 0, bpr)
+    cs = Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceSRGB)
+    try:
+        r = Quartz.CARenderer.rendererWithMTLTexture_options_(tex, {Quartz.kCARendererMetalCommandQueue: queue,
+                                                                    Quartz.kCARendererColorSpace: cs})
+        r.setLayer_(root)
+        r.setBounds_(((0, 0), (pw, ph)))
+        Quartz.CATransaction.flush()
+        r.beginFrameAtTime_timeStamp_(T0, None)
+        r.addUpdateRect_(r.bounds())
+        r.render()
+        r.endFrame()
+        cb = queue.commandBuffer()  # the queue runs in order: once this is done, so is the render
+        cb.commit()
+        cb.waitUntilCompleted()
+        bgra = np.frombuffer(ctypes.string_at(buf.contents(), bpr * ph), dtype=np.uint8)
+        bgra = bgra.reshape(ph, bpr)[:, : pw * 4].reshape(ph, pw, 4)
+    finally:
+        layer.removeFromSuperlayer()
+        layer.setPosition_(position)
+        if sup is not None:
+            sup.insertSublayer_atIndex_(layer, index)
+        Quartz.CATransaction.flush()
+    rgba = np.ascontiguousarray(bgra[::-1, :, [2, 1, 0, 3]])  # Core Animation draws y up, the texture's rows go down
+    data = AppKit.NSData.dataWithBytes_length_(rgba.tobytes(), rgba.nbytes)
+    provider = Quartz.CGDataProviderCreateWithCFData(data)
+    image = Quartz.CGImageCreate(pw, ph, 8, 32, pw * 4, cs, Quartz.kCGImageAlphaPremultipliedLast, provider, None, False,
+                                 Quartz.kCGRenderingIntentDefault)
+    _png(image, path)
+    return w, h, "CARenderer (Core Animation's renderer, frozen moment)"
+
+
+def srgb_rep(pw: int, ph: int, w: float, h: float):
+    """An empty bitmap of pw x ph pixels for a w x h point drawing, in sRGB. A calibrated (Generic
+    RGB) or device bitmap converts every colour on the way in, and the PNG's numbers then read
+    as sRGB come out shifted (the brand cream F4EFE6 came out F1EBE0); the Qt side and the
+    layer path draw in sRGB."""
+    rep = AppKit.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(  # noqa: E501
+        None, pw, ph, 8, 4, True, False, AppKit.NSCalibratedRGBColorSpace, 0, 32)
+    rep = rep.bitmapImageRepByRetaggingWithColorSpace_(AppKit.NSColorSpace.sRGBColorSpace())
+    rep.setSize_((w, h))
+    return rep
 
 
 def host_window(view):
@@ -407,6 +553,7 @@ def build_player(params: dict, app) -> dict:
     p = _player_owner()
     p.panel.setAppearance_(app)
     ages = None
+    method = "layer"
     if form == "card":
         p._update(fx.reading(**params["status"]))
         if params.get("scrub") is not None:
@@ -419,13 +566,13 @@ def build_player(params: dict, app) -> dict:
     elif form == "sliver":
         p.layout = {"dock": params["dock"], "x": 0.0, "y": 0.5}
         p._update(fx.reading(**params["status"]))
-        ages = {"hue": catalogue.DRIFT_T, "split": catalogue.DRIFT_T, "breathe": catalogue.DRIFT_T}
+        ages = {k: catalogue.DRIFT_T for k in ("hue", "split", "breathe", "swing", "swing2")}
         if params.get("bloom") is not None:
             p.sliver.pulse()
             ages["bloom"] = params["bloom"]
-        notes.append("the legacy 'swing' and 'swing2' drifts (startPoint, endPoint) are left out: their values are "
-                     "Python tuples bridged to NSArray, which Core Animation cannot evaluate (presentationLayer raises)")
-        notes.append("no sparks: the CAEmitterLayer's particles live in the render server")
+        method = "ca"  # the swing drifts (startPoint, endPoint) only animate in Core Animation's own renderer
+        notes.append("drawn by Core Animation's renderer (CARenderer), so the gradient swing is in the picture")
+        notes.append("no sparks: the CAEmitterLayer's particles are not drawn at a frozen moment")
     elif form == "pill":
         p.layout = {"dock": params["dock"], "x": 0.0, "y": 0.5}
         p._update(fx.reading(**params["status"]))
@@ -453,7 +600,7 @@ def build_player(params: dict, app) -> dict:
     else:
         raise ValueError(f"unknown player form {form}")
     view = p.panel.contentView()
-    return {"view": view, "method": "layer", "ages": ages, "notes": notes, "owner": p}
+    return {"view": view, "method": method, "ages": ages, "notes": notes, "owner": p}
 
 
 def build_toast(params: dict, app) -> dict:
@@ -602,6 +749,7 @@ def build_history(params: dict, app, work: Path) -> dict:
     w.window.setContentSize_(size)
     w._layout()
     rows = [i for i in w.items if isinstance(i, HW._DictationRow)]
+    notes = ["content view only: the title bar is the system's on both sides"]
     variant = params["variant"]
     if variant == "expanded":
         long_row = next(r for r in rows if len(r.entry.text) > 300)
@@ -617,14 +765,17 @@ def build_history(params: dict, app, work: Path) -> dict:
         rows[1].copy.set_symbol("checkmark")
         rows[1].more.set_hover(True)
     elif variant == "fix":
+        # The app's own path for "Fix a Word…": the row turns into the edit field, which takes
+        # the keyboard (makeFirstResponder selects its whole text), as the Qt fix_word does.
         first = rows[0].entry_id
-        w._editing = first
-        w._edit_text = None
-        w._rebuild_list()
-        row = w._row(first)
-        row.edit_field.setStringValue_(row.entry.text.replace("Mattias", "Matias"))
-        w._layout_list()
-        row.edit_box.set_focused(True)
+        item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Fix a Word…", None, "")
+        item.setRepresentedObject_(first)
+        w.fixWord_(item)
+        w._row(first).edit_box.set_focused(True)
+        notes.append("the edit field's selection is drawn in the inactive-window colour (unemphasized "
+                     f"{hexcolor(AppKit.NSColor.unemphasizedSelectedTextBackgroundColor(), app)}): the window is never key "
+                     "and the app never active here; in the app, active, it is selectedTextBackgroundColor "
+                     f"{hexcolor(AppKit.NSColor.selectedTextBackgroundColor(), app)} (the user's highlight colour)")
     elif variant == "search":
         w.search_field.setStringValue_(params["query"])
         w._query = params["query"]
@@ -638,7 +789,7 @@ def build_history(params: dict, app, work: Path) -> dict:
         if params.get("terms", True):
             next(i for i in w.items if isinstance(i, HW._TermRow)).view.set_hover(True)
     return {"view": w.window.contentView(), "method": "cache", "ages": None, "title": str(w.window.title()),
-            "notes": ["content view only: the title bar is the system's on both sides"], "owner": w}
+            "notes": notes, "owner": w}
 
 
 def build_whats_new(params: dict, app) -> dict:
@@ -771,6 +922,33 @@ def menus(out: Path, only: str | None) -> None:
     (out / "menus.json").write_text(json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
+def ink_check(out: Path) -> None:
+    """The text weight check (catalogue.INK_TEXT): the string drawn by AppKit at 2x in the
+    system font the legacy labels use, light on dark and dark on light."""
+    import numpy as np
+
+    w, h = catalogue.INK_CANVAS
+    pw, ph = round(w * SCALE), round(h * SCALE)
+    weights = {"regular": AppKit.NSFontWeightRegular, "medium": AppKit.NSFontWeightMedium,
+               "semibold": AppKit.NSFontWeightSemibold}
+    font = AppKit.NSFont.systemFontOfSize_weight_(catalogue.INK_SIZE, weights[catalogue.INK_WEIGHT])
+    cases = {}
+    for case, (bg, fg) in catalogue.INK_CASES.items():
+        rep = srgb_rep(pw, ph, w, h)
+        AppKit.NSGraphicsContext.saveGraphicsState()
+        AppKit.NSGraphicsContext.setCurrentContext_(AppKit.NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep))
+        AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(bg / 255, bg / 255, bg / 255, 1).setFill()
+        AppKit.NSRectFill(((0, 0), (w, h)))
+        attrs = {AppKit.NSFontAttributeName: font, AppKit.NSForegroundColorAttributeName:
+                 AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(fg / 255, fg / 255, fg / 255, 1)}
+        AppKit.NSString.stringWithString_(catalogue.INK_TEXT).drawAtPoint_withAttributes_((10, h - 45), attrs)
+        AppKit.NSGraphicsContext.restoreGraphicsState()
+        d = np.frombuffer(bytes(rep.bitmapData()), dtype=np.uint8).reshape(ph, rep.bytesPerRow())[:, : pw * 4]
+        cases[case] = catalogue.ink_sum(d.reshape(ph, pw, 4)[..., :3].mean(axis=2), bg, fg)
+    (out / "ink.json").write_text(json.dumps({"platform": "AppKit", "text": catalogue.INK_TEXT, "cases": cases}),
+                                  encoding="utf-8")
+
+
 # -- main ---------------------------------------------------------------------------------------
 
 
@@ -815,6 +993,7 @@ def main(argv: list[str] | None = None) -> int:
     work.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("LYSSNA_COMPARE", "1")
     boot(work)
+    ink_check(out)
     n = run_pairs(out, work, args.only, tuple(args.schemes.split(",")))
     print(f"legacy: rendered {n} pictures")
     if args.menus:
@@ -822,6 +1001,12 @@ def main(argv: list[str] | None = None) -> int:
             menus(out, args.only)
         except Exception:
             traceback.print_exc()
+    try:
+        from scripts.compare import icons
+
+        print(f"legacy: drew {icons.legacy_side(out / 'icons', args.only)} icons")
+    except Exception:
+        traceback.print_exc()
     if args.motion:
         from scripts.compare import motion
 

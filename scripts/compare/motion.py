@@ -37,9 +37,20 @@ STRIPS = {
     "ripple": (2.8, "the resting squiggle's ripple"),
     "bloom": (0.75, "the sentence bloom at the sliver's waterline"),
     "working-breathe": (1.4, "the working wave's breathing opacity, one full breath"),
-    "sliver-drift": (8.0, "the sliver's gradient drift and waterline glow over 8 s (no sparks)"),
+    "sliver-drift": (8.0, "the sliver's gradient drift (hue, split, swing) and waterline glow over 8 s (no sparks)"),
     "hover-glow": (0.14, "the hover glow fading in on the card's previous-sentence button"),
+    "scrub-progress": (0.25, "scrub bar, not hovered: playback moves the playhead from 25 to 60 percent (the fill glides)"),
+    "scrub-progress-hover": (0.25, "scrub bar, hovered: playback moves the playhead from 25 to 60 percent (fill and knob)"),
+    "scrub-hover-in": (0.25, "scrub bar at 25 percent: the cursor enters (the bar thickens, the knob fades in)"),
+    "scrub-drag": (0.25, "scrub bar, held: one drag step from 25 to 60 percent"),
 }
+SCRUB = {  # strip: (hovering before, scrubbing before, what changes)
+    "scrub-progress": (False, False, "progress"),
+    "scrub-progress-hover": (True, False, "progress"),
+    "scrub-hover-in": (False, False, "hover"),
+    "scrub-drag": (True, True, "drag"),
+}
+SCRUB_FROM, SCRUB_TO = 0.25, 0.6  # playhead fractions (the reading is 334 s long)
 
 
 def _select(only: str | None) -> list[str]:
@@ -94,6 +105,26 @@ NAMED_TIMING = {"linear": (0.0, 0.0, 1.0, 1.0), "easeIn": (0.42, 0.0, 1.0, 1.0),
                 "easeInEaseOut": (0.42, 0.0, 0.58, 1.0), "default": (0.25, 0.1, 0.25, 1.0)}
 
 
+def bezier(x1: float, y1: float, x2: float, y2: float, x: float) -> float:
+    """A CSS / Core Animation cubic-bezier timing function at progress `x` (0..1)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+
+    def at(a: float, b: float, u: float) -> float:
+        return 3 * a * u * (1 - u) ** 2 + 3 * b * u * u * (1 - u) + u ** 3
+
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if at(x1, x2, mid) < x:
+            lo = mid
+        else:
+            hi = mid
+    return at(y1, y2, (lo + hi) / 2)
+
+
 def _short(v) -> str:
     s = str(v).replace("\n", " ")
     s = " ".join(s.split())
@@ -120,13 +151,14 @@ def legacy_filmstrips(out: Path, only: str | None) -> None:
     app = L.appearance("light")
     AppKit.NSApp.setAppearance_(app)
     anims: dict = {}
+    readback: dict = {}
 
     def player():
         p = L._player_owner()
         p.panel.setAppearance_(app)
         return p
 
-    def strip(name: str, view, keys: dict | None, setup=None) -> None:
+    def strip(name: str, view, keys: dict | None, setup=None, method: str = "layer") -> None:
         """Draw `view` at each time; `keys` maps animation keys to an age offset (None: every
         animation present is aged together)."""
         for i, t in enumerate(_times(name)):
@@ -140,7 +172,7 @@ def legacy_filmstrips(out: Path, only: str | None) -> None:
                     present[str(k)] = t
                 stack.extend(layer.sublayers() or [])
             ages = present if keys is None else {k: t + off for k, off in keys.items()}
-            L.render(view, app, raw / f"{name}-{i}.png", "layer", ages)
+            L.render(view, app, raw / f"{name}-{i}.png", method, ages)
 
     for name in _select(only):
         try:
@@ -169,7 +201,19 @@ def legacy_filmstrips(out: Path, only: str | None) -> None:
                 p._set_hands_free(True, animate=True)
                 Quartz.CATransaction.flush()
                 _collect(p.dictate_host.layer(), found)
-                strip(name, p.panel.contentView(), None)
+                # The capsule's frame animation is on its layer and is aged with the rest; the
+                # buttons' alphaValue animator does nothing in a window that is never shown, so
+                # the fade is evaluated here on the same curve the code asks for (GROW_SECS,
+                # ease-out) and set per frame.
+                from lyssna.legacy.ui.mini_player import GROW_SECS
+
+                def fade(t, p=p, secs=GROW_SECS):
+                    alpha = bezier(*NAMED_TIMING["easeOut"], min(1.0, t / secs))
+                    for b in (p.cancel_bg, p.finish_bg):
+                        b.setAlphaValue_(alpha)
+                found["buttons alphaValue"] = {"note": f"0 to 1 over {GROW_SECS} s, easeOut, evaluated per frame by the "
+                                                       "harness (the animator does not run offscreen)"}
+                strip(name, p.panel.contentView(), None, fade)
             elif name == "slide-out":
                 p = player()
                 p.dictation_layout = {"dock": "bottom", "y": -1.0}
@@ -194,9 +238,9 @@ def legacy_filmstrips(out: Path, only: str | None) -> None:
                 Quartz.CATransaction.flush()
                 found = {"bloom": _ca_info(p.sliver.bloom.animationForKey_("bloom"))}
                 d = catalogue.DRIFT_T
-                for i, t in enumerate(_times(name)):
-                    L.render(p.panel.contentView(), app, raw / f"{name}-{i}.png", "layer",
-                             {"hue": d, "split": d, "breathe": d, "bloom": t})
+                for i, t in enumerate(_times(name)):  # Core Animation's renderer: the swing is drawn too
+                    L.render(p.panel.contentView(), app, raw / f"{name}-{i}.png", "ca",
+                             {"hue": d, "split": d, "breathe": d, "swing": d, "swing2": d, "bloom": t})
             elif name == "working-breathe":
                 p = player()
                 p.dictation_layout = {"dock": "right", "y": -1.0}
@@ -213,7 +257,10 @@ def legacy_filmstrips(out: Path, only: str | None) -> None:
                 p._update(fx.reading(position=0.4 * 334.0))
                 Quartz.CATransaction.flush()
                 _collect(p.sliver.layer(), found)
-                strip(name, p.panel.contentView(), {"hue": 0.0, "split": 0.0, "breathe": 0.0})
+                strip(name, p.panel.contentView(), {"hue": 0.0, "split": 0.0, "breathe": 0.0, "swing": 0.0, "swing2": 0.0},
+                      method="ca")
+            elif name in SCRUB:
+                found = legacy_scrub(name, player(), raw, app, readback)
             elif name == "hover-glow":
                 p = player()
                 p._update(fx.reading())
@@ -221,7 +268,21 @@ def legacy_filmstrips(out: Path, only: str | None) -> None:
                 bg.set_hover(True)
                 Quartz.CATransaction.flush()
                 _collect(bg.layer(), found)
-                strip(name, p.panel.contentView(), None)
+                if not found:
+                    # set_hover sets the glow's opacity in a CATransaction of 0.14 s; in a window
+                    # that is never shown no implicit action is attached, so the frames would all
+                    # show the finished glow. Evaluated per frame instead: 0.14 s on Core
+                    # Animation's default curve (what round 1B read back from the implicit action).
+                    def glow(t, layer=bg.glow):
+                        Quartz.CATransaction.begin()
+                        Quartz.CATransaction.setDisableActions_(True)
+                        layer.setOpacity_(bezier(*NAMED_TIMING["default"], min(1.0, t / 0.14)))
+                        Quartz.CATransaction.commit()
+                    found["glow opacity"] = {"note": "0 to 1 over 0.14 s, default curve, evaluated per frame by the "
+                                                     "harness (no implicit action offscreen)"}
+                    strip(name, p.panel.contentView(), None, glow)
+                else:
+                    strip(name, p.panel.contentView(), None)
             anims[name] = found
         except Exception as exc:
             import traceback
@@ -244,6 +305,86 @@ def legacy_filmstrips(out: Path, only: str | None) -> None:
     except Exception as exc:
         anims["scrub-knob"] = {"error": str(exc)}
     (out / "legacy_anims.json").write_text(json.dumps(anims, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+    (out / "legacy_scrub.json").write_text(json.dumps(readback, indent=1), encoding="utf-8")
+
+
+def legacy_scrub(name: str, p, raw: Path, app, readback: dict) -> dict:
+    """One scrub strip on the legacy card: settle the start state (display, then drop the
+    implicit animations that display made), make the change through the code's own path, let
+    Core Animation attach its implicit actions, and age them all together frame by frame. The
+    fill's width and the knob's centre are read back from the presentation layers."""
+    import Quartz
+
+    from scripts.compare import fixtures as fx
+    from scripts.compare import legacy_side as L
+
+    hover, held, change = SCRUB[name]
+    p._update(fx.reading(position=SCRUB_FROM * 334.0))
+    s = p.scrub
+    s.hovering, s.scrubbing = hover, held
+
+    def display() -> None:
+        s.setNeedsDisplay_(True)
+        p.panel.contentView().layoutSubtreeIfNeeded()
+        p.panel.displayIfNeeded()
+        s.displayIfNeeded()
+        s.bar.displayIfNeeded()
+        Quartz.CATransaction.flush()
+
+    def clear(layer) -> None:
+        layer.removeAllAnimations()
+        for sub in layer.sublayers() or []:
+            clear(sub)
+
+    display()
+    clear(s.layer())
+    if change == "progress":
+        p._update(fx.reading(position=SCRUB_TO * 334.0))
+    elif change == "hover":
+        s.mouseEntered_(None)
+    else:  # a drag step: what ScrubBar._move does with the cursor's fraction
+        s.bar.set_fraction(SCRUB_TO)
+        s.setNeedsDisplay_(True)
+    display()
+    found: dict = {}
+    _collect(s.layer(), found)
+    # Showing the knob (hidden to shown) gets an implicit CATransition, a cross-fade from nothing.
+    # Its starting picture is taken when the transaction commits, so a re-timed copy cannot be
+    # drawn later; the fade is evaluated here instead, on the transition's own duration and curve.
+    fade = s.knob.animationForKey_("transition")
+    if fade is not None:
+        tf = fade.timingFunction()
+        pts = NAMED_TIMING["linear"]
+        for named, points in NAMED_TIMING.items():
+            if tf is not None and tf.isEqual_(Quartz.CAMediaTimingFunction.functionWithName_(named)):
+                pts = points
+        secs = float(fade.duration())
+        s.knob.removeAnimationForKey_("transition")
+        found["knob fade"] = {"note": f"CATransition fade, {secs:g} s, curve {pts}: evaluated per frame as the knob's "
+                                      "opacity by the harness"}
+    rows = []
+    for i, t in enumerate(_times(name)):
+        if fade is not None:
+            Quartz.CATransaction.begin()
+            Quartz.CATransaction.setDisableActions_(True)
+            s.knob.setOpacity_(bezier(*pts, min(1.0, t / secs)))
+            Quartz.CATransaction.commit()
+        ages = {}
+        stack = [s.layer()]
+        while stack:
+            layer = stack.pop()
+            for k in layer.animationKeys() or []:
+                ages[str(k)] = t
+            stack.extend(layer.sublayers() or [])
+        L.render(s, app, raw / f"{name}-{i}.png", "ca", ages)  # the knob's fade is a CATransition
+        fill = s.bar.fill.presentationLayer() or s.bar.fill
+        knob = s.knob.presentationLayer() or s.knob
+        rows.append({"t": t, "fill_w": round(float(fill.bounds().size.width), 2),
+                     "fill_h": round(float(fill.bounds().size.height), 2),
+                     "knob_x": round(float(knob.position().x), 2) if not s.knob.isHidden() else None,
+                     "knob_alpha": round(float(s.knob.opacity()), 3) if not s.knob.isHidden() else 0.0})
+    readback[name] = rows
+    return found
 
 
 # -- the Qt side ----------------------------------------------------------------------------------
@@ -275,6 +416,7 @@ def qt_filmstrips(out: Path, only: str | None) -> None:
     raw.mkdir(parents=True, exist_ok=True)
     theme.set_scheme("light")
     anims: dict = {}
+    readback: dict = {}
 
     def shoot(name: str, owner, step) -> None:
         if owner.margin > 0:
@@ -358,6 +500,8 @@ def qt_filmstrips(out: Path, only: str | None) -> None:
                     wave.update()
                 anims[name] = {"breathe": {"note": "breathe(t) in lyssna/ui/wave.py, driven by WaveView.tick"}}
                 shoot(name, mp, br)
+            elif name in SCRUB:
+                anims[name] = qt_scrub(name, mp, raw, readback)
             elif name == "hover-glow":
                 mp._update(fx.reading())
                 btn = mp.buttons["back"][0]
@@ -374,8 +518,68 @@ def qt_filmstrips(out: Path, only: str | None) -> None:
             import traceback
 
             anims[name] = {"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
+        if Q.GUARD is not None:
+            Q.GUARD.check(f"motion {name}")
     theme.set_scheme(None)
     (out / "qt_anims.json").write_text(json.dumps(anims, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+    (out / "qt_scrub.json").write_text(json.dumps(readback, indent=1), encoding="utf-8")
+
+
+def qt_scrub(name: str, mp, raw: Path, readback: dict) -> dict:
+    """One scrub strip on the Qt card, the twin of legacy_scrub: the panel is shown (kept off
+    the screen by qt_side.NoScreen, so the bar counts as on screen and may glide), the start
+    state is drawn once and let settle, the change goes through the code's own path, and every
+    animation it started is paused and stepped to each frame's time."""
+    from PySide6.QtCore import QAbstractAnimation, QVariantAnimation
+    from PySide6.QtWidgets import QApplication
+
+    from scripts.compare import fixtures as fx
+    from scripts.compare import qt_side as Q
+
+    hover, held, change = SCRUB[name]
+    mp._update(fx.reading(position=SCRUB_FROM * 334.0))
+    mp.panel.show()
+    s = mp.scrub
+    s.scrubbing = held
+    if hover:
+        s.set_hover(True)
+    s._layout()
+
+    def running() -> list:
+        return [a for w in (s, s.bar, s.knob) for a in w.findChildren(QVariantAnimation)
+                if a.state() != QAbstractAnimation.State.Stopped]
+
+    Q.render(s, raw / f"{name}-settle.png", False)  # painted once, as on screen
+    for a in running():
+        a.setCurrentTime(a.duration())
+        a.stop()
+    s._layout()
+    QApplication.processEvents()
+    if change == "progress":
+        mp._update(fx.reading(position=SCRUB_TO * 334.0))
+    elif change == "hover":
+        s.set_hover(True)
+    else:  # a drag step: what a mouse move does while the bar is held
+        s._move(SCRUB_TO * s.width())
+    anims = running()
+    for a in anims:
+        a.pause()
+    rows = []
+    for i, t in enumerate(_times(name)):
+        for a in anims:
+            a.setCurrentTime(min(round(t * 1000), a.duration()))
+        Q.render(s, raw / f"{name}-{i}.png", False)
+        row = {"t": t}
+        try:
+            row["fill_w"] = round(float(s.bar.fill_size()[0]), 2)
+            row["fill_h"] = round(float(s.bar.fill_size()[1]), 2)
+            row["knob_x"] = round(float(s._knob_pos.value()[0]), 2) if s.knob.isVisibleTo(s) else None
+            row["knob_alpha"] = round(float(s._knob_alpha.value()[0]), 3)
+        except Exception as exc:  # the bar's internals changed: the pictures still tell
+            row["note"] = f"{type(exc).__name__}: {exc}"
+        rows.append(row)
+    readback[name] = rows
+    return {f"anim {i}": _qt_info(a) for i, a in enumerate(anims)} or {"note": "no animation started: the change jumps"}
 
 
 # -- the table (from reading the code on both sides) ----------------------------------------------
@@ -411,9 +615,9 @@ TABLE = [
      "same curve; legacy is 72 linear keyframes, Qt continuous"),
     ("Sliver drift (hue, split, swing)", "while playing; frozen while paused",
      "_loop: CABasicAnimation autoreverse, repeat 1e9, ease-in-out; colors 6.7 s, locations 5.3 s, startPoint/endPoint "
-     "8.1 s", "drift(t, secs) with EASE_IN_OUT on the same periods", "hue and split same; the legacy swing animations "
-     "are given Python tuples (NSArray), which Core Animation cannot evaluate, so on the Mac the gradient ends most "
-     "likely never swing while Qt swings them"),
+     "8.1 s", "drift(t, secs) with EASE_IN_OUT on the same periods", "same: the legacy swing values are Python tuples, "
+     "which renderInContext cannot evaluate but Core Animation's own renderer (the window server's) does, so the "
+     "harness draws the legacy sliver with CARenderer and the swing is in both pictures"),
     ("Waterline glow breathing", "while playing", "_loop opacity 0.45 to 1.0, 2.6 s, autoreverse, ease-in-out",
      "BREATHE_LOW + (1 - BREATHE_LOW) * drift(t, 2.6)", "same"),
     ("Waterline rise", "progress changes", "implicit 0.35 s, EaseOut, on clip frame and top frame (CATransaction)",
@@ -456,6 +660,8 @@ def _strip_sheet(name: str, out: Path) -> Path | None:
         return None
     cw = max(i.width() for i in left + right)
     ch = max(i.height() for i in left + right)
+    if cw > 3 * ch:
+        return _strip_sheet_tall(name, out, left, right, cw, ch)
     gap, label = 16, 150
     W = label + FRAMES * (cw + gap)
     H = 70 + 2 * (ch + gap + 20)
@@ -480,6 +686,88 @@ def _strip_sheet(name: str, out: Path) -> Path | None:
     path = out / f"{name}.png"
     img.save(str(path))
     return path
+
+
+def _strip_sheet_tall(name: str, out: Path, left: list, right: list, cw: int, ch: int) -> Path:
+    """A wide, thin subject (the scrub bar): one row per frame, today's Mac on the left."""
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter
+
+    gap, label, head = 16, 110, 60
+    W = label + 2 * (cw + gap)
+    H = head + FRAMES * (ch + gap)
+    img = QImage(W, H, QImage.Format.Format_RGB32)
+    img.fill(QColor(128, 128, 128))
+    p = QPainter(img)
+    f = QFont("Menlo")
+    f.setPixelSize(16)
+    p.setFont(f)
+    p.setPen(QColor(255, 255, 255))
+    p.drawText(10, 24, f"{name}: {STRIPS[name][1]}")
+    p.drawText(label, 50, "legacy")
+    p.drawText(label + cw + gap, 50, "Qt")
+    for i, t in enumerate(_times(name)):
+        y = head + i * (ch + gap)
+        p.drawText(10, y + ch // 2 + 6, f"t={t:g}s")
+        p.drawImage(label, y, left[i])
+        p.drawImage(label + cw + gap, y, right[i])
+    p.end()
+    path = out / f"{name}.png"
+    img.save(str(path))
+    return path
+
+
+def progress(name: str, side_raw: Path) -> list[float] | None:
+    """How far each frame is from the first towards the last, from the pictures alone: 1 minus
+    the summed pixel difference to the last frame over that of the first frame. 0 at the start,
+    1 at the end; the same measure on both sides, whatever the animation is."""
+    import numpy as np
+    from PySide6.QtGui import QImage
+
+    frames = []
+    for i in range(FRAMES):
+        img = QImage(str(side_raw / f"{name}-{i}.png"))
+        if img.isNull():
+            return None
+        img = img.convertToFormat(QImage.Format.Format_RGBA8888)
+        a = np.frombuffer(img.constBits(), dtype=np.uint8, count=img.sizeInBytes()).reshape(img.height(), img.bytesPerLine())
+        frames.append(a[:, : img.width() * 4].astype(np.float32))
+    total = float(np.abs(frames[0] - frames[-1]).sum())
+    if total == 0:
+        return [1.0] * FRAMES
+    return [round(1 - float(np.abs(f - frames[-1]).sum()) / total, 3) for f in frames]
+
+
+def scrub_section(mdir: Path) -> list[str]:
+    """The scrub bar's read-back: per frame, the fill's width and the knob's centre on both
+    sides (logical px), and the pictures' progress (see progress())."""
+    def read(p: Path) -> dict:
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+    jl, jq = read(mdir / "legacy_scrub.json"), read(mdir / "qt_scrub.json")
+    md = ["\n## Scrub bar read-back\n",
+          "The playhead changes after the bar was first drawn and settled, through each side's own code path. Each "
+          "cell is legacy / Qt, logical px. Fill: the fill's size; knob: the knob's centre (blank while hidden) and "
+          "opacity. Progress: from the pictures, 0 at the "
+          "first frame and 1 at the last; a jump shows as 1 from the second frame on.\n"]
+    for name in SCRUB:
+        if name not in jl and name not in jq:
+            continue
+        pl, pq = progress(name, mdir / "raw" / "legacy"), progress(name, mdir / "raw" / "qt")
+        md += [f"### {name}\n\n{STRIPS[name][1]}\n", "| t (s) | fill w (legacy / Qt) | fill h | knob x | knob alpha | "
+               "progress |", "|---|---|---|---|---|---|"]
+
+        def both(a: dict, b: dict, key: str) -> str:
+            va, vb = a.get(key), b.get(key)
+            return f"{'' if va is None else va} / {'' if vb is None else vb}"
+        for i, t in enumerate(_times(name)):
+            a = (jl.get(name) or [{}] * FRAMES)[i]
+            b = (jq.get(name) or [{}] * FRAMES)[i]
+            md.append(f"| {t:g} | {both(a, b, 'fill_w')} | {both(a, b, 'fill_h')} | {both(a, b, 'knob_x')} | "
+                      f"{both(a, b, 'knob_alpha')} | {pl[i] if pl else ''} / {pq[i] if pq else ''} |")
+        md.append("")
+    return md
 
 
 def _readback_rows(jl: dict, jq: dict) -> list[str]:
@@ -541,6 +829,7 @@ def main(argv: list[str] | None = None) -> int:
            "Built offscreen and asked: a CAAnimation on the legacy side, a QVariantAnimation on the Qt side. Easing is "
            "the cubic-bezier control points (P1, P2).\n", "| animation | legacy | Qt |", "|---|---|---|"]
     md += _readback_rows(jl, jq)
+    md += scrub_section(mdir)
     md += ["\n## Filmstrips\n", f"{FRAMES} evenly spaced frames per side, light scheme, no shadow. Top row legacy, bottom "
            "row Qt.\n"]
     for name, path in strips:

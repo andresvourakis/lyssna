@@ -36,11 +36,53 @@ if str(ROOT) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-from scripts.compare import catalogue  # noqa: E402
+from scripts.compare import catalogue, icons, review  # noqa: E402
 
-TOL = 32          # a channel difference above this counts (of 255)
+TOL = review.TOL  # a channel difference above this counts (of 255)
 MATTE = (128, 128, 128)
 SCALE = 2.0
+
+
+# What the harness still cannot measure reliably: listed at the top of report.md so nobody reads
+# one of these as a product difference.
+UNRELIABLE = [
+    "Window shadows: the window server draws the legacy panels' shadow and it cannot be captured offscreen; the Qt "
+    "panels' painted shadow is switched off for the pictures. Shadows are compared by their numbers only.",
+    "The sliver's sparks (the legacy CAEmitterLayer) are not drawn at a frozen moment; both sides leave them out.",
+    "A spinning progress indicator's motion; pictures show its first frame.",
+    "Three legacy fades that AppKit or Core Animation only run on screen are evaluated by the harness from the "
+    "code's own duration and curve, not drawn by the system: the hands-free cancel and finish buttons "
+    "(NSAnimationContext alphaValue, ease-out), the scrub knob's fade-in (an implicit CATransition, default curve) "
+    "and the hover glow (an implicit opacity action in a 0.14 s CATransaction, default curve). Their timing is "
+    "therefore the code's stated timing, not a measurement.",
+    "Animation 'progress' (motion.md, review.html) is measured from the pictures: how far each frame is from the "
+    "first towards the last. For a looping drift (the sliver's 8 s strip) it is not a timing measure; read the "
+    "frames themselves.",
+    "During the hands-free growth the legacy filmstrip draws cancel and finish at their final places inside the growing "
+    "capsule (only the capsule and the wave get frame animations offscreen); on screen AppKit may carry them along "
+    "with the capsule. The Qt buttons ride with the capsule. Treat button positions in the middle frames as unverified.",
+    "history.fix: both fields have their whole text selected, as the app does after Fix a Word, but the legacy field "
+    "draws its selection in the inactive-window colour (the window is never key and the app never active here; see the "
+    "note on the pair for the colour the app uses). The Qt field paints one fixed selection colour in both states.",
+    "Text frames: an AppKit field's frame includes its cell's 2 px insets and a Qt label may span its whole row, so the "
+    "x/y/w/h rows of text elements in structure.md are definitions, not differences. Text placement is compared by its "
+    "ink instead (the 'ink' rows), and only those reach the verdicts.",
+    "Elements listed as only on one side in structure.md (shapes Qt paints without a widget of their own, legacy "
+    "separators, the setup key caps, radio images): usually the same thing drawn differently, not missing. They do "
+    "not reach the verdicts; the pixels do.",
+    "Text field frames: a bezel-less AppKit field inside a drawn box against a Qt line edit or text edit; their frames "
+    "are definitions too and do not reach the verdicts. An empty field is compared by its placeholder's ink, a field "
+    "with selected text (history.fix) not by ink at all.",
+    "Text a widget paints itself without a text element per paragraph (the history rows' folded dictations, the "
+    "setup key caps) has no ink rows; it reaches the verdicts only through the pixels. A folded dictation that ends "
+    "at a different word (history: 'Windows in…' against 'Windows …') is visible in the pictures but not named.",
+    "Title bars of the windows: the system's on both sides, not in the pictures.",
+    "Menus are compared row by row (title, order, shortcut, tick, heading, enabled); an NSMenu cannot be drawn without "
+    "opening it on screen, so their look is not compared.",
+    "The toast's window fade: the legacy window alpha cannot be animated offscreen; compared from the code.",
+    "The Qt pictures follow the main screen's pixel density (Retina, 2.0, on this run; written to raw/qt/screen.json). "
+    "On a 1x main screen the Qt side would draw at 1x into the 2x pictures.",
+]
 
 
 # -- pictures -----------------------------------------------------------------------------------
@@ -188,6 +230,25 @@ def items(elements: list[dict], side: str) -> list[dict]:
                         e[k] = c[k]
                 e["inner_frame"] = c["frame"]
                 consumed.add(inner[0])
+        # An image-only button laid over a filled disc as its sibling (the hands-free cancel and
+        # finish strips: the button spans the whole click strip): the disc is the visible item.
+        for i, e in enumerate(els):
+            if i in consumed or e["depth"] == 0 or not e.get("fill") or e.get("icon") or e.get("text"):
+                continue
+            x, y, w, h = e["frame"]
+            for j in range(i + 1, len(els)):
+                o = els[j]
+                if o["depth"] < e["depth"]:
+                    break
+                if o["depth"] != e["depth"] or j in consumed:
+                    continue
+                ox, oy, ow, oh = o["frame"]
+                if o.get("icon") and not o.get("text") and ox <= x and oy <= y and ox + ow >= x + w and oy + oh >= y + h:
+                    for k in ("icon", "color", "tooltip", "enabled", "role"):
+                        if k in o and k not in e:
+                            e[k] = o[k]
+                    consumed.add(j)
+                    break
     out = []
     for i, e in enumerate(els):
         if i in consumed or e["depth"] == 0 or e.get("painted"):
@@ -249,10 +310,16 @@ def match(L: list[dict], Q: list[dict]):
     return pairs, unmatched_l, unmatched_q
 
 
+# The same system fonts under the names each toolkit reports.
+FAMILIES = {".AppleSystemUIFont": "SF Pro", ".SF NS": "SF Pro", "System Font": "SF Pro", ".AppleSystemUIFontSerif": "New York",
+            ".New York": "New York", ".AppleSystemUIFontMonospaced": "SF Mono", ".SF NS Mono": "SF Mono"}
+
+
 def _font(f) -> str:
     if not f:
         return ""
-    return f"{f['family']} {f['size']:g} {f['weight']}" + (" italic" if f.get("italic") else "")
+    family = FAMILIES.get(f["family"], f["family"])
+    return f"{family} {f['size']:g} {f['weight']}" + (" italic" if f.get("italic") else "")
 
 
 def compare_items(pairs) -> list[dict]:
@@ -261,11 +328,14 @@ def compare_items(pairs) -> list[dict]:
     for a, b in pairs:
         name = a["key"] if a["key"] != "shape" else f"shape {a['cls']}/{b['cls']}"
         fa, fb = a["frame"], b["frame"]
+        # A plain text's frame and any field's frame differ by definition between the toolkits;
+        # the text is placed by its ink instead (ink_rows). Marked, kept for the table.
+        definition = inked(a, b) or "field" in (a.get("role"), b.get("role"))
         for k, label in enumerate(("x", "y", "w", "h")):
             delta = fb[k] - fa[k]
             if abs(delta) >= 1.0:
-                rows.append({"element": name, "prop": label, "legacy": f"{fa[k]:g}", "qt": f"{fb[k]:g}",
-                             "delta": f"{delta:+g}"})
+                rows.append({"element": name, "prop": label + (" (frame)" if definition else ""), "legacy": f"{fa[k]:g}",
+                             "qt": f"{fb[k]:g}", "delta": f"{delta:+g}"})
         for prop in ("font", "color", "fill", "border", "radius", "enabled"):
             va, vb = a.get(prop), b.get(prop)
             if prop == "font":
@@ -290,6 +360,78 @@ def compare_items(pairs) -> list[dict]:
                         continue
                     delta = f"alpha {ca[3] / 255:.2f} vs {cb[3] / 255:.2f}" if ca[:3] == cb[:3] else ""
                 rows.append({"element": name, "prop": prop, "legacy": str(va), "qt": str(vb), "delta": delta})
+    return rows
+
+
+# -- text ink -----------------------------------------------------------------------------------
+#
+# Where a text's ink lands, from the pictures: frames are not comparable for text (an AppKit
+# field's frame includes its cell's 2 px insets, a Qt label may span its whole row, a painted
+# run has its painting widget's frame), the ink is. The region is the legacy frame grown by
+# INK_GROW_X and INK_GROW_Y, the same region on both pictures.
+
+INK_GROW_X, INK_GROW_Y = 3.0, 2.0  # logical px around the legacy frame
+INK_LEVEL = 0.5                      # ink: at least this share of the region's strongest contrast (half coverage,
+                                     # so the box does not grow with heavier antialiasing)
+INK_STEP = 1.0                       # an ink edge that moved this far (logical px) or more is a difference
+INK_AMOUNT_TOL = 8.0                 # percent: more or less ink than this is lighter or heavier text
+
+
+def inked(a: dict, b: dict) -> bool:
+    """Is this matched element a plain text, placed by its ink? Not a filled pill or a dropdown,
+    whose region holds a fill or a bezel besides the text (those keep their frames)."""
+    return (a["key"].startswith("text:") and not (a.get("fill") or b.get("fill") or a.get("border") or b.get("border"))
+            and "dropdown" not in (a.get("role"), b.get("role")))
+
+
+def text_ink(arr, box) -> dict | None:
+    """The ink box (logical, x0 y0 x1 y1) and amount of the text inside `box` of a matte picture."""
+    h, w = arr.shape[:2]
+    x0, y0, x1, y1 = (round(v * SCALE) for v in box)
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    lum = arr[y0:y1, x0:x1] @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    d = np.abs(lum - np.median(lum))
+    if d.max() < 40:
+        return None
+    mask = d >= INK_LEVEL * d.max()
+    cols, rows = np.nonzero(mask.any(axis=0))[0], np.nonzero(mask.any(axis=1))[0]
+    return {"box": [(x0 + cols[0]) / SCALE, (y0 + rows[0]) / SCALE, (x0 + cols[-1] + 1) / SCALE, (y0 + rows[-1] + 1) / SCALE],
+            "amount": float(d.sum() / 255.0)}
+
+
+def ink_rows(A, B, pairs) -> list[dict]:
+    """One row per text whose ink edge moved INK_STEP or more, or whose ink amount differs by
+    more than INK_AMOUNT_TOL percent."""
+    rows = []
+    for a, b in pairs:  # the region is the legacy one, on both pictures
+        key = a["key"]
+        if a.get("selected") or b.get("selected"):
+            continue  # a selection's highlight is not the text (and its colour depends on the window being key)
+        if a.get("role") == "field" and not key.startswith("text:"):
+            if not a.get("placeholder"):
+                continue
+            key = "text:" + a["placeholder"]  # an empty field: its placeholder is what shows
+        elif not inked(a, b):
+            continue
+        x, y, w, h = a["frame"]
+        region = (x - INK_GROW_X, y - INK_GROW_Y, x + w + INK_GROW_X, y + h + INK_GROW_Y)
+        ia, ib = text_ink(A, region), text_ink(B, region)
+        if ia is None or ib is None:
+            if ia is not None:
+                rows.append({"element": key, "prop": "ink", "legacy": "drawn", "qt": "nothing near the legacy place",
+                             "delta": ""})
+            continue
+        for k, label in enumerate(("ink left", "ink top", "ink right", "ink bottom")):
+            delta = ib["box"][k] - ia["box"][k]
+            if abs(delta) >= INK_STEP:
+                rows.append({"element": key, "prop": label, "legacy": f"{ia['box'][k]:g}", "qt": f"{ib['box'][k]:g}",
+                             "delta": f"{delta:+g}"})
+        pct = 100 * (ib["amount"] - ia["amount"]) / ia["amount"] if ia["amount"] else 0.0
+        if abs(pct) > INK_AMOUNT_TOL:
+            rows.append({"element": key, "prop": "ink amount", "legacy": f"{ia['amount']:.0f}",
+                         "qt": f"{ib['amount']:.0f}", "delta": f"{pct:+.0f}%"})
     return rows
 
 
@@ -431,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
             m = measure(a, b)
             L, Q = items(ml["elements"], "legacy"), items(mq["elements"], "qt")
             matched, only_l, only_q = match(L, Q)
-            rows = compare_items(matched)
+            rows = compare_items(matched) + ink_rows(m["A"], m["B"], matched)
             size_l = "x".join(f"{v:g}" for v in ml["size"])
             size_q = "x".join(f"{v:g}" for v in mq["size"])
             r = {"pair": name, "scheme": scheme, "family": pair.family, "size_legacy": size_l, "size_qt": size_q,
@@ -448,13 +590,35 @@ def main(argv: list[str] | None = None) -> int:
             r["rows"] = rows
             r["only_l"] = [f"{e['key']} @ {e['frame']}" for e in only_l]
             r["only_q"] = [f"{e['key']} @ {e['frame']}" for e in only_q]
-            results.append(r)
             cd = copy_diff(strings(ml), strings(mq))
+            r["copy"] = cd
+            cut_l = {e["text"] for e in ml["elements"] if e.get("cut") and e.get("text")}
+            texts_q = {e["text"] for e in mq["elements"] if e.get("text")}
+            # Only whole labels count: a paint may also elide fragments (a history row folding a
+            # long dictation to its last shown line), which is not a label cut short.
+            cut_q = {t: v for t, v in mq.get("elided", {}).items() if t in texts_q}
+            r["cut"] = {"qt_only": {t: v for t, v in cut_q.items() if t not in cut_l},
+                        "legacy_only": sorted(t for t in cut_l if t not in cut_q)}
+            r["box_all"] = m["box_all"]
+            review.save_pictures(out, stem, m["A"], m["B"], ml["size"], mq["size"])
+            results.append(r)
             if scheme == "light" and cd:
                 copy_sections.append((name, cd))
             struct_sections.append(r)
 
-    results.sort(key=lambda r: (-(r["real"] + (0.5 if not r["size_same"] else 0.0)), -r["diff"]))
+    # Worst first by the share of pixels that differ beyond a one-pixel shift. A size mismatch is
+    # already in that share (the smaller picture is padded with the matte), so it adds nothing.
+    results.sort(key=lambda r: (-r["real"], -r["diff"]))
+
+    def read(path: Path) -> dict:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+    ink_l, ink_q, screen = read(raw_l / "ink.json"), read(raw_q / "ink.json"), read(raw_q / "screen.json")
+    bias = review.text_bias(ink_l, ink_q)
+    for r in results:
+        r["verdict"], r["reasons"] = review.verdict(r, bias)
     (out / "results.json").write_text(json.dumps(results, indent=1, ensure_ascii=False), encoding="utf-8")
 
     # Menus
@@ -500,19 +664,51 @@ def main(argv: list[str] | None = None) -> int:
             st_md.append("Qt only: " + "; ".join(r["only_q"]) + "\n")
     (out / "structure.md").write_text("\n".join(st_md), encoding="utf-8")
 
+    icon_rows = icons.compose(out, args.only)
+
     # report.md
     rep = ["# Side-by-side comparison: report\n",
-           f"{len(results)} pictures compared ({len({r['pair'] for r in results})} pairs, light and dark). "
-           f"Ranked worst first by the share of pixels that differ beyond a 1 px shift (a size mismatch adds half a "
-           f"point). Tolerance {TOL}/255 per channel. Sheets in sheets/, structure in structure.md, copy in "
-           "copy.md, menus in menus.md, motion in motion.md.\n",
-           table_md([{"rank": i + 1, "pair": r["pair"], "scheme": r["scheme"], "size legacy": r["size_legacy"],
-                      "size Qt": r["size_qt"], "diff %": r["diff"], "beyond 1 px %": r["real"], "box": r["box"],
-                      "struct diffs": r["struct"]} for i, r in enumerate(results)],
-                    ["rank", "pair", "scheme", "size legacy", "size Qt", "diff %", "beyond 1 px %", "box",
-                     "struct diffs"]),
-           "\n## Not rendered on one side\n"]
+           "## Read this first: what the harness still cannot measure reliably\n",
+           "Nothing in this list is a product difference; do not read the numbers it names as one.\n"]
+    rep += [f"- {u}" for u in UNRELIABLE]
+    rep.append("\n## Text weight check\n")
+    if ink_l.get("cases") and ink_q.get("cases"):
+        rep.append(f"\"{catalogue.INK_TEXT}\" in the interface font, {catalogue.INK_SIZE:g} {catalogue.INK_WEIGHT}, at 2x, "
+                   f"AppKit against Qt on the {ink_q['platform']} platform. Round 1A measured 1535 on Qt's offscreen platform "
+                   "(light on dark), about 10 percent light; the Qt side now draws on the real platform.\n")
+        for case, a in ink_l["cases"].items():
+            b = ink_q["cases"].get(case)
+            if b is not None:
+                rep.append(f"- {case}: AppKit {a}, Qt {b} ({100 * (b - a) / a:+.1f} percent)")
+        rep.append("\nAppKit draws dark text on a light background thinner than light text on dark; Qt draws both "
+                   "alike. So where the two differ, the light-scheme 'looks heavier' rows are this real difference, "
+                   "not the harness.\n")
+    tink = [r for r in struct_sections if r["pair"] == "toast.text"]
+    for r in tink:
+        rep.append(f"- toast.text ({r['scheme']}): " + (", ".join(f"{x['prop']} {x['legacy']} / {x['qt']} ({x['delta']})"
+                                                         for x in r["rows"] if x["prop"].startswith("ink"))
+                                                         or "the text's ink box and amount agree (within 1 px and "
+                                                            f"{INK_AMOUNT_TOL:g} percent)"))
+    rep.append("\n## Nothing on screen\n")
+    if screen:
+        rep.append(f"Qt side on the {screen.get('platform')} platform, device pixel ratio {screen.get('device_pixel_ratio')}; "
+                   f"windows Qt was asked to show and kept off the screen: {screen.get('shows_kept_off_screen') or 'none'}; "
+                   f"windows the window server listed on screen: {screen.get('on_screen') or 'none'}; app found active: "
+                   f"{screen.get('app_active') or 'never'}.\n")
+    rep += [f"## Ranking\n\n{len(results)} pictures compared ({len({r['pair'] for r in results})} pairs, light and dark). "
+            f"Ranked worst first by the share of pixels that differ beyond a 1 px shift (a size mismatch is already part of "
+            f"that share). Tolerance {TOL}/255 per channel. Sheets in sheets/, structure in structure.md, copy in copy.md, "
+            "menus in menus.md, motion in motion.md, icons in icons.md, the owner's page in review.html.\n",
+            table_md([{"rank": i + 1, "pair": r["pair"], "scheme": r["scheme"], "size legacy": r["size_legacy"],
+                       "size Qt": r["size_qt"], "diff %": r["diff"], "beyond 1 px %": r["real"], "box": r["box"],
+                       "struct diffs": r["struct"], "verdict": r["verdict"]} for i, r in enumerate(results)],
+                     ["rank", "pair", "scheme", "size legacy", "size Qt", "diff %", "beyond 1 px %", "box", "struct diffs",
+                      "verdict"]),
+            "\n## Not rendered on one side\n"]
     rep.append(table_md(failed, ["pair", "side", "why"]) if failed else "None: every pair rendered on both sides.\n")
+    if icon_rows:
+        ok = sum(1 for r in icon_rows if r.get("ok"))
+        rep.append(f"\n## Icons\n\n{ok} of {len(icon_rows)} within tolerance; see icons.md.\n")
     rep.append("\n## What each side could not draw faithfully\n")
     notes = Counter()
     for r in results:
@@ -522,6 +718,7 @@ def main(argv: list[str] | None = None) -> int:
             notes[f"Qt: {n}"] += 1
     rep += [f"- {n} ({c} pictures)" for n, c in notes.most_common()]
     (out / "report.md").write_text("\n".join(rep) + "\n", encoding="utf-8")
+    review.write(out, results, failed, icon_rows, jl, jq, args.only, bias)
 
     # index.html
     css = ("body{font:13px -apple-system,sans-serif;margin:20px;background:#fafafa}table{border-collapse:collapse;"

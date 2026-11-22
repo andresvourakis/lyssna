@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if not args.no_motion:
         codes.append(_run("scripts.compare.motion", "--out", str(out), *only))
-    print(f"output: {out}\nopen: {out / 'index.html'}")
+    print(f"output: {out}\nfor the owner: {out / 'review.html'}\ntechnical: {out / 'index.html'}")
     return max(codes)
 
 

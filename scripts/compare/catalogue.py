@@ -28,7 +28,7 @@ class Pair:
 DRIFT_T = 3.4    # seconds into the sliver's drifts (the Qt preview_moment default)
 BLOOM_T = 0.3    # seconds into a sentence bloom
 WAVE_TICKS = 12  # the dictation wave, 12 ticks of 1/30 s from a calm line (0.4 s), mic level 0.5
-SLIVER_MOMENT = (f"sliver drifts at t={DRIFT_T} s (hue, split, breathe), bloom {BLOOM_T} s old; "
+SLIVER_MOMENT = (f"sliver drifts at t={DRIFT_T} s (hue, split, swing, breathe), bloom {BLOOM_T} s old; "
                  "no sparks on either side (the legacy emitter cannot be drawn offscreen)")
 PAUSED_MOMENT = f"sliver drifts frozen at t={DRIFT_T} s; paused, so no bloom and no sparks"
 WAVE_MOMENT = f"wave {WAVE_TICKS} ticks of 1/30 s in at level 0.5 (amplitude and phase stepped identically)"
@@ -156,6 +156,22 @@ TOOLTIPS = {  # what the app wiring sets on the player's buttons (the config's d
     "toggle": "Pause / resume  ⌃⌥Space", "stop": "Stop  ⌃⌥X", "back": "Previous sentence  ⌃⌥←",
     "forward": "Next sentence  ⌃⌥→", "speed": "Speed  ⌃⌥- / ⌃⌥=",
 }
+
+
+# The text weight check (round 1A's measurement): one string in the interface font, light on
+# dark, drawn by each side at 2x; ink is the sum over pixels of (grey - BG) / (FG - BG), clipped.
+INK_TEXT = "Nothing selected"
+INK_SIZE, INK_WEIGHT = 13.0, "medium"
+INK_BG, INK_FG = 20, 240
+INK_CASES = {"light on dark": (INK_BG, INK_FG), "dark on light": (INK_FG, INK_BG)}  # (background, text) grey
+INK_CANVAS = (600, 100)  # logical
+
+
+def ink_sum(grey, bg: int = INK_BG, fg: int = INK_FG) -> float:
+    """The ink of an (h, w) array of grey levels 0..255 drawn fg on bg."""
+    import numpy as np
+
+    return round(float(np.clip((np.asarray(grey, dtype=float) - bg) / (fg - bg), 0, 1).sum()), 1)
 
 
 def select(only: str | None) -> list[Pair]:

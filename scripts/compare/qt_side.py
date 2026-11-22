@@ -1,8 +1,19 @@
-"""The Qt side: build each catalogue state with the Qt interface (lyssna/ui) on Qt's offscreen
-platform, and write per pair and scheme a PNG at 2x plus a JSON of its widgets and strings, the
-same shape legacy_side.py writes.
+"""The Qt side: build each catalogue state with the Qt interface (lyssna/ui) and write per pair
+and scheme a PNG at 2x plus a JSON of its widgets and strings, the same shape legacy_side.py
+writes.
 
     python -m scripts.compare.qt_side --out DIR --work DIR [--only PATTERN] [--menus] [--motion DIR]
+
+On a Mac this runs on Qt's real platform (cocoa), as the app does, because the offscreen platform
+draws text about 10 percent lighter than Qt draws it on the Mac (one string: 1535 ink offscreen,
+1725 on cocoa, 1712 in AppKit), and with Qt's generic widget style instead of the Mac one the app
+gets. Nothing reaches the screen (NoScreen below): the process is an accessory app that is never
+activated (no Dock icon), every top-level window gets WA_DontShowOnScreen before Qt maps it (so
+show() makes it visible to Qt's logic, which the glides and hover fades need, and never puts it
+on screen), the native order-front and activation calls are switched off, and after every pair
+the window server is asked whether any window of this process is on screen. The answer is
+written to screen.json and the report. LYSSNA_COMPARE_QT_PLATFORM=offscreen brings back the old
+platform (and is the default off the Mac).
 
 Floating panels are drawn with their painted shadow switched off (set_shadow(False)), so the
 picture is the surface alone, as the legacy side's is (the window server's shadow cannot be
@@ -19,9 +30,12 @@ import os
 import re
 import sys
 import traceback
+from collections import Counter
 from pathlib import Path
 
-os.environ["QT_QPA_PLATFORM"] = "offscreen"  # before Qt loads: nothing reaches the screen
+PLATFORM = os.environ.get("LYSSNA_COMPARE_QT_PLATFORM") or ("cocoa" if sys.platform == "darwin" else "offscreen")
+os.environ["QT_QPA_PLATFORM"] = PLATFORM  # before Qt loads
+os.environ["QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM"] = "1"  # never a foreground app (lyssna/mac/window.py)
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -35,11 +49,121 @@ SCALE = 2.0
 _keep: list = []
 
 
+class NoScreen:
+    """Keeps every window of this process off the screen on the real platform, and checks.
+
+    Qt sends a widget its Show event before it maps the native window (QWidgetPrivate::
+    show_helper, then show_sys), and show_sys maps nothing for a widget with WA_DontShowOnScreen.
+    So an application event filter sets that attribute on every top-level widget at its Show
+    event: Qt then counts the widget as shown (isVisible, which the glides and the hover fades
+    ask) while the window server never sees it. Native calls that order a window in or activate
+    the app behind Qt's back (host.window.bring_to_top, activate_app, raise and activate on a
+    window) are switched off. check() asks the window server for this process's on-screen
+    windows; any found are logged as a failure of this guard."""
+
+    def __init__(self, app) -> None:
+        from PySide6.QtCore import QEvent, QObject, Qt
+        from PySide6.QtWidgets import QWidget
+
+        self.platform = app.platformName()
+        self.shows: Counter = Counter()  # windows Qt was asked to show, kept off screen
+        self.on_screen: list[str] = []   # windows the window server listed as on screen (must stay empty)
+        self.active: list[str] = []      # moments the app was found active (must stay empty)
+        self.dpr = float(app.primaryScreen().devicePixelRatio()) if app.primaryScreen() else 0.0
+        guard = self
+
+        class Filter(QObject):
+            def eventFilter(self, obj, ev) -> bool:
+                if ev.type() == QEvent.Type.Show and obj.isWidgetType() and obj.isWindow():
+                    if not obj.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen):
+                        obj.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+                    guard.shows[type(obj).__name__] += 1
+                return False
+
+        self.filter = Filter()
+        app.installEventFilter(self.filter)
+        if self.platform != "cocoa":
+            return
+        import AppKit
+
+        AppKit.NSApplication.sharedApplication().setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+        from lyssna import host
+
+        host.window.bring_to_top = lambda widget: None
+        host.window.is_on_screen = lambda widget: None  # check() asks instead, for every window
+        host.window.activate_app = lambda: None
+        raise_ = QWidget.raise_
+
+        def raise_child(self) -> None:  # a child's raise only restacks it inside its window
+            if not self.isWindow():
+                raise_(self)
+
+        QWidget.raise_ = raise_child
+        QWidget.activateWindow = lambda self: None
+        # Cocoa answers a new native window with a geometry event carrying the size it was made
+        # at, delivered at the next event pass; a panel resized in between (a toast laid out for
+        # its text) would snap back to its first size. Deliver it at once, while it is still true.
+        win_id = QWidget.winId
+
+        def win_id_settled(self):
+            created = self.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
+            wid = win_id(self)
+            if not created and self.isWindow():
+                app.processEvents()
+            return wid
+
+        QWidget.winId = win_id_settled
+
+    def check(self, where: str) -> None:
+        if self.platform != "cocoa":
+            return
+        import AppKit
+        import Quartz
+
+        pid = os.getpid()
+        infos = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID) or []
+        mine = [i for i in infos if i.get(Quartz.kCGWindowOwnerPID) == pid]
+        if mine:
+            self.on_screen.append(f"{where}: {len(mine)} window(s)")
+            print(f"qt: WINDOW ON SCREEN at {where}", file=sys.stderr)
+        if AppKit.NSRunningApplication.currentApplication().isActive():
+            self.active.append(where)
+
+    def write(self, path: Path) -> None:
+        path.write_text(json.dumps({"platform": self.platform, "device_pixel_ratio": self.dpr,
+                                    "shows_kept_off_screen": dict(self.shows), "on_screen": self.on_screen,
+                                    "app_active": self.active}, indent=1), encoding="utf-8")
+
+
+GUARD: NoScreen | None = None
+ELIDED: dict[str, str] = {}  # text a paint cut short with an ellipsis -> what it showed (cleared per picture)
+
+
+def _record_elisions() -> None:
+    """Note every elidedText call that cut its text, so a label shortened with an ellipsis is
+    reported (the widget still holds the whole text, and the copy audit reads that)."""
+    from PySide6.QtGui import QFontMetrics, QFontMetricsF
+
+    for cls in (QFontMetrics, QFontMetricsF):
+        real = cls.elidedText
+
+        def elided(self, text, *args, real=real, **kwargs):
+            shown = real(self, text, *args, **kwargs)
+            if shown != text and text:
+                ELIDED[text] = shown
+            return shown
+
+        cls.elidedText = elided
+
+
 def boot(work: Path):
+    global GUARD
     isolate(work)
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(["lyssna-compare"])
+    GUARD = NoScreen(app)
+    _record_elisions()
     from lyssna import host
     from lyssna.ui import mini_player
 
@@ -157,6 +281,22 @@ def _painted(w, e: dict, depth: int) -> list[dict]:
     return found
 
 
+def _own_font(w):
+    """The font a self-painting widget draws its text in: its font_ or text_font, the first of
+    its runs of (text, font), or else its only QFont attribute. None when it has none of these."""
+    from PySide6.QtGui import QFont
+
+    for name in ("font_", "text_font"):
+        f = getattr(w, name, None)
+        if isinstance(f, QFont):
+            return f
+    runs = getattr(w, "runs", None)
+    if isinstance(runs, list) and runs and isinstance(runs[0], tuple) and len(runs[0]) > 1 and isinstance(runs[0][1], QFont):
+        return runs[0][1]
+    fonts = [v for v in vars(w).values() if isinstance(v, QFont)]
+    return fonts[0] if len(fonts) == 1 else None
+
+
 def walk(root) -> list[dict]:
     from PySide6.QtCore import QPoint
     from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QLineEdit, QTextEdit, QWidget
@@ -176,6 +316,10 @@ def walk(root) -> list[dict]:
             e["role"] = "field"
         if isinstance(w, QTextEdit):
             e["role"] = "field"
+            if w.textCursor().hasSelection():
+                e["selected"] = True
+        if isinstance(w, QLineEdit) and w.hasSelectedText():
+            e["selected"] = True
         if isinstance(w, QComboBox):
             e["role"] = "dropdown"
             e["items"] = [w.itemText(i) for i in range(w.count())]
@@ -185,7 +329,7 @@ def walk(root) -> list[dict]:
         sym = getattr(w, "symbol", None)
         if isinstance(sym, str) and sym:
             e["icon"] = sym
-        f = getattr(w, "font_", None)
+        f = _own_font(w)
         if f is None and (text and isinstance(w, (QLabel, QAbstractButton, QLineEdit, QTextEdit, QComboBox))):
             f = w.font()
         if f is not None and hasattr(f, "weight"):
@@ -471,12 +615,11 @@ def build_history(params: dict, work: Path) -> dict:
         rows[1].copy.set_icon("checkmark")
         rows[1].more.set_hover(True)
     elif variant == "fix":
+        # The app's own path for "Fix a Word…" (the legacy side calls fixWord_ the same way):
+        # the edit field opens with its whole text selected.
         first = rows[0].entry_id
         w.fix_word(first)
-        row = w._row(first)
-        row.edit_field.setPlainText(row.entry.text.replace("Mattias", "Matias"))
-        w._layout_list()
-        row.edit_box.set_focused(True)
+        w._row(first).edit_box.set_focused(True)
     elif variant == "search":
         w.search_field.setText(params["query"])
         w.search_box.set_focused(True)
@@ -610,6 +753,33 @@ def menus(out: Path, only: str | None) -> None:
     theme.set_scheme(None)
 
 
+def ink_check(out: Path) -> None:
+    """The text weight check (catalogue.INK_TEXT): the string drawn with QPainter at 2x, light
+    on dark and dark on light."""
+    import numpy as np
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    from lyssna.ui import theme
+
+    w, h = catalogue.INK_CANVAS
+    cases = {}
+    for case, (bg, fg) in catalogue.INK_CASES.items():
+        img = QImage(round(w * SCALE), round(h * SCALE), QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(SCALE)
+        img.fill(QColor(bg, bg, bg))
+        p = QPainter(img)
+        p.setFont(theme.ui_font(catalogue.INK_SIZE, catalogue.INK_WEIGHT))
+        p.setPen(QColor(fg, fg, fg))
+        p.drawText(QPointF(10, 30), catalogue.INK_TEXT)
+        p.end()
+        a = np.frombuffer(img.constBits(), dtype=np.uint8).reshape(img.height(), img.bytesPerLine())
+        grey = a[:, : img.width() * 4].reshape(img.height(), img.width(), 4)[..., :3].mean(axis=2)
+        cases[case] = catalogue.ink_sum(grey, bg, fg)
+    (out / "ink.json").write_text(json.dumps({"platform": PLATFORM, "text": catalogue.INK_TEXT, "cases": cases}),
+                                  encoding="utf-8")
+
+
 # -- main -------------------------------------------------------------------------------------
 
 
@@ -628,8 +798,10 @@ def run_pairs(out: Path, work: Path, only: str | None, schemes: tuple[str, ...])
                 subject = build(pair, work)
                 widget = subject_widget(subject)
                 QApplication.processEvents()
+                ELIDED.clear()
                 w, h = render(widget, out / f"{stem}.png", bool(subject.get("window")))
-                meta.update(size=[w, h], scale=SCALE, method="QWidget.render", notes=subject.get("notes", []),
+                meta["elided"] = dict(ELIDED)
+                meta.update(size=[w, h], scale=SCALE, method=f"QWidget.render ({PLATFORM})", notes=subject.get("notes", []),
                             title=subject.get("title", ""), elements=walk(widget))
                 count += 1
             except Exception as exc:
@@ -637,6 +809,7 @@ def run_pairs(out: Path, work: Path, only: str | None, schemes: tuple[str, ...])
                 meta["traceback"] = traceback.format_exc()
                 print(f"qt {stem}: {meta['error']}", file=sys.stderr)
             (out / f"{stem}.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+            GUARD.check(stem)
     theme.set_scheme(None)
     return count
 
@@ -656,6 +829,7 @@ def main(argv: list[str] | None = None) -> int:
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
     boot(work)
+    ink_check(out)
     n = run_pairs(out, work, args.only, tuple(args.schemes.split(",")))
     print(f"qt: rendered {n} pictures")
     if args.menus:
@@ -663,10 +837,20 @@ def main(argv: list[str] | None = None) -> int:
             menus(out, args.only)
         except Exception:
             traceback.print_exc()
+    try:
+        from scripts.compare import icons
+
+        print(f"qt: drew {icons.qt_side(out / 'icons', args.only)} icons")
+    except Exception:
+        traceback.print_exc()
     if args.motion:
         from scripts.compare import motion
 
         motion.qt_filmstrips(Path(args.motion), args.only)
+    GUARD.check("end")
+    GUARD.write(out / "screen.json")
+    if GUARD.on_screen:
+        print(f"qt: windows reached the screen: {GUARD.on_screen}", file=sys.stderr)
     return 0
 
 
