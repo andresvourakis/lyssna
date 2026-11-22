@@ -282,6 +282,41 @@ def _png(cgimage, path: Path) -> None:
     data.writeToFile_atomically_(str(path), True)
 
 
+def _text_doubles(view) -> list:
+    """The private label views AppKit puts inside each NSTextField (NSTextFieldSimpleLabel).
+    Both capture paths draw a label's text twice, once through the field's own cell and once
+    through this subview: cacheDisplayInRect draws both views, and renderInContext draws the
+    subview's layer contents and, for the field's layer, which has no contents, calls the
+    field's drawing. So a dim 0.60 label came out at 0.84 (a real screenshot of today's app,
+    docs/images/setup.png, measures 0.60) and full-colour text came out heavier at its edges.
+    Hidden, view and layer, during the capture (after the layout and display passes, which
+    show them again), the cell draws the text once."""
+    found = []
+    for sub in view.subviews():
+        if isinstance(view, AppKit.NSTextField):
+            if "SimpleLabel" in type(sub).__name__ and not sub.isHidden():
+                found.append(sub)
+        else:
+            found += _text_doubles(sub)
+    return found
+
+
+def _once(view, app, draw) -> None:
+    """Run `draw` in appearance `app` with every label's text drawn once (_text_doubles)."""
+    doubles = _text_doubles(view)
+    for v in doubles:
+        v.setHidden_(True)
+        if v.layer() is not None:
+            v.layer().setHidden_(True)
+    try:
+        app.performAsCurrentDrawingAppearance_(draw)
+    finally:
+        for v in doubles:
+            v.setHidden_(False)
+            if v.layer() is not None:
+                v.layer().setHidden_(False)
+
+
 def render(view, app, path: Path, method: str = "layer", ages: dict[str, float] | None = None) -> tuple[float, float, str]:
     """Draw `view` at SCALE into `path`. Returns its logical size and the method used."""
     window = view.window()
@@ -307,13 +342,13 @@ def render(view, app, path: Path, method: str = "layer", ages: dict[str, float] 
         cs = Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceSRGB)
         ctx = Quartz.CGBitmapContextCreate(None, pw, ph, 8, 0, cs, Quartz.kCGImageAlphaPremultipliedLast)
         Quartz.CGContextScaleCTM(ctx, SCALE, SCALE)
-        app.performAsCurrentDrawingAppearance_(lambda: target.renderInContext_(ctx))
+        _once(view, app, lambda: target.renderInContext_(ctx))
         _png(Quartz.CGBitmapContextCreateImage(ctx), path)
         return w, h, "layer" + (" (presentation, frozen)" if ages is not None else "")
     rep = AppKit.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(  # noqa: E501
         None, pw, ph, 8, 4, True, False, AppKit.NSCalibratedRGBColorSpace, 0, 32)
     rep.setSize_((w, h))
-    app.performAsCurrentDrawingAppearance_(lambda: view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep))
+    _once(view, app, lambda: view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep))
     data = rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, None)
     data.writeToFile_atomically_(str(path), True)
     return w, h, "cache"

@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 from .. import host
 from . import coords, theme
 from .layout.panel import DRAG_SLOP
+from .sliver import EASE_DEFAULT
 
 log = logging.getLogger("lyssna.ui.panel")
 
@@ -477,7 +478,11 @@ class FloatingPanel:
         self.panel.setWindowOpacity(self._alpha)
 
     def fade_to(self, alpha: float, seconds: float, done: Callable[[], None] | None = None) -> None:
-        """Animate the window's opacity to `alpha` over `seconds` (the Mac animator fade)."""
+        """Animate the window's opacity to `alpha` over `seconds` (the Mac animator fade). The
+        curve is Core Animation's default (0.25, 0.1, 0.25, 1.0): the Mac sets only a duration on
+        its NSAnimationContext, and NSWindow's default animation for alphaValue is a
+        CABasicAnimation with that timing function (read back, and the alpha sampled over a
+        fade, on macOS 26)."""
         if self._alpha_anim is not None:
             self._alpha_anim.stop()
             self._alpha_anim = None
@@ -490,7 +495,7 @@ class FloatingPanel:
         anim.setStartValue(float(self._alpha))
         anim.setEndValue(float(alpha))
         anim.setDuration(round(seconds * 1000))
-        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        anim.setEasingCurve(EASE_DEFAULT)
         anim.valueChanged.connect(lambda v: self._set_alpha(v))
 
         def finished() -> None:

@@ -54,7 +54,30 @@ def test_size_and_look(button):
 
     assert button.frame()[2:] == (34.0, 34.0) and button.corner_radius == 17.0
     assert button.surface_fill() == theme.content() and button.surface_border() is None
-    assert button.button.icon == "play.fill" and button.button.glow is theme.white_glow
+    # The Mac's button has no hover light (a bare symbol button on the panel's disc).
+    assert button.button.icon == "play.fill" and button.button.glow is None
+    button.button.set_hover(True, animate=False)
+    assert button.button.glow_level() == 1.0 and button.button.glow is None  # nothing to paint
+
+
+def test_pressed_tint_is_the_macs(button):
+    """A pressed borderless NSButton draws its symbol with the pressed tint and leaves the disc."""
+    from PySide6.QtGui import QColor
+
+    from lyssna.ui import theme
+    from lyssna.ui.widgets import pressed_tint
+
+    theme.set_scheme("light")
+    try:
+        assert pressed_tint(QColor(255, 255, 255)).red() == 215
+        assert pressed_tint(QColor(128, 128, 128)).red() == 98
+        assert pressed_tint(QColor(0, 0, 0)).red() == 0
+        theme.set_scheme("dark")
+        assert pressed_tint(QColor(0, 0, 0)).red() == 46
+        assert pressed_tint(QColor(128, 128, 128)).red() == 174
+        assert pressed_tint(QColor(244, 239, 230)) == QColor(255, 255, 255)
+    finally:
+        theme.set_scheme(None)
 
 
 def test_sits_above_the_selection_centred_on_the_cursor(button):

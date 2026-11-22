@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFontMetricsF, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QFontMetricsF, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QLabel, QWidget
 
 from .. import host
@@ -36,6 +37,25 @@ MIN_H = 320.0       # the smallest a window gets on a short screen (the Mac setu
 LIFT = 0.08         # how far above the middle a window opens, as a share of the screen's height
 SYMBOL_SMALLER = 2.0  # a symbol in front of a text button is this much smaller than the text (as on the Mac)
 TEXT_DISABLED_ALPHA = 0.30
+# An AppKit label's cell draws its text this far in from each side of its frame, so a label sized
+# to its text is the text's advance plus twice this, and a wrapping label breaks its lines this far
+# inside its width. Qt labels here keep the same inset, so frames, positions and every "does it
+# fit" decision come out as the Mac's (the rule is frame arithmetic, so it holds with any font).
+TEXT_INSET = 2.0
+
+
+def text_frame_width(advance: float) -> int:
+    """The width of a label frame around text `advance` wide: what AppKit's sizeToFit gives,
+    on whole pixels (AppKit keeps half points on a Retina screen, Qt whole pixels)."""
+    return math.ceil(round(advance + 2 * TEXT_INSET, 3))
+
+
+def ink_left(font, text: str) -> float:
+    """How far right of its frame a label's first glyph starts: the text inset plus the glyph's
+    side bearing (larger at bigger sizes). Used to line labels up by their ink, as the Mac does."""
+    if not text:
+        return TEXT_INSET
+    return TEXT_INSET + QFontMetricsF(font).tightBoundingRect(text[0]).left()
 
 
 # -- the two status colours --------------------------------------------------------------------
@@ -65,7 +85,8 @@ def css(color: QColor) -> str:
 class Label(QLabel):
     """A label in the brand colours. `color` is a colour or a colour function, taken again on
     restyle() (the window calls it when the scheme flips). With `line_height` the text is set
-    with that fixed line height, as the Mac's paragraph styles do. The plain text is `value()`."""
+    with that fixed line height, as the Mac's paragraph styles do. The plain text is `value()`.
+    Like an AppKit label it keeps its text TEXT_INSET in from each side of its frame."""
 
     def __init__(self, text: str = "", parent: QWidget | None = None, *, size: float = 13.0, weight: str = "regular",
                  color: Color = theme.content, wrap: bool = False, line_height: float | None = None, font=None):
@@ -74,6 +95,8 @@ class Label(QLabel):
         self.line_height = line_height
         self._plain = ""
         self.setFont(font or theme.ui_font(size, weight))
+        inset = round(TEXT_INSET)
+        self.setContentsMargins(inset, 0, inset, 0)
         self.setWordWrap(wrap)
         self.setTextFormat(Qt.TextFormat.RichText if line_height else Qt.TextFormat.PlainText)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
@@ -98,6 +121,13 @@ class Label(QLabel):
         pal = self.palette()
         pal.setColor(QPalette.ColorRole.WindowText, resolve(self.color) or theme.content())
         self.setPalette(pal)
+
+    def sizeHint(self) -> QSize:
+        """One plain line: the AppKit label frame, the advance plus the insets, one line tall.
+        Wrapping and fixed line height labels keep Qt's own measure (margins included)."""
+        if self.wordWrap() or self.line_height:
+            return super().sizeHint()
+        return QSize(text_frame_width(QFontMetricsF(self.font()).horizontalAdvance(self._plain)), QFontMetrics(self.font()).height())
 
     def fit(self, width: float | None = None) -> tuple[int, int]:
         """Size the label to its text (wrapped to `width` when it wraps); returns the size."""
@@ -143,7 +173,7 @@ class Header(QWidget):
         _, th = self.title.fit()
         row_h = max(mh, th)
         self.mark.move(0, round((row_h - mh) / 2))
-        self.title.move(round(mw + self.mark_gap), round((row_h - th) / 2))
+        self.title.move(round(mw + self.mark_gap - TEXT_INSET), round((row_h - th) / 2))  # its text mark_gap from the mark
         h = float(row_h)
         if self.subtitle.value():
             _, sh = self.subtitle.fit(width)
@@ -157,9 +187,13 @@ class TextButton(QAbstractButton):
     """A quiet text button, the twin of HistoryTextButton: dim, full colour under the cursor, no
     pill and no outline. With `link` it reads as a link inside a dim sentence instead: full
     colour at rest and underlined under the cursor. `symbol` puts an icon in front of the
-    title, in the title's colour (the heart on every support link)."""
+    title, in the title's colour (the heart on every support link).
 
-    GAP = 4.0  # symbol to title
+    Sized as AppKit sizes a borderless button: the title alone is a label frame (the advance
+    plus TEXT_INSET each side, the title centred in it); with a symbol it is PAD, the symbol's
+    image (two wider than the symbol), PAD, the title on whole pixels, and PAD again."""
+
+    PAD = 2.0  # the cell's padding around the symbol's image and after the title
 
     def __init__(self, title: str, parent: QWidget | None = None, *, size: float = 12.0, weight: str = "medium",
                  link: bool = False, symbol: str = "", clicked: Callable[[], None] | None = None):
@@ -181,10 +215,21 @@ class TextButton(QAbstractButton):
     def symbol_size(self) -> float:
         return self.text_size - SYMBOL_SMALLER
 
+    def image_width(self) -> float:
+        """The symbol's image: an SF Symbol's image is about two wider than its point size."""
+        return self.symbol_size() + 2.0
+
+    def title_x(self) -> float:
+        """Where the title's box starts: after the symbol's image, or at the left edge."""
+        return self.PAD + self.image_width() + self.PAD if self.symbol else 0.0
+
     def sizeHint(self) -> QSize:
-        fm = QFontMetricsF(self.font())
-        w = fm.horizontalAdvance(self.text()) + (self.symbol_size() + self.GAP if self.symbol else 0.0)
-        return QSize(round(w + 2), round(fm.height() + 4))
+        advance = QFontMetricsF(self.font()).horizontalAdvance(self.text())
+        if self.symbol:
+            w = self.title_x() + math.ceil(round(advance, 3)) + self.PAD
+        else:
+            w = text_frame_width(advance)
+        return QSize(round(w), QFontMetrics(self.font()).height())
 
     def color(self) -> QColor:
         if not self.isEnabled():
@@ -205,16 +250,17 @@ class TextButton(QAbstractButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         color = self.color()
-        x = 1.0
+        x = self.title_x()
         if self.symbol:
             s = self.symbol_size()
-            icons.draw_icon(p, self.symbol, icons.icon_rect(x + s / 2, self.height() / 2, s), color, self.weight)
-            x += s + self.GAP
+            icons.draw_icon(p, self.symbol, icons.icon_rect(self.PAD + self.image_width() / 2, self.height() / 2, s), color,
+                            self.weight)
         font = self.font()
         font.setUnderline(self.link and self.hovered)
         p.setFont(font)
         p.setPen(color)
-        p.drawText(QRectF(x, 0, self.width() - x, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
+        p.drawText(QRectF(x, 0, self.width() - x - (self.PAD if self.symbol else 0.0), self.height()),
+                   int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter), self.text())
         if self.hasFocus():
             p.setPen(theme.content(0.45))
             p.setBrush(Qt.BrushStyle.NoBrush)

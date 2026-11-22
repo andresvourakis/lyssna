@@ -2,6 +2,7 @@
 hop, the floating panel's flags, geometry and drag rules, the icons, the bars, the meter and the
 preview screenshots. Runs on the offscreen platform, so it needs no display."""
 
+import math
 import sys
 import threading
 import time
@@ -416,6 +417,41 @@ def test_without_draggable_buttons_handle_their_own_clicks(qapp):
 # -- icons -------------------------------------------------------------------------------------
 
 
+def test_labels_are_framed_as_appkit_labels(qapp):
+    """A label sized to its text is the advance plus 2 each side, with its text drawn 2 in; a
+    wrapping label breaks its lines 2 inside each side of its width."""
+    from PySide6.QtGui import QFontMetricsF
+
+    from lyssna.ui import theme
+    from lyssna.ui.window import TEXT_INSET, Label, text_frame_width
+
+    label = Label("Select text in any app and press", size=13)
+    advance = QFontMetricsF(label.font()).horizontalAdvance(label.value())
+    assert label.fit()[0] == text_frame_width(advance) == math.ceil(advance + 4)
+    assert label.contentsRect().left() == TEXT_INSET
+    words = "Lyssna reads text aloud and types"
+    wrap = Label(words, size=13, wrap=True)
+    one_line = QFontMetricsF(theme.ui_font(13)).horizontalAdvance(words)
+    _, h1 = wrap.fit(one_line + 4.5)
+    _, h2 = wrap.fit(one_line + 3)
+    assert h2 > h1  # less than the insets' room: the last word wraps, as AppKit's does
+
+
+def test_text_buttons_are_framed_as_borderless_appkit_buttons(qapp):
+    from PySide6.QtGui import QFontMetrics, QFontMetricsF
+
+    from lyssna.ui.window import TextButton, text_frame_width
+
+    plain = TextButton("Clear History…", size=12, weight="regular")
+    advance = QFontMetricsF(plain.font()).horizontalAdvance(plain.text())
+    assert plain.sizeHint().width() == text_frame_width(advance)
+    assert plain.sizeHint().height() == QFontMetrics(plain.font()).height()
+    heart = TextButton("Support it", size=12, link=True, symbol="heart.fill")
+    advance = QFontMetricsF(heart.font()).horizontalAdvance(heart.text())
+    assert heart.title_x() == 2 + 12 + 2  # the 10 pt symbol's image is 12 wide
+    assert heart.sizeHint().width() == 16 + math.ceil(advance) + 2
+
+
 def test_every_icon_has_a_path(qapp):
     from lyssna.ui import icons
 
@@ -425,7 +461,9 @@ def test_every_icon_has_a_path(qapp):
             path = icons.icon_path(name, weight)
             assert not path.isEmpty(), (name, weight)
             b = path.boundingRect()
-            assert -0.05 <= b.left() and b.right() <= 1.05 and -0.05 <= b.top() and b.bottom() <= 1.05, (name, b)
+            # The unit box is the point size; like SF Symbols, a few glyphs overhang it (the
+            # pages, the mic, the clock's arrow), never by more than an eighth.
+            assert -0.125 <= b.left() and b.right() <= 1.125 and -0.125 <= b.top() and b.bottom() <= 1.125, (name, b)
     assert icons.icon_path("no.such.symbol").isEmpty()
     pm = icons.icon_pixmap("play.fill", 13, QColor("black"), dpr=2.0)
     assert pm.width() == 26
@@ -446,6 +484,51 @@ def test_progress_bar_fill_is_never_shorter_than_its_height(qapp):
     assert bar.fill_width() == 100
     bar.set_fraction(3.0)
     assert bar.fraction == 1.0 and bar.fill_width() == 200
+
+
+def test_pill_button_is_as_wide_as_the_macs(qapp):
+    """NSButton.sizeToFit: title advance plus 2 pt each side, rounded up; then PILL_PAD each side."""
+    from PySide6.QtGui import QFontMetricsF
+
+    from lyssna.ui.layout.setup import PILL_PAD
+    from lyssna.ui.widgets import PillButton
+
+    for title, primary in (("Download", False), ("Done", True), ("Open Settings…", False)):
+        b = PillButton(title, primary=primary)
+        advance = QFontMetricsF(b.font()).horizontalAdvance(title)
+        assert b.width() == math.ceil(advance + 4.0 - 1e-6) + 2 * PILL_PAD
+
+
+def test_playback_glides_the_fill_and_a_drag_jumps(qapp):
+    """The Mac's fill and knob are layers with implicit 0.25 s actions: playback glides them.
+    The brief keeps a drag direct."""
+    from lyssna.ui.widgets import GLIDE_SECS, ScrubBar
+
+    s = ScrubBar()
+    s.resize(200, 22)
+    s.show()
+    s.repaint()
+    QApplication.processEvents()
+
+    def settle() -> None:
+        deadline = time.monotonic() + GLIDE_SECS + 1.0
+        while (s.bar._fill.gliding() or s._knob_alpha.gliding()) and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.01)
+
+    s.set_hover(False)
+    settle()
+    s.set_fraction(0.5)
+    assert s.bar._fill.gliding() and s.bar.fill_width() < 100
+    settle()
+    assert not s.bar._fill.gliding() and s.bar.fill_width() == 100
+    s.set_hover(True)  # the knob fades in and the fill's height follows the thicker track
+    assert s.knob.isVisible() and s._knob_alpha.gliding() and s.bar._fill.gliding()
+    origin = s.mapToGlobal(QPointF(0, 11))
+    mouse(s, QEvent.Type.MouseButtonPress, origin.x() + 150, origin.y())
+    assert not s.bar._fill.gliding() and s.bar.fill_width() == 150 and not s._knob_pos.gliding()
+    mouse(s, QEvent.Type.MouseButtonRelease, origin.x() + 150, origin.y(), Qt.MouseButton.NoButton)
+    s.hide()
 
 
 def test_scrub_bar_scrubs_then_seeks(qapp):
@@ -490,6 +573,10 @@ def test_wave_ticks_and_runs(qapp):
     w.tick(10.0)
     assert 0.45 <= w.opacity <= 1.0
     assert breathe(0.0) == pytest.approx(0.45) and breathe(0.7) == pytest.approx(1.0)
+    # A quarter of the way in, on the Mac's ease-in-out bezier (0.42, 0, 0.58, 1) and not on a
+    # cosine (which would give 0.53); the way back mirrors it.
+    assert breathe(0.175) == pytest.approx(0.521, abs=0.001)
+    assert breathe(0.875) == pytest.approx(1.0 - (0.521 - 0.45), abs=0.001)
 
 
 # -- preview -----------------------------------------------------------------------------------

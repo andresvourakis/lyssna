@@ -13,7 +13,6 @@ maths are layout/wave.py's; its points are y-up like the Mac's, flipped here int
 
 from __future__ import annotations
 
-import math
 import time
 from collections.abc import Callable
 
@@ -37,14 +36,14 @@ from .layout.wave import (
     target_amplitude,
     wave_points,
 )
+from .sliver import drift
 
 
 def breathe(t: float) -> float:
     """The working meter's opacity `t` seconds into its breath: BREATHE_LOW to 1.0 and back over
-    BREATHE_SECS, eased in and out (the Mac's autoreversing ease-in-out loop)."""
-    u = (t % BREATHE_SECS) / BREATHE_SECS
-    tri = 1.0 - abs(2.0 * u - 1.0)  # 0 -> 1 -> 0
-    return BREATHE_LOW + (1.0 - BREATHE_LOW) * (1.0 - math.cos(math.pi * tri)) / 2
+    BREATHE_SECS. The Mac's loop: BREATHE_SECS / 2 each way, autoreversed, on Core Animation's
+    ease-in-out curve (0.42, 0, 0.58, 1)."""
+    return BREATHE_LOW + (1.0 - BREATHE_LOW) * drift(t, BREATHE_SECS / 2)
 
 
 class WaveView(QWidget):

@@ -34,7 +34,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTime, QTimer, QVariantAnimation
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QCursor, QFontMetricsF, QGuiApplication, QPainter, QPalette, QPen, QTextLayout, QTextOption
 from PySide6.QtWidgets import QFrame, QLineEdit, QMenu, QMessageBox, QScrollArea, QTextEdit, QWidget
 
@@ -135,7 +135,7 @@ from .layout.history import (
 )
 from .mark import draw_mark
 from .widgets import IconButton, PillButton, rounded
-from .window import Hairline, Header, Label, LyssnaWindow, TextButton, css
+from .window import Hairline, Header, Label, LyssnaWindow, TextButton, css, ink_left
 
 log = logging.getLogger("lyssna.ui.history")
 
@@ -156,19 +156,9 @@ def later(delay: float, fn: Callable[[], None], context: QWidget) -> None:
 
 
 def time_label(when: datetime) -> str:
-    """The time of day in the user's own 12 or 24 hour style (the system's short time format)."""
-    from PySide6.QtCore import QLocale
-
-    local = when.astimezone()
-    return QLocale.system().toString(QTime(local.hour, local.minute), QLocale.FormatType.ShortFormat)
-
-
-def ink_left(font, text: str) -> float:
-    """How far right of where it is drawn a text's first glyph starts (its side bearing, larger
-    at bigger sizes). Used to line labels up by their ink, as the Mac window does."""
-    if not text:
-        return 0.0
-    return QFontMetricsF(font).tightBoundingRect(text[0]).left()
+    """The time of day in the user's own 12 or 24 hour style, from the system's own formatter
+    (host.appearance.short_time): on a Mac, Qt's system locale misses the region's 24-hour clock."""
+    return host.appearance.short_time(when)
 
 
 # -- painted text ---------------------------------------------------------------------------------
@@ -1087,7 +1077,7 @@ class HistoryWindow(LyssnaWindow):
             self.support_label.move(round(sx), round(y))
             self.support_button.resize(self.support_button.sizeHint())
             bh = self.support_button.height()
-            self.support_button.move(round(sx + lw + SUPPORT_GAP + 2), round(y + (lh - bh) / 2))
+            self.support_button.move(round(sx + lw + SUPPORT_GAP), round(y + (lh - bh) / 2))
             y += lh
         y += STATS_TO_TABS
 
@@ -1115,7 +1105,7 @@ class HistoryWindow(LyssnaWindow):
         self.add_note_label.setVisible(show_note)
         if show_note:
             _, nh = self.add_note_label.fit()
-            self.add_note_label.move(round(x0 + FIELD_PAD), round(y + NOTE_GAP))
+            self.add_note_label.move(round(x0 + FIELD_PAD - LABEL_INSET), round(y + NOTE_GAP))  # its text on the field's
             y += NOTE_GAP + nh
         y += FIELD_TO_LIST
 
@@ -1125,10 +1115,11 @@ class HistoryWindow(LyssnaWindow):
         self.scroll.setGeometry(0, round(y + 1), round(cw), round(max(0.0, footer_top - y - 1)))
 
         _, rh = self.retention.fit()
-        self.retention.move(round(x0), round(footer_top + (FOOTER_H - rh) / 2))
+        self.retention.move(round(x0 - LABEL_INSET), round(footer_top + (FOOTER_H - rh) / 2))  # its text on the column
         self.clear_button.resize(self.clear_button.sizeHint())
         cbw, cbh = self.clear_button.width(), self.clear_button.height()
-        self.clear_button.move(round(x0 + inner - cbw + 1), round(footer_top + (FOOTER_H - cbh) / 2))  # its ink ends on the column
+        # Its frame reaches past the column, so its centred title ends about on it, as on the Mac.
+        self.clear_button.move(round(x0 + inner - cbw + LABEL_INSET * 2), round(footer_top + (FOOTER_H - cbh) / 2))
         self.clear_button.setVisible(dictations)
 
         self._layout_list()

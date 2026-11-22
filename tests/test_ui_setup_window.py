@@ -376,6 +376,38 @@ def test_the_dropdown_lists_only_engines_that_need_a_key(window):
     assert "kokoro" not in window.engines and all(REGISTRY[n].needs_key for n in window.engines)
 
 
+def test_the_dropdown_is_framed_as_the_macs_pop_up_button(make):
+    """The Mac's NSPopUpButton: 25 tall, the widest item's whole advance plus 67, its bezel 3 in
+    from the left, so Get a key lands where the Mac puts it."""
+    import math
+
+    from PySide6.QtGui import QFontMetricsF
+
+    from lyssna.ui.layout.setup import SUB_X
+    from lyssna.ui.setup_window import Dropdown
+
+    w = make(engine="openai")
+    fm = QFontMetricsF(w.popup.font())
+    widest = max(fm.horizontalAdvance(w.popup.itemText(i)) for i in range(w.popup.count()))
+    assert w.popup.height() == Dropdown.H == 25
+    assert w.popup.width() == math.ceil(round(widest, 3)) + Dropdown.EXTRA
+    assert w.popup.x() == round(SUB_X - Dropdown.BEZEL_L)
+    assert w.get_key.x() == round(SUB_X + w.popup.width() + 10)
+
+
+def test_radios_are_framed_as_the_macs(window):
+    """The Mac's radio: its image, a gap of 2, the title as a label frame, 16 tall."""
+    from PySide6.QtGui import QFontMetricsF
+
+    from lyssna.ui.layout.setup import INDENT, RADIO
+    from lyssna.ui.window import text_frame_width
+
+    for radio in (window.radio_local, window.radio_key, window.dict_local, window.dict_online):
+        advance = QFontMetricsF(radio.font()).horizontalAdvance(radio.text())
+        assert radio.sizeHint().height() == RADIO
+        assert radio.sizeHint().width() == INDENT + 2 + text_frame_width(advance)
+
+
 def test_show_with_an_engine_preselects_it(make):
     w = make(engine="openai")
     assert w.radio_key.isChecked() and w._engine() == "openai"
@@ -538,6 +570,22 @@ def test_globe_key_line(mac, monkeypatch):
     refresh(mac)
     assert not shown(mac.globe_settings) and shown(mac.globe_row)
     assert mac.globe_row.label.value() == "Globe key set to Do Nothing" and mac.dicon1.done
+
+
+def test_a_check_and_its_pill_share_the_line_only_when_both_fit(mac):
+    """The Mac's arithmetic: the status row (20 and its label's frame), 12, the pill; all within
+    TEXT_W. Labels are as wide as the Mac's (the advance plus the insets), so the long Globe key
+    line puts Open Keyboard Settings under the words, as on the Mac."""
+    from lyssna.ui.layout.setup import TEXT_W, TEXT_X
+
+    mac._globe = "emoji"
+    refresh(mac)
+    row, pill = mac.globe_row, mac.globe_settings
+    fits = row.width() + 12 + pill.width() <= TEXT_W
+    if fits:
+        assert pill.x() == round(TEXT_X + TEXT_W - pill.width())
+    else:
+        assert pill.x() == round(TEXT_X + 20) and pill.y() > row.y()
 
 
 def test_the_globe_setting_is_read_on_a_worker_at_most_every_two_seconds(mac, machine):

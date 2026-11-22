@@ -138,6 +138,14 @@ def test_time_label_is_hours_and_minutes(qapp):
     assert len(text) <= 9  # "4:00 PM" or "16:00", never with seconds
 
 
+def test_time_label_comes_from_the_systems_formatter(monkeypatch):
+    """Qt's system locale misses a Mac's 24-hour region setting, so times go through the twin."""
+    from lyssna import host
+
+    monkeypatch.setattr(host.appearance, "short_time", lambda when: f"<{when.minute}>")
+    assert HW.time_label(NOW) == f"<{NOW.minute}>"
+
+
 def test_content_column_stays_centred_on_wide_windows():
     assert HW.column(560) == (layout.MARGIN, 560 - 2 * layout.MARGIN)
     assert HW.column(900) == ((900 - layout.COLUMN_MAX) / 2, layout.COLUMN_MAX)

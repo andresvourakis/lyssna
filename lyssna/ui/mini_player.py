@@ -40,13 +40,14 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import threading
 import time
 import weakref
 from collections.abc import Callable
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QPainter, QPainterPath, QPixmap, QTransform
+from PySide6.QtGui import QPainter, QPainterPath, QPixmap, QRegion, QTransform
 from PySide6.QtWidgets import QMenu, QWidget
 
 from .. import host
@@ -127,7 +128,6 @@ log = logging.getLogger("lyssna.ui.player")
 
 CHEVRONS = {"left": "chevron.right", "right": "chevron.left", "bottom": "chevron.up"}
 ARROWS = {"left": "left", "right": "right", "bottom": "down"}  # arrow.<x>.to.line.compact
-MENU_POP = 0.5  # a menu shorter than the sliver grows from half its size instead
 MENU_ITEMS = (("dictate", MENU_MIC_H, MENU_MIC_W), ("read", MENU_DISC, MENU_DISC), ("history", MENU_DISC, MENU_DISC))
 
 
@@ -346,9 +346,21 @@ class ScaleHost(QWidget):
             self.child.show()
         else:
             if self._picture is None:
-                self._picture = self.child.grab()
+                self._picture = self._grab()
             self.child.hide()
         self.update()
+
+    def _grab(self) -> QPixmap:
+        """A picture of the form on a transparent background. QWidget.grab() would paint the
+        window's background colour behind it (it renders the form as a root), which showed as
+        a light rectangle around the pill while it grew; the Mac scales only the form's layer."""
+        dpr = max(1.0, self.devicePixelRatioF())
+        w, h = self.child.width(), self.child.height()
+        pm = QPixmap(max(1, math.ceil(w * dpr)), max(1, math.ceil(h * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        self.child.render(pm, QPoint(0, 0), QRegion(), QWidget.RenderFlag.DrawChildren)
+        return pm
 
     def paintEvent(self, ev) -> None:
         if self._picture is None:
@@ -719,7 +731,8 @@ class MiniPlayer(FloatingPanel):
             btn.hide()
             return btn, disc
 
-        self.cancel_btn, self.cancel_disc = button(CANCEL_D, theme.fill_soft, None, "xmark", 9.0, theme.content_dim,
+        # The Mac passes no glow for cancel, and its HoverView then uses the clear glow.
+        self.cancel_btn, self.cancel_disc = button(CANCEL_D, theme.fill_soft, theme.clear_glow, "xmark", 9.0, theme.content_dim,
                                                    self._dictate_cancel, "Cancel", lambda: "esc")
         self.finish_btn, self.finish_disc = button(FINISH_D, theme.content, theme.white_glow, "checkmark", 11.0,
                                                    theme.surface, self._dictate_finish, "Finish", lambda: self.key_name)
@@ -919,8 +932,8 @@ class MiniPlayer(FloatingPanel):
 
     def _mouse_inside(self, margin: float = 6.0) -> bool:
         """Is the cursor on the open form, or on the resting spot it grew from? The resting spot
-        counts too, so a cursor pushed against the screen edge (or on the ends of the squiggle,
-        past a one-item menu) keeps it open instead of closing and reopening it."""
+        counts too, so a cursor pushed against the screen edge keeps it open instead of closing
+        and reopening it."""
         px, py = self._cursor()
         x, y, w, h = self.frame_mac()
         if x - margin <= px <= x + w + margin and y - margin <= py <= y + h + margin:
@@ -1031,9 +1044,8 @@ class MiniPlayer(FloatingPanel):
                         done=lambda: self._show_sliver(show=self._status is not None))
 
     def _menu_start(self) -> float:
-        """The scale the menu grows from: the sliver's length, or half size for a menu shorter
-        than the sliver (a lone disc)."""
-        return SLIVER_H / self._menu_len if self._menu_len > SLIVER_H else MENU_POP
+        """The scale the menu grows from: the sliver's length (the Mac's SLIVER_H / MENU_H)."""
+        return SLIVER_H / self._menu_len
 
     def _open_menu(self) -> None:
         """The resting squiggle grows into the idle menu, exactly as the docked reading sliver grows

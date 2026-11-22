@@ -47,7 +47,9 @@ class SelectionButton(FloatingPanel):
         self.no_border = True
 
     def build(self, content: QWidget) -> None:
-        self.button = IconButton("play.fill", content, diameter=self.width, fill=theme.content, glow=theme.white_glow,
+        # The Mac's button is a bare symbol button on the panel's disc: no hover light, and
+        # pressed only its icon takes the pressed tint (IconButton does exactly that).
+        self.button = IconButton("play.fill", content, diameter=self.width, fill=theme.content, glow=None,
                                  icon_size=ICON, icon_color=theme.surface, clicked=self._play)
         self.button.move(0, 0)
 

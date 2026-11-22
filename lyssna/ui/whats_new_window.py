@@ -25,6 +25,7 @@ from .layout.whats_new import (
     FOOTER_H,
     FOOTER_SIZE,
     HEAD_TO_NOTES,
+    LABEL_INSET,
     MARGIN,
     MARK_GAP,
     MARK_H,
@@ -37,7 +38,7 @@ from .layout.whats_new import (
     TOP,
     W,
 )
-from .window import Hairline, Header, Label, LyssnaWindow, TextButton
+from .window import Hairline, Header, Label, LyssnaWindow, TextButton, ink_left
 
 CHANGES_URL = f"{REPO_URL}/blob/main/CHANGELOG.md"
 
@@ -74,10 +75,10 @@ class WhatsNewWindow(LyssnaWindow):
                 y += NOTE_GAP
             bullet = Label("•", self, size=NOTE_SIZE, color=theme.content_dim, line_height=NOTE_LINE_H)
             bullet.fit()
-            bullet.move(round(MARGIN), round(y))
+            bullet.move(round(MARGIN - ink_left(bullet.font(), "•")), round(y))  # its ink on the margin
             label = Label(text, self, size=NOTE_SIZE, wrap=True, line_height=NOTE_LINE_H)
             _, h = label.fit(inner - BULLET_W)
-            label.move(round(MARGIN + BULLET_W), round(y))
+            label.move(round(MARGIN + BULLET_W - LABEL_INSET), round(y))  # its text on the bullet's column
             self.note_labels.append(label)
             y += h
         y += NOTES_TO_FOOTER
@@ -88,17 +89,19 @@ class WhatsNewWindow(LyssnaWindow):
 
         self.support_label = Label(support.WHATS_NEW_LINE, self, size=FOOTER_SIZE, color=theme.content_dim)
         lw, lh = self.support_label.fit()
-        self.support_label.move(round(MARGIN), round(footer_top + (FOOTER_H - lh) / 2))
+        left = MARGIN - ink_left(self.support_label.font(), self.support_label.value())  # its ink on the margin
+        self.support_label.move(round(left), round(footer_top + (FOOTER_H - lh) / 2))
         self.support_button = TextButton(support.MENU_TITLE, self, size=FOOTER_SIZE, link=True, symbol=support.SYMBOL,
                                          clicked=self.open_support)
         bh = self.support_button.height()
-        self.support_button.move(round(MARGIN + lw + SUPPORT_GAP + 2), round(footer_top + (FOOTER_H - bh) / 2))
+        self.support_button.move(round(left + lw + SUPPORT_GAP), round(footer_top + (FOOTER_H - bh) / 2))
         for view in (self.support_label, self.support_button):
             view.setVisible(support.enabled())
 
         self.changes_button = TextButton(CHANGES_TITLE, self, size=FOOTER_SIZE, weight="regular", clicked=self.open_changes)
         cw, ch = self.changes_button.width(), self.changes_button.height()
-        self.changes_button.move(round(W - MARGIN - cw), round(footer_top + (FOOTER_H - ch) / 2))
+        # Its frame reaches past the margin, so its centred title ends about on it, as on the Mac.
+        self.changes_button.move(round(W - MARGIN - cw + LABEL_INSET * 2), round(footer_top + (FOOTER_H - ch) / 2))
 
         self.setFixedSize(round(W), round(footer_top + FOOTER_H))
 

@@ -39,6 +39,7 @@ light and dark mode."""
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -69,6 +70,8 @@ from .layout.setup import (
     LISTEN,
     MARGIN,
     MARK_H,
+    PILL_H,
+    PILL_PAD,
     POLL,
     RADIO,
     SAMPLE,
@@ -88,7 +91,7 @@ from .layout.setup import (
 from .mainthread import on_main
 from .mark import MarkView
 from .widgets import BAR_H, PillButton, ProgressBar, rounded
-from .window import Hairline, Label, LyssnaWindow, bad, css, good
+from .window import TEXT_INSET, Hairline, Label, LyssnaWindow, bad, css, good, text_frame_width
 
 log = logging.getLogger("lyssna.ui.setup")
 
@@ -132,8 +135,12 @@ def dictation_caps(hotkey: str, table: ModuleType | None = None) -> list[str]:
 
 class Radio(QRadioButton):
     """A radio in the brand colours: content with a surface dot when chosen, a soft ring when
-    not, the title INDENT in so it lines up with the card's text below. A real QRadioButton
-    for the keyboard and accessibility."""
+    not. A real QRadioButton for the keyboard and accessibility. Sized as AppKit sizes the
+    Mac's radio: its INDENT wide image, TITLE_GAP, then the title as a label frame (the advance
+    plus TEXT_INSET each side), RADIO tall. The title is drawn at the start of its box, where
+    the Mac's button cell draws it."""
+
+    TITLE_GAP = 2.0  # the image to the title's box
 
     def __init__(self, title: str, parent: QWidget):
         super().__init__(title, parent)
@@ -143,8 +150,8 @@ class Radio(QRadioButton):
         self.resize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
-        fm = QFontMetricsF(self.font())
-        return QSize(round(INDENT + fm.horizontalAdvance(self.text()) + 2), round(max(RADIO, fm.height()) + 2))
+        advance = QFontMetricsF(self.font()).horizontalAdvance(self.text())
+        return QSize(round(INDENT + self.TITLE_GAP) + text_frame_width(advance), round(RADIO))
 
     def hitButton(self, pos) -> bool:
         return self.rect().contains(pos)
@@ -172,7 +179,8 @@ class Radio(QRadioButton):
             p.drawEllipse(circle.adjusted(-2, -2, 2, 2))
         p.setPen(theme.content())
         p.setFont(self.font())
-        p.drawText(QRectF(INDENT, 0, self.width() - INDENT, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
+        x = INDENT + self.TITLE_GAP
+        p.drawText(QRectF(x, 0, self.width() - x, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
         p.end()
 
 
@@ -272,9 +280,11 @@ class OptionCard(QWidget):
 
 class Tag(QWidget):
     """A card's small dim privacy tag: an icon and a few words, e.g. a lock and "Free and
-    private". Squeezed narrower than its words, the words end in an ellipsis."""
+    private". Squeezed narrower than its words, the words end in an ellipsis. The words are a
+    label frame TEXT_X in (the advance plus TEXT_INSET each side), as on the Mac."""
 
     H = 16
+    TEXT_X = 16  # the icon's box and its gap
 
     def __init__(self, text: str, symbol: str, parent: QWidget):
         super().__init__(parent)
@@ -284,7 +294,7 @@ class Tag(QWidget):
         self.set(text, symbol)
 
     def natural_width(self) -> int:
-        return round(16 + QFontMetricsF(theme.ui_font(11)).horizontalAdvance(self.text) + 1)
+        return self.TEXT_X + text_frame_width(QFontMetricsF(theme.ui_font(11)).horizontalAdvance(self.text))
 
     def set(self, text: str, symbol: str) -> None:
         self.text, self.symbol = text, symbol
@@ -299,9 +309,10 @@ class Tag(QWidget):
         font = theme.ui_font(11)
         p.setFont(font)
         p.setPen(color)
-        room = max(0, self.width() - 16)
+        x = self.TEXT_X + TEXT_INSET
+        room = max(0.0, self.width() - x - TEXT_INSET)
         words = QFontMetricsF(font).elidedText(self.text, Qt.TextElideMode.ElideRight, room)
-        p.drawText(QRectF(16, 0, room, self.H), int(Qt.AlignmentFlag.AlignVCenter), words)
+        p.drawText(QRectF(x, 0, room + TEXT_INSET, self.H), int(Qt.AlignmentFlag.AlignVCenter), words)
         p.end()
 
 
@@ -407,8 +418,9 @@ class KeyCaps(QWidget):
         self.set_labels(labels)
 
     def _cap_widths(self) -> list[float]:
+        """Each cap: its label's frame (the advance plus the insets, as on the Mac) and 12, or MIN_W."""
         fm = QFontMetricsF(theme.ui_font(13, "medium"))
-        return [max(float(self.MIN_W), round(fm.horizontalAdvance(t)) + 12.0) for t in self.labels]
+        return [max(float(self.MIN_W), text_frame_width(fm.horizontalAdvance(t)) + 12.0) for t in self.labels]
 
     def set_labels(self, labels: list[str]) -> None:
         self.labels = list(labels)
@@ -435,17 +447,21 @@ class KeyCaps(QWidget):
 
 
 class IconPillButton(PillButton):
-    """A secondary pill with a small icon after its title: "Get a key" and its arrow."""
+    """A secondary pill with a small icon after its title: "Get a key" and its arrow. Sized as
+    the Mac's: PILL_PAD, the title as a label frame (the advance plus TEXT_INSET each side), the
+    icon's IMAGE_W wide image, PILL_PAD. The icon starts where the title's frame ends."""
 
-    ICON_SIZE, ICON_GAP = 10.0, 4.0
+    ICON_SIZE, IMAGE_W = 10.0, 12.0
 
     def __init__(self, title: str, icon: str, parent: QWidget, *, clicked: Callable[[], None] | None = None):
         self.icon_name = icon
         super().__init__(title, parent, clicked=clicked, focusable=True)
 
+    def title_width(self) -> int:
+        return text_frame_width(QFontMetricsF(self.font()).horizontalAdvance(self.text()))
+
     def sizeHint(self) -> QSize:
-        base = super().sizeHint()
-        return QSize(base.width() + round(self.ICON_SIZE + self.ICON_GAP), base.height())
+        return QSize(round(2 * PILL_PAD + self.IMAGE_W) + self.title_width(), round(PILL_H))
 
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
@@ -463,22 +479,32 @@ class IconPillButton(PillButton):
             ring = QRectF(self.rect()).adjusted(1, 1, -1, -1)
             p.setPen(QPen(theme.content(0.45), 2.0))
             p.drawPath(rounded(ring, ring.height() / 2))
-        fm = QFontMetricsF(self.font())
-        tw = fm.horizontalAdvance(self.text())
-        x = (self.width() - tw - self.ICON_GAP - self.ICON_SIZE) / 2
+        x = (self.width() - self.title_width() - self.IMAGE_W) / 2  # PILL_PAD at the natural width
+        tw = self.title_width()
         p.setPen(theme.content())
         p.setFont(self.font())
-        p.drawText(QRectF(x, 0, tw + 2, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
-        icons.draw_icon(p, self.icon_name, icons.icon_rect(x + tw + self.ICON_GAP + self.ICON_SIZE / 2, self.height() / 2,
-                                                             self.ICON_SIZE), theme.content(), "semibold")
+        p.drawText(QRectF(x + TEXT_INSET, 0, tw, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
+        icons.draw_icon(p, self.icon_name, icons.icon_rect(x + tw + self.ICON_SIZE / 2, self.height() / 2, self.ICON_SIZE),
+                        theme.content(), "semibold")
         p.end()
 
 
 class Dropdown(QComboBox):
-    """The engine picker: a soft rounded box with the choice and a chevron, the twin of the
-    Mac's pop-up button. Its list is styled to match (restyle() after a scheme change)."""
+    """The engine picker, drawn as the Mac's pop-up button (NSPopUpButton, regular size): a
+    filled rounded bezel with a fine shadow, the choice in the system's text colour and the
+    up and down chevrons at the right. Its frame is the Mac's too, bezel insets included:
+    25 tall, as wide as the widest item plus EXTRA, with the bezel BEZEL_L in from the left,
+    BEZEL_T from the top and 20 tall. Measured on the legacy window's picture. Its list is
+    styled to match the window (restyle() after a scheme change)."""
 
-    PAD, CHEVRON = 10.0, 9.0
+    H = 25
+    EXTRA = 67           # the frame beyond the widest item's advance (whole points), as AppKit's sizeToFit
+    BEZEL_L, BEZEL_R, BEZEL_T, BEZEL_H = 3.0, 4.0, 1.0, 20.0
+    RADIUS = 5.0
+    TITLE_X, TITLE_Y = 11.0, 2.0     # the title's box in the frame; the text sits at its top
+    ARROWS_FROM_RIGHT = 13.75        # the chevrons' centre, from the frame's right edge
+    ARROW_HALF_W, ARROW_NEAR, ARROW_FAR = 3.0, 2.0, 4.5  # each chevron: half width, and its ends from the bezel's middle
+    ARROW_PEN = 1.5
 
     def __init__(self, items: list[str], parent: QWidget):
         super().__init__(parent)
@@ -491,7 +517,7 @@ class Dropdown(QComboBox):
     def sizeHint(self) -> QSize:
         fm = QFontMetricsF(self.font())
         widest = max((fm.horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=60.0)
-        return QSize(round(widest + 3 * self.PAD + self.CHEVRON), round(FIELD_H))
+        return QSize(math.ceil(round(widest, 3)) + self.EXTRA, self.H)
 
     def restyle(self) -> None:
         view = self.view()
@@ -501,22 +527,50 @@ class Dropdown(QComboBox):
             f" selection-background-color: {css(theme.content(0.10))}; selection-color: {css(theme.content())}; }}")
         view.setFont(self.font())
 
+    @staticmethod
+    def _system(alpha: float) -> QColor:
+        """The system's label colour: black in light mode, white in dark, at `alpha`."""
+        c = QColor(255, 255, 255) if theme.is_dark() else QColor(0, 0, 0)
+        c.setAlphaF(alpha)
+        return c
+
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if not self.isEnabled():
             p.setOpacity(0.45)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        path = rounded(r, FIELD_RADIUS)
-        p.fillPath(path, theme.fill_soft())
-        p.setPen(QPen(theme.content(0.45) if self.hasFocus() else theme.hairline(), 1.0))
-        p.drawPath(path)
-        p.setPen(theme.content())
-        p.setFont(self.font())
-        p.drawText(QRectF(self.PAD, 0, self.width() - 2 * self.PAD - self.CHEVRON, self.height()),
-                   int(Qt.AlignmentFlag.AlignVCenter), self.currentText())
-        cx = self.width() - self.PAD - self.CHEVRON / 2
-        icons.draw_icon(p, "chevron.down", icons.icon_rect(cx, self.height() / 2, self.CHEVRON), theme.content_dim(), "bold")
+        bezel = QRectF(self.BEZEL_L, self.BEZEL_T, self.width() - self.BEZEL_L - self.BEZEL_R, self.BEZEL_H)
+        r = self.RADIUS
+        # The fine shadow: a faint ring all round and a little more under the bottom edge.
+        for rect, alpha in ((bezel.adjusted(-0.5, -0.5, 0.5, 0.5), 0.10), (bezel.translated(0, 1.0), 0.08),
+                            (bezel.translated(0, 1.5), 0.04)):
+            p.fillPath(rounded(rect, r + 0.5), QColor(0, 0, 0, round(alpha * 255)))
+        shape = rounded(bezel, r)
+        if theme.is_dark():
+            p.fillPath(shape, self._system(0.25))
+            # A light top edge, half a point thick, following the corners.
+            p.fillPath(shape.subtracted(rounded(bezel.translated(0, 0.5), r)), self._system(0.20))
+        else:
+            p.fillPath(shape, QColor(255, 255, 255))
+        if self.hasFocus():
+            p.setPen(QPen(theme.content(0.45), 2.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(rounded(bezel.adjusted(-1, -1, 1, 1), r + 1))
+        font = self.font()
+        p.setFont(font)
+        p.setPen(self._system(0.98))
+        right = self.width() - self.ARROWS_FROM_RIGHT - self.ARROW_HALF_W - 4
+        text = QFontMetricsF(font).elidedText(self.currentText(), Qt.TextElideMode.ElideRight, right - self.TITLE_X)
+        p.drawText(QPointF(self.TITLE_X, self.TITLE_Y + QFontMetricsF(font).ascent()), text)
+        pen = QPen(self._system(0.85), self.ARROW_PEN)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        cx, cy, hw = self.width() - self.ARROWS_FROM_RIGHT, bezel.center().y(), self.ARROW_HALF_W
+        for sign in (-1, 1):  # up, then down
+            near, far = cy + sign * self.ARROW_NEAR, cy + sign * self.ARROW_FAR
+            p.drawPolyline([QPointF(cx - hw, near), QPointF(cx, far), QPointF(cx + hw, near)])
         p.end()
 
 
@@ -1324,7 +1378,8 @@ class SetupWindow(LyssnaWindow):
             y += put(self.key_note, SUB_X, y, SUB_W)
             if show["key_body"]:
                 y += 10
-                y += centre_row([(self.popup, SUB_X), (self.get_key, SUB_X + self.popup.width() + 10)], y) + 8
+                # The bezel's left edge on SUB_X, as on the Mac; Get a key after the whole frame.
+                y += centre_row([(self.popup, SUB_X - Dropdown.BEZEL_L), (self.get_key, SUB_X + self.popup.width() + 10)], y) + 8
                 save_w = self.save.width()
                 self.key_field.setFixedWidth(round(SUB_W - save_w - 8))  # the Save pill's edge ends the row
                 y += centre_row([(self.key_field, SUB_X), (self.save, CARD_R - save_w)], y)

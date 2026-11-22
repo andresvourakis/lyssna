@@ -1,4 +1,5 @@
-"""Windows's fonts and its animation setting, for the Qt interface (lyssna/ui/theme.py).
+"""Windows's fonts, its animation setting and its time format, for the Qt interface (lyssna/ui/theme.py,
+the history's times).
 
 Why these fonts: the Mac uses Apple's San Francisco and New York, which may not be used on
 Windows, so the app bundles the closest free matches (both SIL Open Font License, shipped as
@@ -24,13 +25,14 @@ comments give what remains: the mean and the worst difference over that wording,
 worst before tuning. Inter's figures are wider than San Francisco's and its punctuation
 narrower, which one spacing cannot even out, so the digit styles keep the largest gaps.
 
-ctypes loads inside reduce_motion(), so this module imports on any system. The Mac twin
+ctypes loads inside reduce_motion() and Qt inside short_time(), so this module imports on any system. The Mac twin
 (lyssna/mac/appearance.py) offers the same names."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("lyssna.win.appearance")
@@ -82,6 +84,15 @@ def tracking(kind: str, size: int, weight: str, qt_advance: Callable[[str], floa
             nearest = min(sizes, key=lambda s: (abs(s - size), s))
             return SPACING[(k, nearest, weight)] / 64
     return 0.0
+
+
+def short_time(when: datetime) -> str:
+    """The time of day in the user's own 12 or 24 hour style: the system locale's short time
+    format, which on Windows is the one set under Settings > Time & language > Region."""
+    from PySide6.QtCore import QLocale, QTime
+
+    local = when.astimezone()
+    return QLocale.system().toString(QTime(local.hour, local.minute), QLocale.FormatType.ShortFormat)
 
 
 SPI_GETCLIENTAREAANIMATION = 0x1042

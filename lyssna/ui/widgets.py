@@ -14,20 +14,25 @@ Animations jump to their end when theme.reduce_motion() is on."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QCursor, QFontMetricsF, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QPushButton, QWidget
 
 from . import icons, theme
 from .layout.setup import PILL_H, PILL_PAD
 from .layout.wave import BAR_H, KNOB
+from .sliver import EASE_DEFAULT
 
 Color = QColor | Callable[[], QColor] | None
 
 GLOW_IN, GLOW_OUT = 0.14, 0.22  # seconds the hover glow takes to fade in and out
 DISABLED_ALPHA = 0.35           # a disabled button's icon or label
+# The Mac's progress fill and scrub knob are bare Core Animation layers whose frame changes are
+# not wrapped in disabled actions, so each change glides over the implicit 0.25 s, default curve.
+GLIDE_SECS = 0.25
 
 
 def resolve(color: Color) -> QColor | None:
@@ -41,6 +46,19 @@ def _with_alpha(color: QColor, factor: float) -> QColor:
     return c
 
 
+def pressed_tint(color: QColor) -> QColor:
+    """`color` as AppKit draws a pressed borderless button's symbol: NSColor's pressed system
+    effect, measured on the Mac per channel. In light mode it darkens (white to 215, mid grey
+    128 to 98, black stays black); in dark mode it lightens by 46 of 255 (black to 46, mid grey
+    to 174, anything from 209 up to white)."""
+    c = QColor(color)
+    if theme.is_dark():
+        r, g, b = (min(1.0, v + 46 / 255) for v in (c.redF(), c.greenF(), c.blueF()))
+    else:
+        r, g, b = (0.843 * v ** 1.14 for v in (c.redF(), c.greenF(), c.blueF()))
+    return QColor.fromRgbF(r, g, b, c.alphaF())
+
+
 def rounded(rect: QRectF, radius: float) -> QPainterPath:
     r = max(0.0, min(radius, rect.width() / 2, rect.height() / 2))
     path = QPainterPath()
@@ -50,8 +68,9 @@ def rounded(rect: QRectF, radius: float) -> QPainterPath:
 
 class HoverView(QWidget):
     """A rounded shape that lifts a translucent glow over itself while the cursor is inside, so
-    it brightens softly on hover (in over 0.14 s, out over 0.22 s). With no fill it works as a
-    transparent wrapper that lights up behind a bare button.
+    it brightens softly on hover (in over 0.14 s, out over 0.22 s, on Core Animation's default
+    curve: the Mac sets only the duration on that implicit animation). With no fill it works as
+    a transparent wrapper that lights up behind a bare button.
 
     fill, border, glow: colours or colour functions; radius: the corner radius (None for a
     capsule, half the shorter side). on_hover(bool), when set, hears every hover change."""
@@ -142,7 +161,7 @@ class HoverView(QWidget):
             anim.setStartValue(float(self._level))
             anim.setEndValue(target)
             anim.setDuration(round((GLOW_IN if on else GLOW_OUT) * 1000))
-            anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            anim.setEasingCurve(EASE_DEFAULT)
             anim.valueChanged.connect(self._set_level)
             self._anim = anim
             anim.start()
@@ -169,7 +188,8 @@ class IconButton(HoverView):
     icon: an icons.py name; diameter: the disc; hit: a larger square click area around it (the
     view's size, defaults to the diameter); fill: the disc colour or None for a bare icon that
     only glows on hover; icon_size and weight as for the SF Symbol; clicked: called on a click.
-    The disc shows a light veil while pressed; disabled, the icon dims and nothing glows."""
+    Pressed, only the icon changes, as on a borderless NSButton: it takes the pressed tint (the
+    disc stays as it is). Disabled, the icon dims and nothing glows."""
 
     def __init__(self, icon: str, parent: QWidget | None = None, *, diameter: float = 26.0, hit: float | None = None,
                  fill: Color = None, glow: Color = theme.clear_glow, icon_size: float = 13.0,
@@ -218,13 +238,11 @@ class IconButton(HoverView):
 
     def paint_content(self, p: QPainter) -> None:
         r = self.shape_rect()
-        if self.pressed:
-            fill = resolve(self.fill)
-            veil = theme.surface(0.18) if fill is not None and fill == theme.content() else theme.content(0.08)
-            p.fillPath(self.shape_path(), veil)
         color = resolve(self.icon_color) or theme.content()
         if not self.isEnabled():
             color = _with_alpha(color, DISABLED_ALPHA)
+        elif self.pressed:
+            color = pressed_tint(color)
         icons.draw_icon(p, self.icon, icons.icon_rect(r.center().x(), r.center().y(), self.icon_size), color, self.weight)
 
     def perform_click(self) -> None:
@@ -267,12 +285,15 @@ class PillButton(QPushButton):
         self.size_to_fit()
 
     def size_to_fit(self) -> None:
-        """Title width plus PILL_PAD either side, PILL_H tall (the Mac sizeToFit)."""
+        """The Mac's width for the title, PILL_H tall (PillButton.sizeToFit)."""
         self.setFixedSize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
+        # NSButton.sizeToFit makes a borderless button's frame the title's advance plus its
+        # cell's 2 pt inset each side, rounded up to whole points; the Mac's PillButton then
+        # adds PILL_PAD each side ("Download" in 13 pt: 60.04 advance, 65, 93 wide).
         w = QFontMetricsF(self.font()).horizontalAdvance(self.text())
-        return QSize(round(w) + 2 * round(PILL_PAD), round(PILL_H))
+        return QSize(math.ceil(w + 4.0 - 1e-6) + 2 * round(PILL_PAD), round(PILL_H))
 
     def setText(self, text: str) -> None:
         super().setText(text)
@@ -306,41 +327,124 @@ class PillButton(QPushButton):
         p.end()
 
 
+class _Glide:
+    """Values shown on their way to a live target: either at the target, or easing there over
+    GLIDE_SECS on Core Animation's default curve from where they were shown when it changed (an
+    implicit layer animation, which also starts from the value on screen when it interrupts
+    another). `target` returns the values now, `changed` repaints."""
+
+    def __init__(self, owner: QWidget, target: Callable[[], tuple[float, ...]], changed: Callable[[], None]):
+        self.owner = owner
+        self.target = target
+        self.changed = changed
+        self._from: tuple[float, ...] | None = None
+        self._to: tuple[float, ...] | None = None
+        self._e = 1.0
+        self._anim: QVariantAnimation | None = None
+
+    def value(self) -> tuple[float, ...]:
+        to = self.target()
+        if self._from is None:
+            return to
+        return tuple(a + (b - a) * self._e for a, b in zip(self._from, to, strict=True))
+
+    def gliding(self) -> bool:
+        return self._from is not None
+
+    def start(self, shown: tuple[float, ...], animate: bool) -> None:
+        """The target may have changed; `shown` is what was on screen just before. Glide from
+        it, or jump. A glide already heading to the same target carries on undisturbed."""
+        to = self.target()
+        if animate and self._anim is not None and to == self._to:
+            return
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+        self._from = None
+        if animate and not theme.reduce_motion() and tuple(shown) != to:
+            self._from, self._to, self._e = tuple(shown), to, 0.0
+            anim = QVariantAnimation(self.owner)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setDuration(round(GLIDE_SECS * 1000))
+            anim.setEasingCurve(EASE_DEFAULT)
+            anim.valueChanged.connect(self._step)
+            anim.finished.connect(lambda: self._done(anim))
+            self._anim = anim
+            anim.start()
+        self.changed()
+
+    def _step(self, e) -> None:
+        self._e = float(e)
+        self.changed()
+
+    def _done(self, anim: QVariantAnimation) -> None:
+        if self._anim is anim:
+            self._anim = None
+            self._from = None
+            self.changed()
+
+
 class ProgressBar(QWidget):
     """A rounded track (content at 0.15) with a content fill from the left. The fill is never
-    narrower than the bar is tall, so a just-started reading shows a round dot."""
+    narrower than the bar is tall, so a just-started reading shows a round dot.
+
+    As on the Mac, a new fraction (and a new bar height, when the scrub bar thickens) glides the
+    fill there over 0.25 s from where it is shown, once the bar is on screen; set_fraction(f,
+    animate=False) jumps (a drag). The fill sits on the track's bottom edge and is clipped to the
+    track, like the Mac's fill layer inside the bar's rounded, clipping layer."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.fraction = 0.0
+        self._painted = False
+        self._fill = _Glide(self, self.target_fill, self.update)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.resize(100, round(BAR_H))
 
-    def set_fraction(self, f: float) -> None:
+    def may_glide(self) -> bool:
+        return self._painted and self.isVisible()
+
+    def set_fraction(self, f: float, animate: bool = True) -> None:
+        shown = self._fill.value()
         self.fraction = max(0.0, min(1.0, float(f)))
-        self.update()
+        self._fill.start(shown, animate and self.may_glide())
+
+    def target_fill(self) -> tuple[float, float]:
+        """The fill's (width, height) for the fraction and the bar's size now."""
+        w, h = float(self.width()), float(self.height())
+        return min(w, max(h, w * self.fraction)), h
+
+    def fill_size(self) -> tuple[float, float]:
+        """The fill's (width, height) as shown now (mid-glide or settled)."""
+        return self._fill.value()
 
     def fill_width(self) -> float:
-        w, h = float(self.width()), float(self.height())
-        return min(w, max(h, w * self.fraction))
+        return self.fill_size()[0]
 
     def paintEvent(self, ev) -> None:
+        self._painted = True
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         h = float(self.height())
-        p.fillPath(rounded(QRectF(self.rect()), h / 2), theme.content(0.15))
-        p.fillPath(rounded(QRectF(0, 0, self.fill_width(), h), h / 2), theme.content())
+        track = rounded(QRectF(self.rect()), h / 2)
+        p.fillPath(track, theme.content(0.15))
+        fw, fh = self.fill_size()
+        p.setClipPath(track)
+        p.fillPath(rounded(QRectF(0, h - fh, fw, fh), fh / 2), theme.content())
         p.end()
 
 
 class _Knob(QWidget):
-    """The playhead knob: a content disc with a 2 px surface ring and a small soft shadow."""
+    """The playhead knob: a content disc with a 2 px surface ring and a small soft shadow. It
+    fades in and out (alpha) as the Mac's knob layer does when it is shown or hidden."""
 
     PAD = 3.0  # room for the shadow
 
     def __init__(self, parent: QWidget, size: float):
         super().__init__(parent)
         self.k = float(size)
+        self.alpha = 0.0
         side = round(self.k + 2 * self.PAD)
         self.resize(side, side)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -348,6 +452,7 @@ class _Knob(QWidget):
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setOpacity(self.alpha)
         c = QPointF(self.width() / 2, self.height() / 2)
         r = self.k / 2
         shadow = QRadialGradient(QPointF(c.x(), c.y() + 1.0), r + 2.0)
@@ -367,7 +472,13 @@ class _Knob(QWidget):
 class ScrubBar(QWidget):
     """A transparent strip holding a ProgressBar; click or drag anywhere on it to seek. Hovered
     or scrubbing, the bar thickens to 1.5 times and a round knob shows at the playhead.
-    on_scrub(fraction) fires while dragging (for the time preview), on_seek(fraction) on release."""
+    on_scrub(fraction) fires while dragging (for the time preview), on_seek(fraction) on release.
+
+    The motion is the Mac's, whose fill and knob are layers with implicit animations: the bar's
+    track thickens at once while the fill's height glides after it; the knob fades in or out
+    over 0.25 s; and playback glides the fill, and the knob while hovered, to the new playhead.
+    The knob only follows the playhead while it shows, so on the next hover it slides from where
+    it was last shown while it fades in. A drag moves both at once (no glide)."""
 
     consumes_mouse = True  # tells FloatingPanel this is a control, not a drag handle
 
@@ -381,6 +492,10 @@ class ScrubBar(QWidget):
         self.on_seek: Callable[[float], None] | None = None
         self.scrubbing = False
         self.hovering = False
+        self._knob_x = 0.0      # the knob's centre as last laid out (the Mac's model position)
+        self._knob_on = False
+        self._knob_pos = _Glide(self, lambda: (self._knob_x,), self._place_knob)
+        self._knob_alpha = _Glide(self, lambda: (1.0 if self._knob_on else 0.0,), self._place_knob)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._layout()
@@ -395,16 +510,29 @@ class ScrubBar(QWidget):
     def bar_height(self) -> float:
         return BAR_H * 1.5 if self.active() else BAR_H
 
-    def _layout(self) -> None:
+    def _layout(self, animate: bool = False) -> None:
+        """Lay the bar and the knob out for the state now; `animate` glides what the Mac's
+        implicit animations glide (the fill's height, the knob's place and its fade)."""
+        animate = animate and self.bar.may_glide()
         w, h = float(self.width()), float(self.height())
         bh = self.bar_height()
+        fill_shown = self.bar.fill_size()
         self.bar.setGeometry(0, round((h - bh) / 2), round(w), round(bh))
+        self.bar._fill.start(fill_shown, animate)
         k = self.knob_size
-        self.knob.setVisible(self.active())
-        x = min(max(w * self.bar.fraction, k / 2), w - k / 2) if w > 0 else 0.0
-        self.knob.move(round(x - self.knob.width() / 2), round((h - self.knob.height()) / 2))
+        x_shown, alpha_shown = self._knob_pos.value(), self._knob_alpha.value()
+        self._knob_x = min(max(w * self.bar.fraction, k / 2), w - k / 2) if w > 0 else 0.0
+        self._knob_on = self.active()
+        self._knob_pos.start(x_shown, animate)
+        self._knob_alpha.start(alpha_shown, animate)
         self.knob.raise_()
-        self.bar.update()
+
+    def _place_knob(self) -> None:
+        alpha = self._knob_alpha.value()[0]
+        self.knob.alpha = alpha
+        self.knob.setVisible(alpha > 0.0 or self._knob_on)
+        x = self._knob_pos.value()[0]
+        self.knob.move(round(x - self.knob.width() / 2), round((self.height() - self.knob.height()) / 2))
         self.knob.update()
 
     def resizeEvent(self, ev) -> None:
@@ -413,17 +541,17 @@ class ScrubBar(QWidget):
 
     def enterEvent(self, ev) -> None:
         self.hovering = True
-        self._layout()
+        self._layout(animate=True)
         super().enterEvent(ev)
 
     def leaveEvent(self, ev) -> None:
         self.hovering = False
-        self._layout()
+        self._layout(animate=True)
         super().leaveEvent(ev)
 
     def set_hover(self, on: bool) -> None:
         self.hovering = bool(on)
-        self._layout()
+        self._layout(animate=True)
 
     def _fraction_at(self, x: float) -> float:
         w = float(self.width())
@@ -448,24 +576,26 @@ class ScrubBar(QWidget):
             return super().mouseReleaseEvent(ev)
         f = self._fraction_at(ev.position().x())
         self.scrubbing = False
-        self.bar.set_fraction(f)
-        self._layout()
+        self.bar.set_fraction(f, animate=False)
+        self._layout(animate=True)  # released off the bar, it thins and the knob fades out
         if self.on_seek:
             self.on_seek(f)
         ev.accept()
 
     def _move(self, x: float) -> None:
         f = self._fraction_at(x)
-        self.bar.set_fraction(f)
+        self.bar.set_fraction(f, animate=False)
         self._layout()
         if self.on_scrub:
             self.on_scrub(f)
 
     def set_fraction(self, f: float) -> None:
-        """The playhead from playback; ignored while the user scrubs."""
+        """The playhead from playback; ignored while the user scrubs. The fill glides there; the
+        knob follows only while the bar is hovered (the Mac redraws the strip only then)."""
         if not self.scrubbing:
             self.bar.set_fraction(f)
-            self._layout()
+            if self.hovering:
+                self._layout(animate=True)
 
 
 # -- previews (python -m lyssna.ui.preview) -------------------------------------------------

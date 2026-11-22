@@ -22,7 +22,7 @@ import logging
 import math
 from collections.abc import Callable
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QFont, QFontMetricsF, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -45,10 +45,12 @@ from .layout.toast import (
 from .mainthread import later
 from .panel import FloatingPanel
 from .widgets import HoverView
+from .window import TEXT_INSET
 
 log = logging.getLogger("lyssna.ui.toast")
 
 TEXT_SIZE = 13.0
+LINE_H = 17.0  # the height of the Mac's text field in the toast and the tip
 
 
 def text_width(text: str, font: QFont) -> float:
@@ -57,12 +59,17 @@ def text_width(text: str, font: QFont) -> float:
 
 class _Text(QWidget):
     """One line of text in runs of (text, font), in content(), vertically centred. With `elide`
-    the line is cut at the end with an ellipsis when it does not fit."""
+    the line is cut at the end with an ellipsis when it does not fit. `inset` keeps the text
+    that far in from each side, as an AppKit label's cell does (window.TEXT_INSET). With
+    `line_top` the line starts that far down instead of being centred, where the Mac's text
+    field (a frame of LINE_H centred in the toast) draws its text: at the top of its frame."""
 
-    def __init__(self, parent: QWidget, elide: bool = False):
+    def __init__(self, parent: QWidget, elide: bool = False, inset: float = 0.0, line_top: float | None = None):
         super().__init__(parent)
         self.runs: list[tuple[str, QFont]] = []
         self.elide = elide
+        self.inset = inset
+        self.line_top = line_top
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     def set_runs(self, runs: list[tuple[str, QFont]]) -> None:
@@ -77,19 +84,22 @@ class _Text(QWidget):
         if not self.elide or not self.runs:
             return self.text()
         text, font = self.runs[0]
-        return QFontMetricsF(font).elidedText(text, Qt.TextElideMode.ElideRight, float(self.width()))
+        return QFontMetricsF(font).elidedText(text, Qt.TextElideMode.ElideRight, float(self.width()) - 2 * self.inset)
 
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         p.setPen(theme.content())
-        x = 0.0
+        x = self.inset
         h = float(self.height())
         runs = [(self.shown_text(), self.runs[0][1])] if self.elide and self.runs else self.runs
         for text, font in runs:
             p.setFont(font)
             w = text_width(text, font)
-            p.drawText(QRectF(x, 0, max(w, self.width() - x), h), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), text)
+            if self.line_top is not None:
+                p.drawText(QPointF(x, self.line_top + QFontMetricsF(font).ascent()), text)
+            else:
+                p.drawText(QRectF(x, 0, max(w, self.width() - x), h), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), text)
             x += w
         p.end()
 
@@ -156,7 +166,8 @@ class Toast(FloatingPanel):
 
     def build(self, content: QWidget) -> None:
         self.text_font = theme.ui_font(TEXT_SIZE, "medium")
-        self.text = _Text(content, elide=True)
+        # The Mac's text field: a LINE_H frame at PAD_L, centred in the toast, its text inset.
+        self.text = _Text(content, elide=True, inset=TEXT_INSET, line_top=(TOAST_H - LINE_H) / 2)
         self.action = _ActionPill(content, self._act)
         self.action.hide()
 
@@ -242,7 +253,7 @@ class Tip(FloatingPanel):
         self.set_click_through(True)
 
     def build(self, content: QWidget) -> None:
-        self.text = _Text(content)
+        self.text = _Text(content, line_top=(TIP_H - LINE_H) / 2)  # where the Mac's LINE_H text field puts it
         self.text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     @staticmethod
@@ -311,7 +322,7 @@ class _TipView(QWidget):
     def __init__(self, parent: QWidget, runs, width: float):
         super().__init__(parent)
         self.resize(round(width), round(TIP_H))
-        self.label = _Text(self)
+        self.label = _Text(self, line_top=(TIP_H - LINE_H) / 2)
         self.label.set_runs(runs)
         self.label.setGeometry(round(TIP_PAD), 0, round(width - 2 * TIP_PAD) + 2, round(TIP_H))
 

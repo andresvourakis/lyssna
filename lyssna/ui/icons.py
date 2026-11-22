@@ -21,18 +21,22 @@ from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPain
 
 log = logging.getLogger("lyssna.ui.icons")
 
-# Stroke width per weight, as a fraction of the point size (SF Symbols at 11 to 20 pt).
+# Stroke width per weight, as a fraction of the point size. Measured on the Mac's symbols at
+# 100 pt (the cross, the chevrons, the arrows): an SF stroke at a weight is this wide at any size.
 WEIGHTS = {
     "regular": 0.085,
-    "medium": 0.100,
-    "semibold": 0.115,
-    "bold": 0.135,
-    "heavy": 0.155,
+    "medium": 0.102,
+    "semibold": 0.118,
+    "bold": 0.148,
+    "heavy": 0.170,
 }
 DEFAULT_WEIGHT = "semibold"  # symbol_button's default on the Mac
-_ROUND = 0.10                # corner rounding of the solid shapes (stroke width of their outline)
 
 # -- path helpers ------------------------------------------------------------------------------
+# The icons are built around the box's centre (0, 0), y down, one unit per point, and moved into
+# the unit box by icon_path. Each glyph's ink box, centre offset and ink amount were measured
+# against the Mac's symbol at every size the interface uses (within half a pixel and about 5
+# percent), so the drawing is our own and only the size, weight and position follow the Mac's.
 
 
 def _line(*pts: tuple[float, float], closed: bool = False) -> QPainterPath:
@@ -54,11 +58,33 @@ def _stroke(path: QPainterPath, width: float) -> QPainterPath:
     return s.createStroke(path)
 
 
-def _solid(*pts: tuple[float, float], round_: float = _ROUND) -> QPainterPath:
-    """A filled polygon with rounded corners: the polygon plus its own round-joined outline, so
-    it grows by round_/2 on every side."""
-    poly = _line(*pts, closed=True)
-    return poly.united(_stroke(poly, round_))
+def _inset(pts: list[tuple[float, float]], d: float) -> list[tuple[float, float]]:
+    """The convex polygon `pts` with every edge moved d inwards."""
+    n = len(pts)
+    area = sum(pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1] for i in range(n))
+    sign = 1.0 if area > 0 else -1.0
+    lines = []
+    for i in range(n):
+        (x0, y0), (x1, y1) = pts[i], pts[(i + 1) % n]
+        dx, dy = x1 - x0, y1 - y0
+        length = math.hypot(dx, dy)
+        nx, ny = -dy / length * sign, dx / length * sign  # the inward normal
+        lines.append(((x0 + nx * d, y0 + ny * d), (dx, dy)))
+    inner = []
+    for i in range(n):
+        (px, py), (dx, dy) = lines[i - 1]
+        (qx, qy), (ex, ey) = lines[i]
+        det = dx * ey - dy * ex
+        t = ((qx - px) * ey - (qy - py) * ex) / det
+        inner.append((px + dx * t, py + dy * t))
+    return inner
+
+
+def _rounded_poly(pts: list[tuple[float, float]], r: float) -> QPainterPath:
+    """A filled convex polygon whose corners are rounded with radius r, its edges staying on the
+    polygon's own edges: the polygon moved in by r on every side, then grown back by a round r."""
+    poly = _line(*_inset(pts, r), closed=True)
+    return poly.united(_stroke(poly, 2 * r))
 
 
 def _rrect(x0: float, y0: float, x1: float, y1: float, r: float) -> QPainterPath:
@@ -82,175 +108,202 @@ def _union(*paths: QPainterPath) -> QPainterPath:
 
 
 def _mirror_x(path: QPainterPath) -> QPainterPath:
-    return QTransform(-1, 0, 0, 1, 1, 0).map(path)
+    return QTransform(-1, 0, 0, 1, 0, 0).map(path)
 
 
 def _rotate(path: QPainterPath, degrees: float) -> QPainterPath:
-    t = QTransform().translate(0.5, 0.5).rotate(degrees).translate(-0.5, -0.5)
-    return t.map(path)
+    return QTransform().rotate(degrees).map(path)
 
 
 # -- the icons ---------------------------------------------------------------------------------
-# Each takes the stroke width (from the weight) and returns a fillable path in the unit box.
+# Each takes the stroke width (from the weight) and returns a fillable path around (0, 0). The
+# solid shapes keep one size at every weight; the Mac uses them at semibold only.
 
 
 def _play(w: float) -> QPainterPath:
-    return _solid((0.24, 0.15), (0.24, 0.85), (0.83, 0.50))
+    return _rounded_poly([(-0.35, -0.49), (-0.35, 0.49), (0.53, 0.0)], 0.085)
 
 
 def _pause(w: float) -> QPainterPath:
-    return _union(_rrect(0.21, 0.12, 0.40, 0.88, 0.06), _rrect(0.60, 0.12, 0.79, 0.88, 0.06))
-
-
-def _backward_end(w: float) -> QPainterPath:
-    bar = _rrect(0.13, 0.17, 0.25, 0.83, 0.05)
-    tri = _solid((0.85, 0.22), (0.85, 0.78), (0.38, 0.50))
-    return _union(bar, tri)
+    return _union(_rrect(-0.33, -0.42, -0.06, 0.42, 0.065), _rrect(0.06, -0.42, 0.33, 0.42, 0.065))
 
 
 def _forward_end(w: float) -> QPainterPath:
-    return _mirror_x(_backward_end(w))
+    tri = _rounded_poly([(-0.49, -0.445), (-0.49, 0.445), (0.29, 0.0)], 0.07)
+    bar = _rrect(0.22, -0.39, 0.49, 0.39, 0.065)
+    return _union(tri, bar)
+
+
+def _backward_end(w: float) -> QPainterPath:
+    return _mirror_x(_forward_end(w))
 
 
 def _xmark(w: float) -> QPainterPath:
-    return _union(_stroke(_line((0.22, 0.22), (0.78, 0.78)), w), _stroke(_line((0.78, 0.22), (0.22, 0.78)), w))
+    e = 0.363 - 0.25 * w  # the strokes' ends: a bolder cross is a little shorter, as SF's is
+    return _union(_stroke(_line((-e, -e), (e, e)), w), _stroke(_line((e, -e), (-e, e)), w))
 
 
 def _checkmark(w: float) -> QPainterPath:
-    return _stroke(_line((0.18, 0.53), (0.40, 0.76), (0.82, 0.23)), w)
+    w *= 1.06  # like the chevrons
+    return _stroke(_line((-0.39, 0.04), (-0.107, 0.405 - w / 3), (0.374, -0.381 + w / 6)), w)
+
+
+def _arrow_right_to_line(w: float) -> QPainterPath:
+    tip = 0.31 - w / 2
+    shaft = _line((-0.46 + w / 2, 0.0), (tip, 0.0))
+    head = _line((-0.035, -0.275), (tip, 0.0), (-0.035, 0.275))
+    bar = _line((0.45 - w / 2, -0.37 + w / 2), (0.45 - w / 2, 0.37 - w / 2))
+    return _union(_stroke(shaft, w), _stroke(head, w * 0.92), _stroke(bar, w))
+
+
+def _arrow_left_to_line(w: float) -> QPainterPath:
+    return _mirror_x(_arrow_right_to_line(w))
+
+
+def _arrow_down_to_line(w: float) -> QPainterPath:
+    return _rotate(_arrow_right_to_line(w), 90)
+
+
+def _chevron_right(w: float) -> QPainterPath:
+    w *= 1.06  # SF's chevrons are a touch heavier than its crosses at the same weight
+    return _stroke(_line((-0.20 + w / 2, -0.44 + w / 2), (0.32 - w / 2, 0.0), (-0.20 + w / 2, 0.44 - w / 2)), w)
+
+
+def _chevron_left(w: float) -> QPainterPath:
+    return _mirror_x(_chevron_right(w))
+
+
+def _chevron_up(w: float) -> QPainterPath:
+    w *= 1.06
+    return _stroke(_line((-0.45 + w / 2, 0.26 - w / 2), (0.0, -0.26 + w / 2), (0.45 - w / 2, 0.26 - w / 2)), w)
+
+
+def _chevron_down(w: float) -> QPainterPath:
+    return _stroke(_line((-0.33, -0.15), (0.0, 0.15), (0.33, -0.15)), w)
 
 
 def _mic(w: float) -> QPainterPath:
-    body = _rrect(0.345, 0.06, 0.655, 0.60, 0.155)
+    body = _rrect(-0.18, -0.54, 0.18, 0.16, 0.18)
+    w *= 0.92  # the stand is a little lighter than a semibold stroke
+    h = w / 2
     cup = QPainterPath()
-    cup.moveTo(0.20, 0.42)
-    cup.arcTo(QRectF(0.20, 0.14, 0.60, 0.60), 180, 180)
-    stem = _line((0.50, 0.74), (0.50, 0.90))
-    base = _line((0.35, 0.90), (0.65, 0.90))
+    cup.moveTo(-0.395 + h, -0.15 + h)
+    cup.lineTo(-0.395 + h, 0.0)
+    cup.arcTo(QRectF(-0.395 + h, 0.35 - h - 2 * (0.35 - h), 2 * (0.395 - h), 2 * (0.35 - h)), 180, 180)
+    cup.lineTo(0.395 - h, -0.15 + h)
+    stem = _line((0.0, 0.35 - h), (0.0, 0.49))
+    base = _line((-0.285 + h, 0.54 - h), (0.285 - h, 0.54 - h))
     return _union(body, _stroke(cup, w), _stroke(stem, w), _stroke(base, w))
 
 
 def _clock_arrow(w: float) -> QPainterPath:
-    cx, cy, r = 0.53, 0.52, 0.35
-    start = 150.0
+    cx, cy, r = 0.005, 0.0, 0.50 - w / 2
+    start, end = 165.0, -142.7  # the arc's ends, degrees counterclockwise from three o'clock
     arc = QPainterPath()
     arc.moveTo(cx + r * math.cos(math.radians(start)), cy - r * math.sin(math.radians(start)))
-    arc.arcTo(QRectF(cx - r, cy - r, 2 * r, 2 * r), start, -300)
-    hands = _line((cx, cy - 0.20), (cx, cy), (cx + 0.13, cy + 0.08))
-    # The arrowhead at the arc's start, pointing back along it into the gap on the left.
-    a = math.radians(start)
-    px, py = cx + r * math.cos(a), cy - r * math.sin(a)
-    tx, ty = -math.sin(a), -math.cos(a)          # the arc's direction when run backwards
-    nx, ny = -ty, tx
-    tip = (px + tx * 0.11, py + ty * 0.11)
-    b1 = (px - tx * 0.04 + nx * 0.12, py - ty * 0.04 + ny * 0.12)
-    b2 = (px - tx * 0.04 - nx * 0.12, py - ty * 0.04 - ny * 0.12)
-    head = _solid(tip, b1, b2, round_=w * 0.6)
-    return _union(_stroke(arc, w), _stroke(hands, w), head)
-
-
-def _arrow_left_to_line(w: float) -> QPainterPath:
-    bar = _line((0.17, 0.22), (0.17, 0.78))
-    shaft = _line((0.86, 0.50), (0.36, 0.50))
-    head = _line((0.57, 0.29), (0.36, 0.50), (0.57, 0.71))
-    return _union(_stroke(bar, w), _stroke(shaft, w), _stroke(head, w))
-
-
-def _arrow_right_to_line(w: float) -> QPainterPath:
-    return _mirror_x(_arrow_left_to_line(w))
-
-
-def _arrow_down_to_line(w: float) -> QPainterPath:
-    return _rotate(_arrow_left_to_line(w), -90)
-
-
-def _chevron_left(w: float) -> QPainterPath:
-    return _stroke(_line((0.62, 0.17), (0.33, 0.50), (0.62, 0.83)), w)
-
-
-def _chevron_right(w: float) -> QPainterPath:
-    return _mirror_x(_chevron_left(w))
-
-
-def _chevron_up(w: float) -> QPainterPath:
-    return _stroke(_line((0.17, 0.65), (0.50, 0.35), (0.83, 0.65)), w)
-
-
-def _chevron_down(w: float) -> QPainterPath:
-    return _stroke(_line((0.17, 0.35), (0.50, 0.65), (0.83, 0.35)), w)
+    arc.arcTo(QRectF(cx - r, cy - r, 2 * r, 2 * r), start, end - start)
+    hw = w * 0.78  # the hands are drawn thinner than the ring
+    hands = _line((cx, -0.28 + hw / 2), (cx, 0.03), (0.125, 0.185))
+    head = _rounded_poly([(-0.607, -0.13), (-0.273, -0.13), (-0.44, 0.15)], 0.02)
+    return _union(_stroke(arc, w), _stroke(hands, hw), head)
 
 
 def _lock(w: float) -> QPainterPath:
+    w *= 0.9  # the lock and the pages are drawn a little lighter than the arrows
+    h = w / 2
     shackle = QPainterPath()
-    shackle.moveTo(0.33, 0.45)
-    shackle.lineTo(0.33, 0.30)
-    shackle.arcTo(QRectF(0.33, 0.13, 0.34, 0.34), 180, -180)
-    shackle.lineTo(0.67, 0.45)
-    body = _rrect(0.22, 0.45, 0.78, 0.89, 0.09)
+    shackle.moveTo(-0.25 + h, -0.05)
+    shackle.lineTo(-0.25 + h, -0.23)
+    shackle.arcTo(QRectF(-0.25 + h, -0.48 + h, 2 * (0.25 - h), 2 * (0.25 - h)), 180, -180)
+    shackle.lineTo(0.25 - h, -0.05)
+    body = _rrect(-0.335 + h, -0.09 + h, 0.335 - h, 0.48 - h, 0.07)
     return _union(_stroke(shackle, w), _stroke(body, w))
 
 
 def _arrow_up_right(w: float) -> QPainterPath:
-    shaft = _line((0.25, 0.75), (0.75, 0.25))
-    head = _line((0.36, 0.25), (0.75, 0.25), (0.75, 0.64))
+    h = w / 2
+    e = 0.37 - h
+    shaft = _line((-e, e), (e, -e))
+    head = _line((-0.23 + h, -e), (e, -e), (e, 0.23 - h))
     return _union(_stroke(shaft, w), _stroke(head, w))
 
 
 def _heart(w: float) -> QPainterPath:
     p = QPainterPath()
-    p.moveTo(0.50, 0.87)
-    p.cubicTo(0.20, 0.66, 0.06, 0.50, 0.06, 0.34)
-    p.cubicTo(0.06, 0.21, 0.16, 0.13, 0.28, 0.13)
-    p.cubicTo(0.38, 0.13, 0.46, 0.19, 0.50, 0.27)
-    p.cubicTo(0.54, 0.19, 0.62, 0.13, 0.72, 0.13)
-    p.cubicTo(0.84, 0.13, 0.94, 0.21, 0.94, 0.34)
-    p.cubicTo(0.94, 0.50, 0.80, 0.66, 0.50, 0.87)
+    p.moveTo(0.0, 0.45)
+    p.cubicTo(-0.32, 0.27, -0.50, 0.07, -0.50, -0.16)
+    p.cubicTo(-0.50, -0.34, -0.37, -0.45, -0.23, -0.45)
+    p.cubicTo(-0.11, -0.45, -0.03, -0.39, 0.0, -0.32)
+    p.cubicTo(0.03, -0.39, 0.11, -0.45, 0.23, -0.45)
+    p.cubicTo(0.37, -0.45, 0.50, -0.34, 0.50, -0.16)
+    p.cubicTo(0.50, 0.07, 0.32, 0.27, 0.0, 0.45)
     p.closeSubpath()
     return p
 
 
 def _magnifyingglass(w: float) -> QPainterPath:
-    ring = _circle(0.43, 0.43, 0.27)
-    handle = _line((0.635, 0.635), (0.85, 0.85))
-    return _union(_stroke(ring, w), _stroke(handle, w * 1.3))
+    c, r = -0.09, 0.39 - w / 2
+    ring = _circle(c, c, r)
+    hw = w * 1.36  # the handle is heavier than the ring
+    a = c + r * math.sqrt(0.5)
+    handle = _line((a, a), (0.475 - hw / 2, 0.475 - hw / 2))
+    return _union(_stroke(ring, w), _stroke(handle, hw))
+
+
+def _doc_outline(x0: float, y0: float, x1: float, y1: float, ear: float, fold_x: float, fold_y: float,
+                 r: float) -> tuple[QPainterPath, QPainterPath]:
+    """A page with its top right corner cut off `ear` along each side and folded down: the outline,
+    and the fold's two edges (fold_x in from the right, fold_y down from the top)."""
+    p = QPainterPath()
+    p.moveTo(x0 + r, y0)
+    p.lineTo(x1 - ear, y0)
+    p.lineTo(x1, y0 + ear)
+    p.lineTo(x1, y1 - r)
+    p.quadTo(x1, y1, x1 - r, y1)
+    p.lineTo(x0 + r, y1)
+    p.quadTo(x0, y1, x0, y1 - r)
+    p.lineTo(x0, y0 + r)
+    p.quadTo(x0, y0, x0 + r, y0)
+    p.closeSubpath()
+    fold = _line((x1 - fold_x, y0), (x1 - fold_x, y0 + fold_y), (x1, y0 + fold_y))
+    return p, fold
 
 
 def _doc_on_doc(w: float) -> QPainterPath:
-    front = _rrect(0.17, 0.30, 0.66, 0.90, 0.08)
-    back = QPainterPath()
-    back.moveTo(0.34, 0.30)
-    back.lineTo(0.34, 0.18)
-    back.quadTo(0.34, 0.10, 0.42, 0.10)
-    back.lineTo(0.75, 0.10)
-    back.quadTo(0.83, 0.10, 0.83, 0.18)
-    back.lineTo(0.83, 0.64)
-    back.quadTo(0.83, 0.72, 0.75, 0.72)
-    back.lineTo(0.66, 0.72)
-    return _union(_stroke(front, w), _stroke(back, w))
+    w *= 0.9
+    h = w / 2
+    front, front_fold = _doc_outline(-0.51 + h, -0.37 + h, 0.26 - h, 0.61 - h, 0.33, 0.37, 0.37, 0.10)
+    back, back_fold = _doc_outline(-0.27 + h, -0.61 + h, 0.50 - h, 0.37 - h, 0.31, 0.315, 0.335, 0.10)
+    front_ink = _union(_stroke(front, w), _stroke(front_fold, w))
+    covered = front.united(front_ink)  # the back page hides behind the whole front page
+    back_ink = _union(_stroke(back, w), _stroke(back_fold, w)).subtracted(covered)
+    return front_ink.united(back_ink)
 
 
 def _ellipsis(w: float) -> QPainterPath:
-    r = 0.045 + w * 0.3
-    return _union(_circle(0.18, 0.5, r), _circle(0.50, 0.5, r), _circle(0.82, 0.5, r))
+    r = 0.04 + w * 0.59
+    return _union(_circle(-0.36, 0.0, r), _circle(0.0, 0.0, r), _circle(0.36, 0.0, r))
 
 
 def _exclamation_triangle(w: float) -> QPainterPath:
-    tri = _line((0.50, 0.13), (0.08, 0.86), (0.92, 0.86), closed=True)
-    bar = _line((0.50, 0.40), (0.50, 0.61))
-    dot = _circle(0.50, 0.74, w * 0.62)
-    return _union(_stroke(tri, w), _stroke(bar, w), dot)
+    outer = [(0.0, -0.64), (-0.62, 0.46), (0.62, 0.46)]  # sharp; the rounding takes the corners in
+    rw, corner = w * 0.9, 0.16
+    ring = _rounded_poly(outer, corner).subtracted(_rounded_poly(_inset(outer, rw), corner - rw))
+    bar = _line((0.0, -0.20 + w / 2), (0.0, 0.13 - w / 2))
+    dot = _circle(0.0, 0.24, w * 0.57)
+    return ring.united(_stroke(bar, w)).united(dot)  # united, not _union: the ring's hole must stay open
 
 
 def _gearshape(w: float) -> QPainterPath:
     pts = []
-    r_out, r_in, c = 0.43, 0.33, 0.5
+    r_out, r_in = 0.43, 0.33
     for k in range(8):
         base = k * 45.0
         for ang, r in ((base - 15, r_in), (base - 8, r_out), (base + 8, r_out), (base + 15, r_in)):
             a = math.radians(ang)
-            pts.append((c + r * math.cos(a), c - r * math.sin(a)))
+            pts.append((r * math.cos(a), -r * math.sin(a)))
     gear = _line(*pts, closed=True)
-    hole = _circle(c, c, 0.13)
+    hole = _circle(0.0, 0.0, 0.13)
     return _union(_stroke(gear, w), _stroke(hole, w))
 
 
@@ -301,8 +354,8 @@ def icon_path(name: str, weight: str | None = None) -> QPainterPath:
                 _unknown.add(name)
                 log.warning("no icon named %r", name)
             return QPainterPath()
-        path = fn(stroke_width(weight))
-        path.setFillRule(Qt.FillRule.WindingFill)
+        # Each path keeps its own fill rule: _union's winding fill, or the boolean operations' own.
+        path = QTransform.fromTranslate(0.5, 0.5).map(fn(stroke_width(weight)))
         _cache[key] = path
     return _cache[key]
 

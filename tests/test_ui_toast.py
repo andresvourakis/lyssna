@@ -69,6 +69,17 @@ def test_width_follows_the_shared_rule(toast):
     assert toast.action.geometry().right() < w
 
 
+def test_text_sits_inside_the_macs_text_field(toast):
+    """The Mac's field: at PAD_L, as wide as the text plus 4, 17 tall in the middle, its text 2 in."""
+    from lyssna.ui.layout.toast import PAD_L
+    from lyssna.ui.toast import LINE_H
+    from lyssna.ui.window import TEXT_INSET
+
+    toast.layout("Nothing selected", "")
+    assert toast.text.x() == PAD_L and toast.text.inset == TEXT_INSET
+    assert toast.text.line_top == (TOAST_H - LINE_H) / 2
+
+
 def test_long_text_is_cut_at_the_end_with_the_whole_as_tooltip(toast):
     text = "That key didn't work. " * 20
     w = toast.layout(text, "Open Settings", 460.5)

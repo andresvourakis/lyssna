@@ -85,6 +85,7 @@ def bezier(x1: float, y1: float, x2: float, y2: float) -> QEasingCurve:
 EASE_OUT = bezier(0.0, 0.0, 0.58, 1.0)      # kCAMediaTimingFunctionEaseOut
 EASE_IN = bezier(0.42, 0.0, 1.0, 1.0)       # kCAMediaTimingFunctionEaseIn
 EASE_IN_OUT = bezier(0.42, 0.0, 0.58, 1.0)  # kCAMediaTimingFunctionEaseInEaseOut
+EASE_DEFAULT = bezier(0.25, 0.1, 0.25, 1.0)  # kCAMediaTimingFunctionDefault: implicit layer animations, window fades
 
 
 def drift(t: float, secs: float) -> float:

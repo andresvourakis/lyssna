@@ -1,4 +1,5 @@
-"""The Mac's fonts and its reduced-motion setting, for the Qt interface (lyssna/ui/theme.py).
+"""The Mac's fonts, its reduced-motion setting and its time format, for the Qt interface
+(lyssna/ui/theme.py, the history's times).
 
 Why: the Mac keeps Apple's fonts and must look as the AppKit interface did. Qt reaches San
 Francisco as ".AppleSystemUIFont", but AppKit draws it with Apple's size-dependent tracking
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("lyssna.mac.appearance")
@@ -27,6 +29,7 @@ SERIF_FAMILY = ".New York"  # the system serif, once font_files() is loaded
 REFERENCE = "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789"
 
 _tracking: dict[tuple[str, int, str], float] = {}
+_time_formatter = None
 
 
 def font_files() -> list[Path]:
@@ -92,3 +95,17 @@ def reduce_motion() -> bool:
     except Exception:
         log.debug("could not read the reduce motion setting", exc_info=True)
         return False
+
+
+def short_time(when: datetime) -> str:
+    """The time of day in the user's own 12 or 24 hour style, as the AppKit interface wrote it:
+    NSDateFormatter with the template "jmm". Qt's QLocale.system() is not used here because on
+    a Mac it follows the language alone (en_US gives "3:42 PM") and misses the region and the
+    24-hour setting that the system formatter follows ("15:42" for a Swedish region)."""
+    global _time_formatter
+    import AppKit
+
+    if _time_formatter is None:
+        _time_formatter = AppKit.NSDateFormatter.alloc().init()
+        _time_formatter.setLocalizedDateFormatFromTemplate_("jmm")
+    return str(_time_formatter.stringFromDate_(AppKit.NSDate.dateWithTimeIntervalSince1970_(when.timestamp())))
