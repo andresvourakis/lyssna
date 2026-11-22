@@ -407,7 +407,7 @@ def walk(root) -> list[dict]:
 # -- drawing ----------------------------------------------------------------------------------
 
 
-def render(widget, path: Path, window_background: bool) -> tuple[float, float]:
+def render(widget, path: Path, window_background: bool, owner=None) -> tuple[float, float]:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QImage, QPainter, QRegion
     from PySide6.QtWidgets import QApplication, QWidget
@@ -416,6 +416,8 @@ def render(widget, path: Path, window_background: bool) -> tuple[float, float]:
     if widget.layout() is not None:
         widget.layout().activate()
     QApplication.processEvents()
+    if owner is not None and owner.margin == 0:
+        _settle_size(owner)  # the last event pass may have undone the resize (see _settle_size)
     w, h = widget.width(), widget.height()
     img = QImage(round(w * SCALE), round(h * SCALE), QImage.Format.Format_ARGB32_Premultiplied)
     img.setDevicePixelRatio(SCALE)
@@ -675,11 +677,32 @@ def build(pair, work: Path) -> dict:
     return builders[kind](pair.params)
 
 
+def _settle_size(owner, tries: int = 5) -> None:
+    """Make sure the panel really lost its shadow margin. On the cocoa platform a window's resize
+    is now and then undone by a late geometry event from the window server (in full runs, one or
+    two pictures came out 36 points too large, the margin still in, with or without this round's
+    changes); the frame is applied again until the panel has the surface's own size."""
+    from PySide6.QtWidgets import QApplication
+
+    w, h = owner._size
+    want = (max(1, round(w)), max(1, round(h)))
+    for _ in range(tries):
+        if (owner.panel.width(), owner.panel.height()) == want:
+            return
+        owner._apply_frame(owner.frame())
+        QApplication.processEvents()
+    print(f"qt: a panel kept {owner.panel.width()}x{owner.panel.height()}, not {want[0]}x{want[1]}", file=sys.stderr)
+
+
 def subject_widget(subject: dict):
+    from PySide6.QtWidgets import QApplication
+
     owner = subject.get("owner")
     if owner is not None:
         if owner.margin > 0:
             owner.set_shadow(False)
+            QApplication.processEvents()
+            _settle_size(owner)
         return owner.panel
     return subject["widget"]
 
@@ -822,7 +845,7 @@ def run_pairs(out: Path, work: Path, only: str | None, schemes: tuple[str, ...])
                 widget = subject_widget(subject)
                 QApplication.processEvents()
                 ELIDED.clear()
-                w, h = render(widget, out / f"{stem}.png", bool(subject.get("window")))
+                w, h = render(widget, out / f"{stem}.png", bool(subject.get("window")), subject.get("owner"))
                 meta["elided"] = dict(ELIDED)
                 meta.update(size=[w, h], scale=SCALE, method=f"QWidget.render ({PLATFORM})", notes=subject.get("notes", []),
                             title=subject.get("title", ""), elements=walk(widget))

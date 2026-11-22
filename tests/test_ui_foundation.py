@@ -511,6 +511,11 @@ def test_the_mac_ends_a_folded_dictation_where_appkit_does(qapp):
     text = (WORDS + " Next we look at the Windows installer, the history window and the dictionary tab.")
     lines = appearance.break_lines(text, ("text", 14, "regular"), 360.0, 4, lambda t, w, n: [])
     assert len(lines) == 4 and lines[-1].endswith("the Windows in" + appearance.ELLIPSIS)
+    # A width where round 3's fitted tightening kept one letter too many: a real AppKit label
+    # (drawn to PDF and read back) shows "He w…", and so does TextKit 2, which the twin now asks.
+    text = "Can you send the updated deck to Mattias before the call? He wants to check the numbers on slide four."
+    assert appearance.break_lines(text, ("text", 14, "regular"), 216.0, 2, lambda t, w, n: []) == [
+        "Can you send the updated deck", "to Mattias before the call? He w" + appearance.ELLIPSIS]
 
 
 def test_text_buttons_are_framed_as_borderless_appkit_buttons(qapp):
@@ -529,7 +534,16 @@ def test_text_buttons_are_framed_as_borderless_appkit_buttons(qapp):
     assert heart.sizeHint().width() == 16 + math.ceil(advance) + 2
 
 
-def test_every_icon_has_a_path(qapp):
+@pytest.fixture
+def outlines(monkeypatch):
+    """Our drawn outlines, as Windows draws them, whatever the computer (on a Mac draw_icon would
+    otherwise draw the system's symbols)."""
+    from lyssna.ui import theme
+
+    monkeypatch.setattr(theme, "symbol_image", lambda *args: None)
+
+
+def test_every_icon_has_a_path(qapp, outlines):
     from lyssna.ui import icons
 
     assert len(icons.NAMES) >= 23
@@ -547,7 +561,7 @@ def test_every_icon_has_a_path(qapp):
     assert len({pm.toImage().pixel(x, y) for x in range(26) for y in range(26)}) > 1
 
 
-def test_optical_nudges_move_only_their_own_size_and_weight(qapp):
+def test_optical_nudges_move_only_their_own_size_and_weight(qapp, outlines):
     """The OPTICAL table shifts an icon's ink where the Mac's sits off centre, for that symbol at
     that size and weight only, and by less than a pixel."""
     import numpy as np
@@ -576,7 +590,7 @@ def test_optical_nudges_move_only_their_own_size_and_weight(qapp):
         assert (cx - bx, cy - by) == pytest.approx((dx, dy), abs=0.01)
 
 
-def test_a_boxed_icon_pixmap_keeps_the_symbol_size(qapp):
+def test_a_boxed_icon_pixmap_keeps_the_symbol_size(qapp, outlines):
     from lyssna.ui import icons
 
     pm = icons.icon_pixmap("lock", 13, QColor("black"), "regular", dpr=2.0, box=16)
@@ -584,6 +598,37 @@ def test_a_boxed_icon_pixmap_keeps_the_symbol_size(qapp):
     img = pm.toImage()
     rows = [y for y in range(32) if any(img.pixelColor(x, y).alpha() > 128 for x in range(32))]
     assert rows[-1] - rows[0] + 1 <= 26  # a 13 point lock (about 12 tall), not stretched to 16
+
+
+def test_windows_has_no_system_symbols():
+    from lyssna.win import appearance
+
+    assert appearance.symbol_image("play.fill", 13, "semibold", (0, 0, 0, 1.0), 2.0) is None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the system's symbols are the Mac's")
+def test_the_mac_draws_its_own_symbol_tinted_and_centred_as_appkit_does(qapp):
+    """On the Mac an icon is the system symbol's own image (play.fill at 13 pt semibold is 12 x 14
+    points), tinted through its coverage, centred on the icon box's centre on whole pixels."""
+    from lyssna.mac import appearance
+    from lyssna.ui import icons
+
+    image = appearance.symbol_image("play.fill", 13, "semibold", (200, 100, 50, 0.5), 2.0)
+    assert (image.width(), image.height(), image.devicePixelRatio()) == (24, 28, 2.0)
+    colours = {image.pixelColor(x, y).rgba() for x in range(24) for y in range(28)}
+    solid = [c for c in map(QColor.fromRgba, colours) if c.alpha() == 128]
+    assert solid and all(abs(c.red() - 200) <= 2 and abs(c.green() - 100) <= 2 and abs(c.blue() - 50) <= 2 for c in solid)
+    assert appearance.symbol_image("no.such.symbol", 13, "semibold", (0, 0, 0, 1.0), 2.0) is None
+
+    canvas = QImage(68, 68, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas.setDevicePixelRatio(2.0)
+    canvas.fill(0)
+    p = QPainter(canvas)
+    icons.draw_icon(p, "play.fill", icons.icon_rect(17, 17, 13), QColor("black"), "semibold")
+    p.end()
+    plain = appearance.symbol_image("play.fill", 13, "semibold", (0, 0, 0, 1.0), 2.0)
+    # The 12 x 14 image at (11, 10) points: pixel for pixel the symbol's own.
+    assert all(canvas.pixelColor(22 + x, 20 + y).alpha() == plain.pixelColor(x, y).alpha() for x in range(24) for y in range(28))
 
 
 # -- bars --------------------------------------------------------------------------------------

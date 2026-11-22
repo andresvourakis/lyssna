@@ -3,6 +3,7 @@ shows from the store and the dictionary, and what its controls do. The port of
 tests/legacy/test_history_window.py. The store and the dictionary live under the per-test temp
 dir; the clipboard, the copied-check timer and the confirmation are faked."""
 
+import sys
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -676,3 +677,25 @@ def test_nothing_dictated_reaches_the_log(win, store, vocab, clock, caplog):
     logged = "\n".join(r.getMessage() for r in caplog.records).lower()
     for word in ("door", "folder", "blue", "matias", "mattias"):
         assert word not in logged
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="AppKit's own letter positions")
+def test_the_fix_field_puts_each_letter_where_appkit_does():
+    """The fix field lays its text out itself (a QTextEdit); on the Mac each letter gets AppKit's
+    advance, so a line ends where the Mac's field editor ends it rather than up to a pixel short.
+    The typed text itself is untouched."""
+    from PySide6.QtWidgets import QWidget
+
+    from lyssna.mac import appearance
+    from lyssna.ui import theme
+
+    holder = QWidget()
+    field = HW.FixField(HW.FieldBox(holder), lambda: None, lambda: None, lambda: None)
+    text = "Can you send the updated deck to Mattias before the call?"
+    field.setPlainText(text)
+    field.document().setTextWidth(2000)
+    line = field.document().begin().layout().lineAt(0)
+    want = appearance.text_offsets(text, theme.text_style(field.font()))
+    got = [line.cursorToX(i)[0] for i in range(len(text) + 1)]
+    assert max(abs(a - b) for a, b in zip(got, want, strict=True)) < 0.1
+    assert field.text() == text

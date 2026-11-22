@@ -198,6 +198,14 @@ def system_color(name: str) -> QColor:
     return QColor.fromRgbF(r / 255, g / 255, b / 255, a)
 
 
+def symbol_image(name: str, size: float, weight: str, color: QColor, dpr: float):
+    """The system's own symbol `name` as a QImage tinted `color` (the Mac's SF Symbol, as the AppKit
+    interface drew it), or None where the interface draws its own outline: on Windows, for a
+    name the system lacks, and under use_fonts("windows")."""
+    return (_forced or host.appearance).symbol_image(name, size, weight, (color.red(), color.green(), color.blue(),
+                                                                          round(color.alphaF(), 4)), dpr)
+
+
 def panel_border() -> QColor:
     """The border of a panel on panel_bg (white at 0.10, as on the Mac)."""
     return QColor.fromRgbF(1.0, 1.0, 1.0, 0.10)
@@ -451,6 +459,32 @@ def _offsets(text: str, font: QFont, cut: bool) -> list[float] | None:
         kept = fonts.text_offsets(text[: -len(ELLIPSIS)], style)
         return None if kept is None else [*kept, kept[-1] + text_width(ELLIPSIS, font)]
     return fonts.text_offsets(text, style)
+
+
+def letter_spacings(text: str, font: QFont) -> list[float] | None:
+    """For an editor that lays out its own text (the history's fix field): the letter spacing, in
+    pixels, that gives each character of `text` the advance AppKit gives it, when each is drawn
+    without kerning in `font` with no spacing of its own (AppKit's kerning is in its advances).
+    None where there is nothing to follow (Windows) or the text does not draw one glyph per
+    character."""
+    if not text or not _one_glyph_each(text):
+        return None
+    offsets = _offsets(text, font, False)
+    if offsets is None:
+        return None
+    plain = QFont(font)
+    plain.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.0)
+    plain.setKerning(False)
+    fm = QFontMetricsF(plain)
+    # Qt keeps a letter spacing in 64ths of a pixel, so each is chosen to bring the running end of
+    # the line back to AppKit's rather than on its own, where the rounding would add up along a line.
+    out, at = [], 0.0
+    for i, ch in enumerate(text):
+        at += fm.horizontalAdvance(ch)
+        gap = round((offsets[i + 1] - at) * 64) / 64
+        out.append(gap)
+        at += gap
+    return out
 
 
 def _one_glyph_each(text: str) -> bool:

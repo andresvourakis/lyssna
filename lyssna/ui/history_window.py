@@ -36,7 +36,17 @@ from collections.abc import Callable
 from datetime import datetime
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QCursor, QFontMetricsF, QGuiApplication, QPainter, QPen, QTextLayout
+from PySide6.QtGui import (
+    QCursor,
+    QFont,
+    QFontMetricsF,
+    QGuiApplication,
+    QPainter,
+    QPen,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextLayout,
+)
 from PySide6.QtWidgets import QFrame, QLineEdit, QMenu, QMessageBox, QScrollArea, QTextEdit, QWidget
 
 from .. import config, host, support
@@ -390,6 +400,29 @@ class LineField(QLineEdit):
         super().focusOutEvent(ev)
 
 
+class AppKitSpacing(QSyntaxHighlighter):
+    """Gives every character of an editor's text the advance AppKit gives it (theme.letter_spacings),
+    so the fix field's letters sit where the Mac's field editor puts them rather than up to a
+    pixel off by a line's end. A highlighter's formats are the layout's own, so the document, its
+    undo history and the text read back are untouched. Nothing changes where there is no AppKit
+    to follow (Windows)."""
+
+    def __init__(self, document, font: QFont):
+        self.font = QFont(font)
+        super().__init__(document)
+
+    def highlightBlock(self, text: str) -> None:
+        spacings = theme.letter_spacings(text, self.font)
+        if spacings is None:
+            return
+        for i, gap in enumerate(spacings):
+            fmt = QTextCharFormat()
+            fmt.setFontKerning(False)  # AppKit's kerning is in its advances already
+            fmt.setFontLetterSpacingType(QFont.SpacingType.AbsoluteSpacing)
+            fmt.setFontLetterSpacing(gap)
+            self.setFormat(i, 1, fmt)
+
+
 class FixField(QTextEdit):
     """The multi-line field a fix is typed in. Return saves and Escape cancels (the Mac's
     insertNewline: and cancelOperation:); it grows with its text."""
@@ -406,6 +439,7 @@ class FixField(QTextEdit):
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.setFont(theme.ui_font(TEXT_SIZE))
         self.document().setDocumentMargin(0)
+        self.spacing = AppKitSpacing(self.document(), self.font())
         self.viewport().setAutoFillBackground(False)
         self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         self.restyle()
@@ -423,6 +457,7 @@ class FixField(QTextEdit):
         """Its lines at `width`, each the font's height rounded up to whole pixels: the Mac's field
         cell is 17 a line for 14 px text where Qt's document would be 16.5, a pixel short over two."""
         doc = self.document().clone()
+        AppKitSpacing(doc, self.font()).rehighlight()  # the same letters as the field itself, so the same lines
         doc.setTextWidth(width)
         doc.documentLayout().documentSize()  # lays the document out
         lines, block = 0, doc.begin()

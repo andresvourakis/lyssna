@@ -385,6 +385,16 @@ class StepIcon(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.translate(self.paint_offset)
+        # The Mac's 18 pt checkmark.circle.fill or numbered circle fills its 22 x 22 image view;
+        # where there is no such symbol (Windows) the disc and ring are drawn.
+        centre = QPointF(self.width() / 2, self.height() / 2)
+        if self.done:
+            symbol, tint = "checkmark.circle.fill", good()
+        else:
+            symbol, tint = f"{self.number}.circle", theme.content_dim()
+        if icons.draw_symbol(p, symbol, centre, 18, tint, "medium"):
+            p.end()
+            return
         d = 19.0
         circle = QRectF((self.width() - d) / 2, (self.height() - d) / 2, d, d)
         if self.done:
@@ -423,6 +433,10 @@ class StatusRow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = QRectF(1.5, 2.5, 13, 13)  # the Mac's 13 pt symbol, centred in its 16 x 16 image view at (0, 1)
+        symbol, tint = ("checkmark.circle.fill", good()) if self.done else ("exclamationmark.circle", theme.content_dim())
+        if icons.draw_symbol(p, symbol, rect.center(), 13, tint, "medium"):
+            p.end()
+            return
         if self.done:
             _draw_check_disc(p, rect, good())
         else:

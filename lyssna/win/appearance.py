@@ -111,6 +111,12 @@ def text_offsets(text: str, style: tuple[str, int, str]) -> list[float] | None:
     return None
 
 
+def symbol_image(name: str, size: float, weight: str, color: tuple[int, int, int, float], dpr: float):
+    """None: Apple's symbols may only be used on Apple platforms, so on Windows the interface
+    draws its own outlines (lyssna/ui/icons.py). The Mac twin returns the system's symbol."""
+    return None
+
+
 # The colours Windows draws for the Mac's named system colours: the Mac's success and error
 # colours, an empty key field's hint as Qt drew it (the text colour at half alpha) and a
 # disabled text button as it was drawn (the text colour at 0.30), and selected text on the text

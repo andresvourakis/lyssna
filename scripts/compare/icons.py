@@ -6,7 +6,9 @@ weight). Round 1B's measurement (icons1b/measure.py), folded in.
 Legacy (legacy_side process): NSImage.imageWithSystemSymbolName with an
 NSImageSymbolConfiguration(pointSize, weight), drawn black at 2x with the image's size box
 centred on a CANVAS-point canvas (what a borderless NSButton with NSImageOnly does).
-Qt (qt_side process): icons.draw_icon into icons.icon_rect(centre, size), black, at 2x.
+Qt (qt_side process): icons.draw_icon into icons.icon_rect(centre, size), black, at 2x: on a
+Mac the system's own symbol (lyssna/mac/appearance.symbol_image), so the main table checks that
+it lands where AppKit puts it; the drawn outlines Windows shows are measured in a second table.
 compose: reads both pictures' alpha and reports, per row, the ink box (alpha at least half) in
 points, the box centre's offset from the canvas centre, and the ink amount (summed alpha, in 2x
 pixels), with an overlay picture: today's Mac only in red, the new interface only in blue, both
@@ -20,6 +22,7 @@ from pathlib import Path
 CANVAS = 48.0  # points
 SCALE = 2
 INK_BOX = 128  # alpha at or above this counts for the ink box
+OUTLINE_DIR = "icons-outline"  # beside raw/qt/icons: the drawn outlines Windows shows
 
 # The verdict: a row matches when both box sides and the centre are within BOX_TOL points and
 # the ink amount within INK_TOL percent.
@@ -112,31 +115,53 @@ def legacy_side(raw: Path, only: str | None) -> int:
 
 
 def qt_side(raw: Path, only: str | None) -> int:
-    from PySide6.QtCore import Qt
+    """Each row as the new interface draws it on this computer (icons.draw_icon: on a Mac the
+    system's own symbol), and, under icons-outline/, the drawn outline Windows shows
+    (icons.draw_outline), so the outlines stay measured against the Mac's symbols."""
+    from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QColor, QImage, QPainter
 
     from lyssna.ui import icons
 
     raw.mkdir(parents=True, exist_ok=True)
+    outline_dir = raw.parent / OUTLINE_DIR
+    outline_dir.mkdir(parents=True, exist_ok=True)
     px = int(CANVAS * SCALE)
     n = 0
     missing = {}
-    for name, pt, weight, _use in selected(only):
-        if name not in getattr(icons, "ICONS", {name: None}):
-            missing[row_name(name, pt, weight)] = "the new interface has no icon by this name"
-            continue
+
+    def picture(draw) -> QImage | None:
         img = QImage(px, px, QImage.Format.Format_ARGB32_Premultiplied)
         img.setDevicePixelRatio(SCALE)
         img.fill(Qt.GlobalColor.transparent)
         p = QPainter(img)
         try:
-            icons.draw_icon(p, name, icons.icon_rect(CANVAS / 2, CANVAS / 2, pt), QColor(0, 0, 0), weight)
-        except Exception as exc:  # the new interface has no icon by this name
-            missing[row_name(name, pt, weight)] = f"{type(exc).__name__}: {exc}"
+            drawn = draw(p)
+        finally:
             p.end()
+        return img if drawn else None
+
+    black = QColor(0, 0, 0)
+    for name, pt, weight, _use in selected(only):
+        key = row_name(name, pt, weight)
+        rect = icons.icon_rect(CANVAS / 2, CANVAS / 2, pt)
+        has_outline = name in getattr(icons, "ICONS", {})
+        try:
+            img = picture(lambda p, name=name, pt=pt, weight=weight: icons.draw_symbol(p, name, QPointF(CANVAS / 2, CANVAS / 2), pt,
+                                                                                       black, weight))
+            if img is None and has_outline:
+                img = picture(lambda p, name=name, rect=rect, weight=weight: icons.draw_outline(p, name, rect, black, weight) or True)
+            outline = (picture(lambda p, name=name, rect=rect, weight=weight: icons.draw_outline(p, name, rect, black, weight) or True)
+                       if has_outline else None)
+        except Exception as exc:
+            missing[key] = f"{type(exc).__name__}: {exc}"
             continue
-        p.end()
-        img.save(str(raw / f"{row_name(name, pt, weight)}.png"))
+        if img is None:
+            missing[key] = "the new interface has no icon by this name"
+            continue
+        img.save(str(raw / f"{key}.png"))
+        if outline is not None:
+            outline.save(str(outline_dir / f"{key}.png"))
         n += 1
     (raw / "missing.json").write_text(json.dumps(missing, indent=1), encoding="utf-8")
     return n
@@ -237,6 +262,28 @@ def compose(out: Path, only: str | None) -> list[dict]:
                      f"{sl['ink']:.0f} | {sq['ink']:.0f} | {r['ink_pct']:+.1f} | {'yes' if r['ok'] else 'NO'} |")
     ok = sum(1 for r in rows if r.get("ok"))
     lines.append(f"\n{ok} of {len(rows)} within tolerance.")
+    raw_o = out / "raw" / "qt" / OUTLINE_DIR
+    outlines = []
+    for name, pt, weight, use in selected(only):
+        key = row_name(name, pt, weight)
+        al, ao = _alpha(raw_l / f"{key}.png"), _alpha(raw_o / f"{key}.png")
+        if al is None or ao is None:
+            continue
+        sl, so = stats(al), stats(ao)
+        pct = 100.0 * (so["ink"] - sl["ink"]) / sl["ink"] if sl["ink"] else 0.0
+        worst = max(abs(sl["w"] - so["w"]), abs(sl["h"] - so["h"]), abs(sl["dx"] - so["dx"]), abs(sl["dy"] - so["dy"]))
+        outlines.append((name, pt, weight, use, sl, so, pct, worst <= BOX_TOL and abs(pct) <= INK_TOL))
+    if outlines:
+        lines += ["\n## The drawn outlines (what Windows shows) against the Mac's symbols\n",
+                  "On a Mac the new interface draws the system's own symbols (the table above). Windows may not use them "
+                  "and draws its own outlines (lyssna/ui/icons.py), measured here the same way so they stay true to "
+                  "the Mac's size, weight and position.\n",
+                  "| symbol | pt | weight | use | legacy w x h | outline w x h | legacy dx,dy | outline dx,dy | ink % | matches |",
+                  "|---|---|---|---|---|---|---|---|---|---|"]
+        for name, pt, weight, use, sl, so, pct, good in outlines:
+            lines.append(f"| {name} | {pt:g} | {weight} | {use} | {sl['w']:g} x {sl['h']:g} | {so['w']:g} x {so['h']:g} | "
+                         f"{sl['dx']:+g},{sl['dy']:+g} | {so['dx']:+g},{so['dy']:+g} | {pct:+.1f} | {'yes' if good else 'NO'} |")
+        lines.append(f"\n{sum(1 for o in outlines if o[-1])} of {len(outlines)} outlines within tolerance.")
     (out / "icons.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out / "icons.json").write_text(json.dumps(rows, indent=1), encoding="utf-8")
     return rows

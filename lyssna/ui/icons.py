@@ -8,7 +8,11 @@ whose width follows the weight, solid shapes with softly rounded corners, and ea
 inside the box the way SF sizes it, so a 20 px play and a 17 px skip sit together as on the Mac.
 
 Keys are the SF Symbol names, so shared code that returns a symbol name (the dock arrows, the
-chevrons) works unchanged. An unknown name draws nothing and is logged once."""
+chevrons) works unchanged. An unknown name draws nothing and is logged once.
+
+On the Mac itself the system's symbols are there and are what the AppKit interface showed, so
+draw_icon draws those (theme.symbol_image, from the appearance twin) and keeps these outlines for
+Windows; draw_outline always draws the outline."""
 
 from __future__ import annotations
 
@@ -335,7 +339,8 @@ ICONS: dict[str, Callable[[float], QPainterPath]] = {
 
 NAMES = tuple(ICONS)
 
-# Per-size nudges, in logical pixels (x right, y down), for the icons whose centre still missed
+# Per-size nudges for our outlines only (the system's symbols sit where AppKit puts them), in
+# logical pixels (x right, y down), for the icons whose centre still missed
 # the Mac's by more than half a pixel after the shapes were tuned: AppKit sizes each symbol's
 # image to whole quarter points and places it on the pixel grid, which moves its ink a little
 # off the button's centre. The numbers are the Mac's ink-box centre minus ours, measured at 2x
@@ -378,9 +383,47 @@ def icon_rect(cx: float, cy: float, size: float) -> QRectF:
     return QRectF(cx - size / 2, cy - size / 2, size, size)
 
 
+def draw_symbol(painter: QPainter, name: str, center: QPointF, size: float, color: QColor, weight: str | None = None) -> bool:
+    """Draw the system's own symbol `name` (size points, weight) centred on `center` in `color`, as
+    an NSButton or NSImageView centres its symbol image, and say whether it did. False where there
+    is no system symbol (Windows, or a name the system lacks): the caller draws its own."""
+    from . import theme
+
+    device = painter.device()
+    dpr = float(device.devicePixelRatioF()) if device is not None else 1.0
+    image = theme.symbol_image(name, size, weight or DEFAULT_WEIGHT, color, dpr)
+    if image is None:
+        return False
+    w, h = image.width() / dpr, image.height() / dpr
+    x, y = center.x() - w / 2, center.y() - h / 2
+    # The Mac's symbol images are whole points, so their centred origin is on a whole pixel at 2x
+    # (half points at 1x). Kept on the device's pixel grid, the image is copied rather than resampled.
+    t = painter.deviceTransform()
+    tx = QTransform.TransformationType
+    if t.type() in (tx.TxNone, tx.TxTranslate, tx.TxScale):
+        dev = t.map(QPointF(x, y))
+        snapped, _ok = t.inverted()
+        back = snapped.map(QPointF(round(dev.x()), round(dev.y())))
+        x, y = back.x(), back.y()
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    painter.drawImage(QRectF(x, y, w, h), image)
+    painter.restore()
+    return True
+
+
 def draw_icon(painter: QPainter, name: str, rect: QRectF, color: QColor, weight: str | None = None) -> None:
-    """Fill icon `name` into `rect` (the symbol's point-size box, normally square) in `color`.
-    A non-square rect gets the icon at its shorter side, centred."""
+    """Draw icon `name` into `rect` (the symbol's point-size box, normally square) in `color`: the
+    system's own symbol where there is one (the Mac), else our outline (draw_outline). A
+    non-square rect gets the icon at its shorter side, centred."""
+    side = min(rect.width(), rect.height())
+    if draw_symbol(painter, name, rect.center(), side, color, weight):
+        return
+    draw_outline(painter, name, rect, color, weight)
+
+
+def draw_outline(painter: QPainter, name: str, rect: QRectF, color: QColor, weight: str | None = None) -> None:
+    """Fill our own outline of icon `name` into `rect` (the symbol's point-size box) in `color`."""
     path = icon_path(name, weight)
     if path.isEmpty():
         return
@@ -401,11 +444,18 @@ def draw_icon(painter: QPainter, name: str, rect: QRectF, color: QColor, weight:
 def icon_pixmap(name: str, size: float, color: QColor, weight: str | None = None, dpr: float | None = None,
                 box: float | None = None) -> QPixmap:
     """The icon as a size x size pixmap (logical pixels) at `dpr`, default the primary screen's.
-    With `box`, the pixmap is box x box with the size-point icon centred in it."""
+    With `box`, the pixmap is box x box with the size-point icon centred in it. A system symbol
+    whose image is larger than that (the Mac's warning triangle is 17 x 15 at 13 pt) gets a
+    pixmap large enough to hold it whole."""
+    from . import theme
+
     if dpr is None:
         screen = QGuiApplication.primaryScreen() if QGuiApplication.instance() is not None else None
         dpr = float(screen.devicePixelRatio()) if screen is not None else 1.0
     side = max(size, box or 0.0)
+    image = theme.symbol_image(name, size, weight or DEFAULT_WEIGHT, color, dpr)
+    if image is not None:
+        side = max(side, math.ceil(image.width() / dpr), math.ceil(image.height() / dpr))
     px = max(1, math.ceil(side * dpr))
     pm = QPixmap(px, px)
     pm.setDevicePixelRatio(dpr)

@@ -203,6 +203,15 @@ def _attributed_title(button):
         return None, None
 
 
+def _tip_covered(view) -> bool:
+    """Does a visible subview with a tooltip of its own cover the whole of `view`?"""
+    bounds = view.bounds()
+    for sub in view.subviews():
+        if not sub.isHidden() and sub.toolTip() and AppKit.NSContainsRect(sub.frame(), bounds):
+            return True
+    return False
+
+
 def walk(root, app) -> list[dict]:
     """Every visible view under `root`, in tree order, with what the comparison reads of it."""
     out: list[dict] = []
@@ -282,7 +291,13 @@ def walk(root, app) -> list[dict]:
         elif name == "NSProgressIndicator":
             e["role"] = "spinner"
         tip = view.toolTip()
-        if tip:
+        if tip and _tip_covered(view):
+            # AppKit shows the tooltip of the deepest view under the cursor that has one, so a view
+            # whose whole area lies under a subview with its own tooltip never shows its own (the
+            # player's voice badge "Kokoro · Heart" under its button's "Change voice"). Kept for
+            # reading, not compared: the comparison is of the tooltip a hover shows.
+            e["tooltip_never_shown"] = str(tip)
+        elif tip:
             e["tooltip"] = str(tip)
         try:
             label = view.accessibilityLabel()

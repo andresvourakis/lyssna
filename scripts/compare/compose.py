@@ -77,6 +77,10 @@ UNRELIABLE = [
     "setup key caps) has no ink rows; it reaches the verdicts only through the pixels. A folded dictation that ends "
     "at a different word (history: 'Windows in…' against 'Windows …') is visible in the pictures but not named.",
     "Title bars of the windows: the system's on both sides, not in the pictures.",
+    "Tooltips: the one a hover shows is compared. A legacy view whose whole area lies under a subview with its own "
+    "tooltip never shows its own (AppKit shows the deepest view's), so that stored tooltip is listed in the legacy "
+    "elements as tooltip_never_shown and not compared (the player's voice badge 'Kokoro · Heart', under its "
+    "button's 'Change voice').",
     "Menus are compared row by row (title, order, shortcut, tick, heading, enabled); an NSMenu cannot be drawn without "
     "opening it on screen, so their look is not compared.",
     "The toast's window fade: the legacy window alpha cannot be animated offscreen; compared from the code.",

@@ -1,5 +1,5 @@
-"""The Mac's fonts, its reduced-motion setting and its time format, for the Qt interface
-(lyssna/ui/theme.py, the history's times).
+"""The Mac's fonts, its reduced-motion setting, its time format and its symbols, for the Qt
+interface (lyssna/ui/theme.py, the history's times, lyssna/ui/icons.py).
 
 Why: the Mac keeps Apple's fonts and must look as the AppKit interface did. Qt reaches San
 Francisco as ".AppleSystemUIFont", but AppKit draws it with Apple's size-dependent tracking
@@ -17,6 +17,7 @@ Windows twin (lyssna/win/appearance.py) offers the same names."""
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -149,11 +150,12 @@ def text_offsets(text: str, style: tuple[str, int, str]) -> list[float] | None:
 # hundreds of widths. A single line set to truncate its tail keeps the most characters for which
 # the kept text and the ellipsis, measured apart (the ellipsis sits at the kept text's advance,
 # without kerning), fit the line. The last line a wrapping label shows (truncatesLastVisibleLine)
-# first tightens its letters to keep more: it keeps the most characters for which that width is
-# no more than the line plus TIGHTEN_EM of the font size per kept character, and is then drawn
-# with every kept character that much narrower (the whole allowance, not just enough to fit:
-# measured on the fields' pixels at 39 of 40 widths). TextKit's own truncation does neither, so
-# the cut is found here.
+# first tightens its letters to keep more, and is then drawn with every kept character TIGHTEN_EM
+# of the font size narrower (the whole allowance, not just enough to fit: measured on the fields'
+# pixels at 39 of 40 widths). Where that last line is cut is asked of TextKit 2 (_last_line): an
+# NSTextLayoutManager whose container truncates its one line, with the paragraph allowing the
+# default tightening, keeps exactly the characters the label keeps (29856 of 29856 clamped
+# labels, 11 to 14 pt, 150 to 460 wide in 1 pt steps). TextKit 1's truncation does not tighten.
 TIGHTEN_EM = 0.01368
 # TextKit lets a line run over its width by about a thousandth of a point that the label's cell does
 # not allow (a line 290.001 wide fits 290 in TextKit, not in the label).
@@ -192,17 +194,15 @@ def _wrap(text: str, font, width: float) -> list[tuple[int, int]]:
     return out
 
 
-def _cut(text: str, font, size: int, width: float, tighten: bool) -> str:
+def _cut(text: str, font, width: float) -> str:
     """`text` on one line `width` wide as AppKit shows it when it truncates the tail: whole if
-    it fits (tightened if `tighten` and need be), else the most characters that fit and an
-    ellipsis."""
-    slack = TIGHTEN_EM * size if tighten else 0.0
+    it fits, else the most characters that fit and an ellipsis."""
 
     def fits(kept: str, ellipsis: bool) -> bool:
         if not kept:
             return True
         need = _appkit_advance(kept, font) + (_appkit_advance(ELLIPSIS, font) if ellipsis else 0.0)
-        return need - width <= slack * len(kept) + 1e-6
+        return need - width <= 1e-6
 
     if fits(text, False):
         return text
@@ -216,11 +216,53 @@ def _cut(text: str, font, size: int, width: float, tighten: bool) -> str:
     return text[:lo].rstrip() + ELLIPSIS
 
 
+def _last_line(text: str, font, width: float) -> str:
+    """`text` on the last line of a wrapping label `width` wide that truncates its last visible line,
+    as TextKit 2 lays it out: whole if it fits, tightened if need be, else the characters it keeps
+    and an ellipsis. TextKit 2 reports no truncated range, but the characters it hides have no
+    place of their own on the line: every one sits back at x 0, after the ellipsis's slot."""
+    import AppKit
+
+    para = AppKit.NSMutableParagraphStyle.alloc().init()
+    para.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
+    para.setAllowsDefaultTighteningForTruncation_(True)
+    storage = AppKit.NSTextContentStorage.alloc().init()
+    manager = AppKit.NSTextLayoutManager.alloc().init()
+    storage.addTextLayoutManager_(manager)
+    container = AppKit.NSTextContainer.alloc().initWithSize_((max(1.0, width - WRAP_SLACK), 1e7))
+    container.setLineFragmentPadding_(0)
+    container.setMaximumNumberOfLines_(1)
+    container.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
+    manager.setTextContainer_(container)
+    storage.setAttributedString_(AppKit.NSAttributedString.alloc().initWithString_attributes_(
+        text, {AppKit.NSFontAttributeName: font, AppKit.NSParagraphStyleAttributeName: para}))
+    manager.ensureLayoutForRange_(storage.documentRange())
+    fragments = []
+
+    def visit(fragment) -> bool:
+        fragments.extend(fragment.textLineFragments())
+        return False  # the first line is the only one shown
+
+    manager.enumerateTextLayoutFragmentsFromLocation_options_usingBlock_(storage.documentRange().location(), 0, visit)
+    line = fragments[0]
+    r = line.characterRange()
+    start, end = r.location, r.location + r.length
+    prev = -1.0
+    for i in range(start, end):
+        x = float(line.locationForCharacterAtIndex_(i).x)
+        if i > start and x <= prev:
+            return text[start:i - 1].rstrip() + ELLIPSIS  # i - 1 is the ellipsis's slot
+        prev = x
+    if end < len(text.rstrip()):
+        raise ValueError("TextKit 2 left text off its one line without an ellipsis")
+    return text[start:end].rstrip()
+
+
 def truncate(text: str, style: tuple[str, int, str], width: float, qt_elide: Callable[[str, float], str]) -> str:
     """One line of `text` in the text style, cut to `width` with an ellipsis as an AppKit label
     that truncates its tail cuts it. qt_elide answers when AppKit cannot."""
     try:
-        return _cut(text, _appkit_font(*style), style[1], width, tighten=False)
+        return _cut(text, _appkit_font(*style), width)
     except Exception:
         log.debug("could not truncate in AppKit", exc_info=True)
         return qt_elide(text, width)
@@ -240,7 +282,7 @@ def break_lines(text: str, style: tuple[str, int, str], width: float, max_lines:
             spans = _wrap(text, font, width)
             if max_lines and len(spans) > max_lines:
                 rest = text[spans[max_lines - 1][0]:].replace("\n", " ")
-                lines = [text[a:b].rstrip() for a, b in spans[: max_lines - 1]] + [_cut(rest, font, style[1], width, tighten=True)]
+                lines = [text[a:b].rstrip() for a, b in spans[: max_lines - 1]] + [_last_line(rest, font, width)]
             else:
                 lines = [text[a:b].rstrip() for a, b in spans]
         except Exception:
@@ -250,6 +292,106 @@ def break_lines(text: str, style: tuple[str, int, str], width: float, max_lines:
             _lines.clear()
         _lines[key] = lines
     return list(lines)
+
+
+# The system's own symbols (SF Symbols), for the Qt interface's icons (lyssna/ui/icons.py). Apple's
+# symbols may only be used on Apple platforms, so the interface carries drawn outlines of its own
+# for Windows; on the Mac it draws the very images the AppKit interface's buttons and image views
+# showed. Measured on the legacy pixels at 2x: an NSButton or NSImageView draws a symbol image
+# at its own whole-point size, drawn black into a bitmap of that size and tinted through its
+# alpha by contentTintColor, which is what symbol_image() returns (to within 1 of 255).
+SYMBOL_WEIGHTS = {"regular": "NSFontWeightRegular", "medium": "NSFontWeightMedium",
+                  "semibold": "NSFontWeightSemibold", "bold": "NSFontWeightBold", "heavy": "NSFontWeightHeavy"}
+SYMBOLS_KEPT = 512  # symbol_image's memory of tinted images, emptied when full
+_symbol_masks: dict[tuple[str, float, str, float], object] = {}  # the untinted bitmaps (NSBitmapImageRep), or None
+_symbols: dict[tuple, object] = {}
+
+
+def _srgb_rep(pw: int, ph: int, w: float, h: float):
+    """An empty premultiplied RGBA bitmap of pw x ph pixels for a w x h point drawing, tagged sRGB so
+    the colours drawn into it are not converted on the way in."""
+    import AppKit
+
+    rep = AppKit.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(  # noqa: E501
+        None, pw, ph, 8, 4, True, False, AppKit.NSCalibratedRGBColorSpace, 0, 32)
+    rep = rep.bitmapImageRepByRetaggingWithColorSpace_(AppKit.NSColorSpace.sRGBColorSpace())
+    rep.setSize_((w, h))
+    return rep
+
+
+def _draw_into(rep, draw: Callable[[], None]) -> None:
+    import AppKit
+
+    AppKit.NSGraphicsContext.saveGraphicsState()
+    try:
+        AppKit.NSGraphicsContext.setCurrentContext_(AppKit.NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep))
+        draw()
+    finally:
+        AppKit.NSGraphicsContext.restoreGraphicsState()
+
+
+def _symbol_mask(name: str, size: float, weight: str, dpr: float):
+    """The symbol configured as the AppKit interface configured it (imageWithSystemSymbolName and
+    NSImageSymbolConfiguration's point size and weight), drawn black at its own size; None when the
+    system has no symbol by that name."""
+    key = (name, size, weight, dpr)
+    if key not in _symbol_masks:
+        import AppKit
+
+        image = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+        rep = None
+        if image is not None:
+            config = AppKit.NSImageSymbolConfiguration.configurationWithPointSize_weight_(
+                size, getattr(AppKit, SYMBOL_WEIGHTS[weight]))
+            image = image.imageWithSymbolConfiguration_(config)
+            w, h = float(image.size().width), float(image.size().height)
+            rep = _srgb_rep(max(1, math.ceil(w * dpr - 1e-6)), max(1, math.ceil(h * dpr - 1e-6)), w, h)
+            _draw_into(rep, lambda: image.drawInRect_(((0, 0), (w, h))))
+        _symbol_masks[key] = rep
+    return _symbol_masks[key]
+
+
+def symbol_image(name: str, size: float, weight: str, color: tuple[int, int, int, float], dpr: float):
+    """The system symbol `name` at `size` points and `weight` ("regular" to "heavy"), tinted
+    `color` (r, g, b in 0..255 and alpha in 0..1, sRGB), as a QImage at device pixel ratio `dpr`
+    whose logical size is the symbol image's own (an NSButton or NSImageView centres that box).
+    None when the system has no such symbol or AppKit cannot draw it: the caller then draws its
+    own outline. Remembered per symbol, size, weight, colour and ratio."""
+    key = (name, float(size), weight, tuple(color), float(dpr))
+    if key in _symbols:
+        return _symbols[key]
+    try:
+        import AppKit
+        from PySide6.QtGui import QImage
+
+        mask = _symbol_mask(name, float(size), weight, float(dpr))
+        if mask is None:
+            image = None
+        else:
+            w, h = float(mask.size().width), float(mask.size().height)
+            pw, ph = mask.pixelsWide(), mask.pixelsHigh()
+            rep = _srgb_rep(pw, ph, w, h)
+            r, g, b, a = color
+            tint = AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(r / 255, g / 255, b / 255, a)
+
+            def draw() -> None:
+                # A template image tinted by contentTintColor: the colour, through the symbol's coverage.
+                mask.drawInRect_(((0, 0), (w, h)))
+                tint.set()
+                AppKit.NSRectFillUsingOperation(((0, 0), (w, h)), AppKit.NSCompositingOperationSourceIn)
+
+            _draw_into(rep, draw)
+            row = rep.bytesPerRow()
+            data = bytes(rep.bitmapData())[: row * ph]
+            image = QImage(data, pw, ph, row, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+            image.setDevicePixelRatio(float(dpr))
+    except Exception:
+        log.debug("could not draw the system symbol %s", name, exc_info=True)
+        return None
+    if len(_symbols) >= SYMBOLS_KEPT:
+        _symbols.clear()  # a fading colour would otherwise grow it forever
+    _symbols[key] = image
+    return image
 
 
 SYSTEM_COLORS = {"red": "systemRedColor", "green": "systemGreenColor", "placeholder": "placeholderTextColor",
