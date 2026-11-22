@@ -793,6 +793,44 @@ def test_previews_build_without_a_controller_or_network(qapp):
     QCoreApplication.processEvents()
 
 
+def test_no_setup_preview_cuts_a_label_short(qapp, monkeypatch):
+    """Every label in every setup preview is drawn whole, as the Mac draws all of them. Round 2
+    cut "Free and private" to "Free and priva…": its room came from AppKit's width and the cut
+    from Qt's, which differ by a fraction of a pixel. A cut now goes through theme.elide, which
+    decides with the same widths the room was made with."""
+    from PySide6.QtGui import QImage
+
+    from lyssna.ui import setup_window, theme
+
+    cut: dict[str, str] = {}
+    real = theme.elide
+
+    def elide(text, font, width):
+        shown = real(text, font, width)
+        if shown != text:
+            cut[text] = shown
+        return shown
+
+    monkeypatch.setattr(theme, "elide", elide)
+    from PySide6.QtGui import QFontMetrics, QFontMetricsF
+
+    for cls in (QFontMetrics, QFontMetricsF):  # a direct Qt cut counts too
+        def qt_elided(self, text, *args, real_qt=cls.elidedText, **kwargs):
+            shown = real_qt(self, text, *args, **kwargs)
+            if shown != text and text:
+                cut[text] = shown
+            return shown
+
+        monkeypatch.setattr(cls, "elidedText", qt_elided)
+    for name, factory in setup_window.PREVIEWS.items():
+        w = factory()
+        img = QImage(w.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        w.render(img)
+        assert not cut, (name, cut)
+        w.deleteLater()
+    QCoreApplication.processEvents()
+
+
 def test_previews_force_the_capabilities(qapp):
     from lyssna.ui import setup_window
 

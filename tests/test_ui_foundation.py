@@ -437,6 +437,82 @@ def test_labels_are_framed_as_appkit_labels(qapp):
     assert h2 > h1  # less than the insets' room: the last word wraps, as AppKit's does
 
 
+def test_a_forced_scheme_is_asked_of_qt_too(scheme, monkeypatch):
+    """Qt rasterises glyphs dark on light in a light application and light on dark otherwise,
+    and Core Text thickens light glyphs more: a scheme forced for the preview must be Qt's too,
+    or light-mode text draws about 12 percent heavier than the app ever draws it. (The offscreen
+    platform ignores the request, so the request itself is checked.)"""
+    from PySide6.QtGui import QStyleHints
+
+    asked = []
+    monkeypatch.setattr(QStyleHints, "setColorScheme", lambda self, s: asked.append(s))
+    scheme("dark")
+    scheme("light")
+    scheme(None)
+    assert asked == [Qt.ColorScheme.Dark, Qt.ColorScheme.Light, Qt.ColorScheme.Unknown]
+
+
+WORDS = ("Notes from the standup. The build is green again after the font fix. Parakeet is now the default on "
+         "Apple silicon and the cleanup model stays under two seconds on every machine we tried.")
+
+
+def test_lines_keep_every_word_and_fit_their_width(qapp):
+    from lyssna.ui import theme
+
+    font = theme.ui_font(14)
+    for width in (150.0, 233.0, 360.0):
+        lines = theme.break_lines(WORDS, font, width)
+        assert " ".join(lines) == WORDS and len(lines) > 1
+        assert all(theme.text_width(line, font) <= width + 1e-3 for line in lines)
+        clamped = theme.break_lines(WORDS, font, width, 2)
+        assert len(clamped) == 2 and clamped[0] == lines[0] and clamped[1].endswith(theme.ELLIPSIS)
+        assert theme.drawn_width(clamped[1], font, width, cut=True) <= width + 1e-3
+
+
+def test_a_label_shows_the_lines_it_is_given(qapp):
+    from lyssna.ui import theme
+    from lyssna.ui.window import TEXT_INSET, Label
+
+    label = Label(WORDS, size=14, wrap=True)
+    label.fit(300)
+    assert label.lines() == theme.break_lines(WORDS, label.font(), 300 - 2 * TEXT_INSET)
+    assert label.height() == len(label.lines()) * math.ceil(label.fontMetrics().height())
+
+
+def test_a_line_is_drawn_as_wide_as_the_mac_draws_it(qapp):
+    """draw_text_at draws a line drawn_width wide (on the Mac AppKit's own width of that string;
+    on Windows Qt's, unchanged), whatever Qt's own advance for it."""
+    from lyssna.ui import theme
+
+    font = theme.ui_font(13)
+    text = "Select text in any app and press the shortcut"
+    img = QImage(900, 60, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setPen(QColor(0, 0, 0))
+    drawn = theme.draw_text_at(p, 10.0, 30.0, text, font)
+    p.end()
+    assert drawn == pytest.approx(theme.text_width(text, font), abs=0.05)
+
+
+def test_both_font_sets_name_the_same_system_colours():
+    from lyssna.mac import appearance as mac_appearance
+    from lyssna.win import appearance as win_appearance
+
+    assert set(win_appearance.SYSTEM_COLORS) == {(name, dark) for name in mac_appearance.SYSTEM_COLORS for dark in (False, True)}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="AppKit's own line breaks and cut")
+def test_the_mac_ends_a_folded_dictation_where_appkit_does(qapp):
+    """The history row folding a long dictation to four lines on 360 points: AppKit tightens
+    the last line's letters and keeps "Windows in…" where an untightened cut keeps "Windows…"."""
+    from lyssna.mac import appearance
+
+    text = (WORDS + " Next we look at the Windows installer, the history window and the dictionary tab.")
+    lines = appearance.break_lines(text, ("text", 14, "regular"), 360.0, 4, lambda t, w, n: [])
+    assert len(lines) == 4 and lines[-1].endswith("the Windows in" + appearance.ELLIPSIS)
+
+
 def test_text_buttons_are_framed_as_borderless_appkit_buttons(qapp):
     from PySide6.QtGui import QFontMetrics
 

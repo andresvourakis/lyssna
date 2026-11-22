@@ -39,6 +39,8 @@ log = logging.getLogger("lyssna.win.appearance")
 
 TEXT_FAMILY = "Inter"
 SERIF_FAMILY = "Literata 36pt"
+SECURE_BULLET: int | None = None  # a hidden character as Qt's style shows it (the Mac twin names AppKit's)
+TIGHTEN_EM = 0.0  # Qt does not tighten a truncated line (the Mac twin describes AppKit's)
 
 FONT_DIR = Path(__file__).resolve().parent.parent / "ui" / "assets" / "fonts"
 FONT_FILES = ("Inter-Regular.ttf", "Inter-Medium.ttf", "Inter-SemiBold.ttf", "Inter-Bold.ttf", "Inter-Italic.ttf",
@@ -90,6 +92,44 @@ def text_width(text: str, style: tuple[str, int, str], qt_advance: Callable[[str
     """How wide `text` is in the text style, for sizing frames: Qt's own measure of the bundled
     font, qt_advance. The Mac twin asks AppKit instead; Windows has nothing to match but itself."""
     return qt_advance(text)
+
+
+def break_lines(text: str, style: tuple[str, int, str], width: float, max_lines: int,
+                qt_lines: Callable[[str, float, int], list[str]]) -> list[str]:
+    """The lines a label `width` wide shows of `text`: Qt's own breaks, qt_lines. The Mac twin
+    asks AppKit instead; Windows has nothing to match but itself."""
+    return qt_lines(text, width, max_lines)
+
+
+def truncate(text: str, style: tuple[str, int, str], width: float, qt_elide: Callable[[str, float], str]) -> str:
+    """One line of `text` cut to `width` with an ellipsis: Qt's own, qt_elide."""
+    return qt_elide(text, width)
+
+
+def text_offsets(text: str, style: tuple[str, int, str]) -> list[float] | None:
+    """None: Windows has no other interface's positions to follow, so Qt places every glyph."""
+    return None
+
+
+# The colours Windows draws for the Mac's named system colours: the Mac's success and error
+# colours, an empty key field's hint as Qt drew it (the text colour at half alpha) and a
+# disabled text button as it was drawn (the text colour at 0.30), and selected text on the text
+# colour at a quarter, as the fields have always drawn it.
+SYSTEM_COLORS: dict[tuple[str, bool], tuple[int, int, int, float]] = {
+    ("red", False): (255, 59, 48, 1.0), ("red", True): (255, 69, 58, 1.0),
+    ("green", False): (52, 199, 89, 1.0), ("green", True): (48, 209, 88, 1.0),
+    ("placeholder", False): (20, 20, 20, 0.5), ("placeholder", True): (244, 239, 230, 0.5),
+    ("disabled", False): (20, 20, 20, 0.3), ("disabled", True): (244, 239, 230, 0.3),
+    ("selection", False): (20, 20, 20, 0.25), ("selection", True): (244, 239, 230, 0.25),
+    ("selection_inactive", False): (20, 20, 20, 0.25), ("selection_inactive", True): (244, 239, 230, 0.25),
+    ("selected_text", False): (20, 20, 20, 1.0), ("selected_text", True): (244, 239, 230, 1.0),
+}
+
+
+def system_color(name: str, dark: bool) -> tuple[int, int, int, float]:
+    """The colour for one of the Mac's named system colours (see the Mac twin's names) as
+    (r, g, b, alpha): fixed values, Windows has no such named colours."""
+    return SYSTEM_COLORS[(name, dark)]
 
 
 def short_time(when: datetime) -> str:

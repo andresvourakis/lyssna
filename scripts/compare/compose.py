@@ -61,9 +61,9 @@ UNRELIABLE = [
     "During the hands-free growth the legacy filmstrip draws cancel and finish at their final places inside the growing "
     "capsule (only the capsule and the wave get frame animations offscreen); on screen AppKit may carry them along "
     "with the capsule. The Qt buttons ride with the capsule. Treat button positions in the middle frames as unverified.",
-    "history.fix: both fields have their whole text selected, as the app does after Fix a Word, but the legacy field "
-    "draws its selection in the inactive-window colour (the window is never key and the app never active here; see the "
-    "note on the pair for the colour the app uses). The Qt field paints one fixed selection colour in both states.",
+    "history.fix: both fields have their whole text selected, as the app does after Fix a Word, and both draw the "
+    "selection in the system's inactive-window colour, since the window is never key and the app never active here. "
+    "In use, both draw it in the user's highlight colour (see the note on the pair).",
     "Text frames: an AppKit field's frame includes its cell's 2 px insets and a Qt label may span its whole row, so the "
     "x/y/w/h rows of text elements in structure.md are definitions, not differences. Text placement is compared by its "
     "ink instead (the 'ink' rows), and only those reach the verdicts.",
@@ -680,9 +680,11 @@ def main(argv: list[str] | None = None) -> int:
             b = ink_q["cases"].get(case)
             if b is not None:
                 rep.append(f"- {case}: AppKit {a}, Qt {b} ({100 * (b - a) / a:+.1f} percent)")
-        rep.append("\nAppKit draws dark text on a light background thinner than light text on dark; Qt draws both "
-                   "alike. So where the two differ, the light-scheme 'looks heavier' rows are this real difference, "
-                   "not the harness.\n")
+        rep.append("\nCore Text thickens light glyphs more than dark ones. AppKit chooses by the text's colour; Qt "
+                   "chooses by the application's colour scheme (it rasterises dark on light in a light app). The Qt "
+                   "side asks Qt for each picture's scheme, as a Mac in that appearance would have it, so the two "
+                   "cases above are the app's real weights. Text drawn against its scheme (light text on a dark fill "
+                   "in light mode, such as a primary pill's title) keeps the scheme's thickening in Qt.\n")
     tink = [r for r in struct_sections if r["pair"] == "toast.text"]
     for r in tink:
         rep.append(f"- toast.text ({r['scheme']}): " + (", ".join(f"{x['prop']} {x['legacy']} / {x['qt']} ({x['delta']})"

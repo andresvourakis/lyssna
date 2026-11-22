@@ -100,6 +100,22 @@ def blend(a: QColor, b: QColor, f: float) -> QColor:
                            a.blueF() + (b.blueF() - a.blueF()) * f, a.alphaF() + (b.alphaF() - a.alphaF()) * f)
 
 
+def _linear(c: float) -> float:
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _encoded(c: float) -> float:
+    return 12.92 * c if c <= 0.0031308 else 1.055 * max(0.0, c) ** (1 / 2.4) - 0.055
+
+
+def blend_linear(a: QColor, b: QColor, f: float) -> QColor:
+    """`a` blended toward `b` by `f` in linear light: how Core Animation moves a layer's colours
+    from one value to another (its midpoints lighter than a blend of the sRGB numbers)."""
+    rgb = [_encoded(_linear(x) + (_linear(y) - _linear(x)) * f)
+           for x, y in ((a.redF(), b.redF()), (a.greenF(), b.greenF()), (a.blueF(), b.blueF()))]
+    return QColor.fromRgbF(*rgb, a.alphaF() + (b.alphaF() - a.alphaF()) * f)
+
+
 def ripple_phase(age: float) -> float:
     """The squiggle's phase `age` seconds into a ripple: eased in and out, 0 at both ends (the
     continuous form of layout.wave.wave_phases)."""
@@ -361,7 +377,7 @@ class Sliver(QWidget):
         light = blend(accent, QColor(255, 255, 255), 0.28)
         deep = blend(accent, QColor(0, 0, 0), 0.22)
         e = 0.0 if theme.reduce_motion() else drift(self._t, HUE_SECS)
-        return [blend(a, b, e) for a, b in zip((light, accent, deep), (accent, light, accent), strict=True)]
+        return [blend_linear(a, b, e) for a, b in zip((light, accent, deep), (accent, light, accent), strict=True)]
 
     def _paint_capsule(self, p: QPainter) -> None:
         W, H = CAPSULE_W, CAPSULE_H
@@ -381,19 +397,23 @@ class Sliver(QWidget):
         q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         q.translate(W / 2, H / 2)
 
-        def unit(u: float, v: float) -> QPointF:  # the gradient layer's unit square, y up
-            return QPointF(-W / 2 + u * W, H / 2 - v * H)
-
         e_split = 0.0 if still else drift(self._t, SPLIT_SECS)
         e_swing = 0.0 if still else drift(self._t, SWING_SECS)
-        start = unit(0.0 + 1.0 * e_swing, 0.0 + 0.15 * e_swing)
-        end = unit(1.0 - 1.0 * e_swing, 1.0 - 0.15 * e_swing)
-        grad = QLinearGradient(start, end)
+        # A CAGradientLayer works out its gradient in the layer's unit square (y up) and then
+        # stretches that square over its bounds, so on this tall, thin capsule a gradient from
+        # (0, 0) to (1, 1) runs from corner to corner rather than at 45 degrees. Drawn the same
+        # way here: in the unit square, under a transform that stretches it over the body.
+        grad = QLinearGradient(QPointF(0.0 + 1.0 * e_swing, 0.0 + 0.15 * e_swing),
+                               QPointF(1.0 - 1.0 * e_swing, 1.0 - 0.15 * e_swing))
         tones = self._tones()
         grad.setColorAt(0.0, tones[0])
         grad.setColorAt(0.32 + (0.72 - 0.32) * e_split, tones[1])
         grad.setColorAt(1.0, tones[2])
-        q.fillRect(body, grad)
+        q.save()
+        q.translate(-W / 2, H / 2)
+        q.scale(W, -H)
+        q.fillRect(QRectF(0.0, 0.0, 1.0, 1.0), grad)
+        q.restore()
 
         fill_h = max(W, H * self._shown)
         top = H / 2 - fill_h
@@ -458,10 +478,33 @@ class Sliver(QWidget):
 
     def _paint_squiggle(self, p: QPainter) -> None:
         d = self.slide
+        opacity = max(0.0, 1.0 - d / SLIVER_W)
+        if opacity <= 0.0:
+            return
+        if opacity >= 1.0:
+            self._draw_squiggle(p, d)
+            return
+        # The Mac fades the squiggle's layer, halo and line as one picture; faded one by one the
+        # halo would show through the line. So: drawn whole into an image, and the image faded.
+        dpr = max(1.0, p.device().devicePixelRatioF())
+        img = QImage(max(1, math.ceil(self.width() * dpr)), max(1, math.ceil(self.height() * dpr)),
+                     QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.GlobalColor.transparent)
+        q = QPainter(img)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._draw_squiggle(q, d)
+        q.end()
+        p.save()
+        p.setOpacity(opacity)
+        p.drawImage(QRectF(0, 0, self.width(), self.height()), img)
+        p.restore()
+
+    def _draw_squiggle(self, p: QPainter, d: float) -> None:
+        """The halo and the line, pushed `d` out past the edge, at full strength."""
         out = {"left": (-d, 0.0), "right": (d, 0.0), "bottom": (0.0, d)}[self.edge]
         p.save()
         p.translate(*out)
-        p.setOpacity(max(0.0, 1.0 - d / SLIVER_W))
         p.setTransform(self._transform(), True)
         path = self.squiggle_path()
         for color, width in ((theme.squiggle_outline(), SQUIGGLE_STROKE + SQUIGGLE_HALO), (theme.squiggle_fill(), SQUIGGLE_STROKE)):

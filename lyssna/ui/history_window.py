@@ -31,11 +31,12 @@ layout/history.py's, shared with the Mac window. Dictated text is shown here and
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QCursor, QFontMetricsF, QGuiApplication, QPainter, QPalette, QPen, QTextLayout, QTextOption
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, QVariantAnimation
+from PySide6.QtGui import QCursor, QFontMetricsF, QGuiApplication, QPainter, QPen, QTextLayout
 from PySide6.QtWidgets import QFrame, QLineEdit, QMenu, QMessageBox, QScrollArea, QTextEdit, QWidget
 
 from .. import config, host, support
@@ -135,7 +136,7 @@ from .layout.history import (
 )
 from .mark import draw_mark
 from .widgets import IconButton, PillButton, rounded
-from .window import Hairline, Header, Label, LyssnaWindow, TextButton, css, ink_left
+from .window import Hairline, Header, Label, LyssnaWindow, TextButton, css, ink_left, place, selection_style
 
 log = logging.getLogger("lyssna.ui.history")
 
@@ -172,41 +173,47 @@ class _Text:
 
     def __init__(self, text: str, font, color: Callable, line_h: float | None = None, center: bool = False):
         self.value = text
-        self._text = text.replace("\r\n", "\n").replace("\n", " ")  # a line break QTextLayout keeps
+        self._text = text.replace("\r\n", "\n").replace("\n", " ")  # one paragraph, as the rows always showed it
         self.font = font
         self.color = color
         self.line_h = line_h
         self.center = center
         self._width: float | None = None
-        self._layout: QTextLayout | None = None
-        self._steps: list[float] = []
+        self._lines: list[str] = []
+        self._baselines: list[float] = []  # each line's baseline from the paragraph's top
+        self._steps: list[float] = []  # each line's bottom from the paragraph's top
+        self._clamped: dict[int, list[str]] = {}
 
-    def _lay(self, width: float) -> QTextLayout:
-        if self._layout is not None and self._width == width:
-            return self._layout
-        layout = QTextLayout(self._text, self.font)
-        option = QTextOption()
-        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        option.setAlignment(Qt.AlignmentFlag.AlignHCenter if self.center else Qt.AlignmentFlag.AlignLeft)
-        layout.setTextOption(option)
-        layout.beginLayout()
-        y, steps = 0.0, []
-        while True:
-            line = layout.createLine()
-            if not line.isValid():
-                break
-            line.setLineWidth(max(1.0, width))
-            step = self.line_h or line.height()
-            line.setPosition(QPointF(0.0, y + step - line.height()))
+    def _lay(self, width: float) -> list[str]:
+        """The paragraph's lines on lines `width` wide (theme.break_lines: AppKit's on the Mac),
+        with their baselines: each line `line_h` tall (else the font's line height) with its
+        glyphs at the bottom, where the Mac's fixed paragraph line height puts them: the
+        baseline the descent, rounded up to whole points, above the line's foot (TextKit's rule;
+        16 in a 19 point line at 14 pt, where Qt's own line metrics would give 15.5)."""
+        if self._width == width:
+            return self._lines
+        lines = theme.break_lines(self._text, self.font, max(1.0, width)) if self._text else []
+        y, steps, baselines = 0.0, [], []
+        for text in lines:
+            ascent, descent, height = self._metrics(text)
+            step = self.line_h or height
+            baselines.append(y + step - math.ceil(round(descent, 3)) if self.line_h else y + ascent)
             y += step
             steps.append(y)
+        self._width, self._lines, self._steps, self._baselines, self._clamped = width, lines, steps, baselines, {}
+        return lines
+
+    def _metrics(self, text: str) -> tuple[float, float, float]:
+        """A line's ascent, descent and height as Qt's text layout gives them (a fallback font
+        for an emoji can make a line taller)."""
+        layout = QTextLayout(text or " ", self.font)
+        layout.beginLayout()
+        line = layout.createLine()
         layout.endLayout()
-        self._layout, self._width, self._steps = layout, width, steps
-        return layout
+        return line.ascent(), line.descent(), line.height()
 
     def lines(self, width: float) -> int:
-        self._lay(width)
-        return len(self._steps)
+        return len(self._lay(width))
 
     def height(self, width: float, max_lines: int = 0) -> float:
         self._lay(width)
@@ -219,28 +226,25 @@ class _Text:
         return theme.text_width(self._text, self.font)
 
     def first_baseline(self, width: float) -> float:
-        layout = self._lay(width)
-        if layout.lineCount() == 0:
+        self._lay(width)
+        if not self._baselines:
             return QFontMetricsF(self.font).ascent()
-        line = layout.lineAt(0)
-        return line.position().y() + line.ascent()
+        return self._baselines[0]
 
     def paint(self, p: QPainter, x: float, y: float, width: float, max_lines: int = 0) -> None:
         """Draw at (x, y), wrapped to `width`. With `max_lines`, the last line shown ends in an
-        ellipsis when more text follows (the Mac's truncatesLastVisibleLine)."""
-        layout = self._lay(width)
+        ellipsis when more text follows, cut where the Mac's truncatesLastVisibleLine cuts it."""
+        lines = full = self._lay(width)
+        if max_lines and len(lines) > max_lines:
+            if max_lines not in self._clamped:
+                self._clamped[max_lines] = theme.break_lines(self._text, self.font, max(1.0, width), max_lines)
+            lines = self._clamped[max_lines]
         p.setPen(self.color())
-        p.setFont(self.font)
-        count = layout.lineCount()
-        if not max_lines or count <= max_lines:
-            layout.draw(p, QPointF(x, y))
-            return
-        for i in range(max_lines - 1):
-            layout.lineAt(i).draw(p, QPointF(x, y))
-        last = layout.lineAt(max_lines - 1)
-        rest = " ".join(self._text[last.textStart():].replace(" ", " ").split())
-        shown = QFontMetricsF(self.font).elidedText(rest, Qt.TextElideMode.ElideRight, width)
-        p.drawText(QPointF(x + last.position().x(), y + last.position().y() + last.ascent()), shown)
+        for i, (text, baseline) in enumerate(zip(lines, self._baselines, strict=False)):
+            cut = text != full[i]
+            shown = min(theme.text_width(text, self.font), width)
+            left = x + (width - shown) / 2 if self.center else x
+            theme.draw_text_at(p, left, y + baseline, text, self.font, width, cut)
 
 
 def _wrap(width: float) -> float:
@@ -321,10 +325,9 @@ class Segments(QWidget):
         x, w = self.pos_
         cap = QRectF(x + SEG_INSET, SEG_INSET, w - 2 * SEG_INSET, SEG_H - 2 * SEG_INSET)
         p.fillPath(rounded(cap, cap.height() / 2), theme.content())
-        p.setFont(self.font_)
         for i, title in enumerate(self.titles):
             p.setPen(theme.surface() if i == self.selected else theme.content())
-            p.drawText(QRectF(self.lefts[i], 0, self.widths[i], SEG_H), int(Qt.AlignmentFlag.AlignCenter), title)
+            theme.draw_text(p, QRectF(self.lefts[i], 0, self.widths[i], SEG_H), Qt.AlignmentFlag.AlignCenter, title, self.font_)
         p.end()
 
 
@@ -372,12 +375,11 @@ class LineField(QLineEdit):
         self.restyle()
 
     def restyle(self) -> None:
+        # The hint in the dim colour, as the Mac's placeholder string is; in the style sheet, because
+        # a style sheet that sets `color` replaces the palette's placeholder with it at half alpha.
         self.setStyleSheet(
             f"QLineEdit {{ background: transparent; border: none; padding: 0; color: {css(theme.content())};"
-            f" selection-background-color: {css(theme.content(0.25))}; selection-color: {css(theme.content())}; }}")
-        pal = self.palette()
-        pal.setColor(QPalette.ColorRole.PlaceholderText, theme.content_dim())
-        self.setPalette(pal)
+            f" placeholder-text-color: {css(theme.content_dim())}; }}" + selection_style("QLineEdit"))
 
     def focusInEvent(self, ev) -> None:
         self.box.set_focused(True)
@@ -411,16 +413,23 @@ class FixField(QTextEdit):
 
     def restyle(self) -> None:
         self.setStyleSheet(
-            f"QTextEdit {{ background: transparent; border: none; color: {css(theme.content())};"
-            f" selection-background-color: {css(theme.content(0.25))}; selection-color: {css(theme.content())}; }}")
+            f"QTextEdit {{ background: transparent; border: none; color: {css(theme.content())}; }}"
+            + selection_style("QTextEdit"))
 
     def text(self) -> str:
         return self.toPlainText()
 
     def wanted_height(self, width: float) -> float:
+        """Its lines at `width`, each the font's height rounded up to whole pixels: the Mac's field
+        cell is 17 a line for 14 px text where Qt's document would be 16.5, a pixel short over two."""
         doc = self.document().clone()
         doc.setTextWidth(width)
-        return doc.size().height()
+        doc.documentLayout().documentSize()  # lays the document out
+        lines, block = 0, doc.begin()
+        while block.isValid():
+            lines += max(1, block.layout().lineCount())
+            block = block.next()
+        return max(1, lines) * math.ceil(QFontMetricsF(self.font()).height())
 
     def keyPressEvent(self, ev) -> None:
         if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -482,6 +491,15 @@ def _pill(title: str, parent: QWidget, clicked: Callable[[], None], primary: boo
 
 class Item(QWidget):
     kind = ""
+    # How far below its whole-pixel place the Mac's view of this item sits (a row above it may
+    # be a half point tall): what the item paints itself is moved down by it.
+    paint_dy = 0.0
+
+    def painter(self) -> QPainter:
+        """A painter on the item, moved to the Mac's fractional place (paint_dy)."""
+        p = QPainter(self)
+        p.translate(0.0, self.paint_dy)
+        return p
 
     def layout_for(self, width: float, available: float = 0.0) -> float:
         """Size the item for `width`; returns its height. `available` is the list's visible height."""
@@ -554,7 +572,7 @@ class DayHeader(Item):
         return [self.text]
 
     def paintEvent(self, ev) -> None:
-        p = QPainter(self)
+        p = self.painter()
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         self.label.paint(p, ROW_PAD_X, self.top, 100_000)
         p.end()
@@ -601,7 +619,7 @@ class Note(Item):
         return [self.text]
 
     def paintEvent(self, ev) -> None:
-        p = QPainter(self)
+        p = self.painter()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         draw_mark(p, self.mark_rect, theme.content(EMPTY_MARK_ALPHA))
         self.label.paint(p, self.text_rect.x(), self.text_rect.y(), self.text_rect.width())
@@ -720,15 +738,14 @@ class DictationRow(Row):
         return out
 
     def paintEvent(self, ev) -> None:
-        p = QPainter(self)
+        p = self.painter()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.paint_hover(p)
         # The time shares the text's first baseline, as the Mac's two labels with one fixed line height do.
         baseline = ROW_PAD_Y + (self.text.first_baseline(self.text_w) if not self.editing else
                                 TEXT_LINE_H - QFontMetricsF(self.text.font).descent())
         p.setPen(theme.content_dim())
-        p.setFont(self.time.font)
-        p.drawText(QPointF(ROW_PAD_X, baseline), self.time.value)
+        theme.draw_text_at(p, ROW_PAD_X, baseline, self.time.value, self.time.font)
         if not self.editing:
             self.text.paint(p, self.text_x, ROW_PAD_Y, self.text_w, 0 if self.expanded else TEXT_LINES)
         if self.show_original:
@@ -782,7 +799,7 @@ class TermRow(Row):
         return [self.term, *([self.heard_text] if self.heard_text else []), self.badge_text]
 
     def paintEvent(self, ev) -> None:
-        p = QPainter(self)
+        p = self.painter()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.paint_hover(p)
         p.save()
@@ -1063,20 +1080,21 @@ class HistoryWindow(LyssnaWindow):
             _, nh = number.fit()
             _, lh = label.fit()
             left = x0 + i * col  # where the ink of both lines starts
-            number.move(round(left - ink_left(number.font(), number.value())), round(y))
-            label.move(round(left - ink_left(label.font(), label.value())), round(y + nh))
+            place(number, left - ink_left(number.font(), number.value()), y)
+            place(label, left - ink_left(label.font(), label.value()), y + nh)
             stats_h = max(stats_h, nh + lh)
         y += stats_h
         for view in (self.support_label, self.support_button):
             view.setVisible(self._support_shown)
         if self._support_shown:
             y += STATS_TO_SUPPORT
-            lw, lh = self.support_label.fit()
+            _, lh = self.support_label.fit()
             sx = x0 - ink_left(self.support_label.font(), self.support_label.value())
-            self.support_label.move(round(sx), round(y))
+            place(self.support_label, sx, y)
             self.support_button.resize(self.support_button.sizeHint())
             bh = self.support_button.height()
-            self.support_button.move(round(sx + lw + SUPPORT_GAP), round(y + (lh - bh) / 2))
+            # After the label's frame as the Mac sizes it, on half points.
+            place(self.support_button, sx + self.support_label.exact_width() + SUPPORT_GAP, y + (lh - bh) / 2)
             y += lh
         y += STATS_TO_TABS
 
@@ -1114,11 +1132,11 @@ class HistoryWindow(LyssnaWindow):
         self.scroll.setGeometry(0, round(y + 1), round(cw), round(max(0.0, footer_top - y - 1)))
 
         _, rh = self.retention.fit()
-        self.retention.move(round(x0 - LABEL_INSET), round(footer_top + (FOOTER_H - rh) / 2))  # its text on the column
+        place(self.retention, x0 - LABEL_INSET, footer_top + (FOOTER_H - rh) / 2)  # its text on the column
         self.clear_button.resize(self.clear_button.sizeHint())
         cbw, cbh = self.clear_button.width(), self.clear_button.height()
         # Its frame reaches past the column, so its centred title ends about on it, as on the Mac.
-        self.clear_button.move(round(x0 + inner - cbw + LABEL_INSET * 2), round(footer_top + (FOOTER_H - cbh) / 2))
+        place(self.clear_button, x0 + inner - cbw + LABEL_INSET * 2, footer_top + (FOOTER_H - cbh) / 2)
         self.clear_button.setVisible(dictations)
 
         self._layout_list()
@@ -1140,6 +1158,7 @@ class HistoryWindow(LyssnaWindow):
         for item in self.items:
             h = item.layout_for(row_w, visible if item.kind == "empty" else 0.0)
             item.move(round(x0 - ROW_PAD_X), round(y))
+            item.paint_dy = y - round(y)
             y += h + (ROW_GAP if item.kind in ("dictation", "term") else 0.0)
         if not (self.items and self.items[-1].kind == "empty"):
             y += LIST_BOTTOM

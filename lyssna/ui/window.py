@@ -15,12 +15,11 @@ Windows; the Mac does it by itself), so it matches the surface below it."""
 
 from __future__ import annotations
 
-import html
 import logging
 import math
 from collections.abc import Callable
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QFontMetricsF, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QLabel, QWidget
 
@@ -36,7 +35,6 @@ log = logging.getLogger("lyssna.ui.window")
 MIN_H = 320.0       # the smallest a window gets on a short screen (the Mac setup window's floor)
 LIFT = 0.08         # how far above the middle a window opens, as a share of the screen's height
 SYMBOL_SMALLER = 2.0  # a symbol in front of a text button is this much smaller than the text (as on the Mac)
-TEXT_DISABLED_ALPHA = 0.30
 # An AppKit label's cell draws its text this far in from each side of its frame, so a label sized
 # to its text is the text's advance plus twice this, and a wrapping label breaks its lines this far
 # inside its width. Qt labels here keep the same inset, so frames, positions and every "does it
@@ -69,17 +67,18 @@ def ink_left(font, text: str) -> float:
 # -- the two status colours --------------------------------------------------------------------
 #
 # The Mac uses systemGreen and systemRed for success and error, which shift a little in dark
-# mode. Windows has no such named colours, so these are the Mac's values.
+# mode and between macOS versions: theme.system_color resolves them as the system does, and
+# gives the Mac's values on Windows.
 
 
 def good() -> QColor:
     """Success: the Mac's systemGreen."""
-    return QColor(48, 209, 88) if theme.is_dark() else QColor(52, 199, 89)
+    return theme.system_color("green")
 
 
 def bad() -> QColor:
     """Errors: the Mac's systemRed."""
-    return QColor(255, 69, 58) if theme.is_dark() else QColor(255, 59, 48)
+    return theme.system_color("red")
 
 
 def css(color: QColor) -> str:
@@ -87,39 +86,132 @@ def css(color: QColor) -> str:
     return f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
 
 
+def selection_style(selector: str) -> str:
+    """Style sheet rules that show selected text in a field as the Mac's fields do: on the
+    user's highlight colour while the window is active, on the system's grey when it is not,
+    in the system's selected text colour (theme.system_color)."""
+    return (f" {selector} {{ selection-background-color: {css(theme.system_color('selection'))};"
+            f" selection-color: {css(theme.system_color('selected_text'))}; }}"
+            f" {selector}:!active {{ selection-background-color: {css(theme.system_color('selection_inactive'))}; }}")
+
+
 # -- small views -------------------------------------------------------------------------------
+
+
+def place(view: QWidget, x: float, y: float) -> None:
+    """Put `view` at (x, y) as the Mac does, which may be a fraction of a pixel (a half point on
+    a Retina screen): the widget itself on whole pixels, as Qt keeps child widgets, and, for a
+    view that paints itself (one with set_paint_offset), its painting moved the rest of the way."""
+    view.move(round(x), round(y))
+    if hasattr(view, "set_paint_offset"):
+        view.set_paint_offset(x - round(x), y - round(y))
 
 
 class Label(QLabel):
     """A label in the brand colours. `color` is a colour or a colour function, taken again on
     restyle() (the window calls it when the scheme flips). With `line_height` the text is set
     with that fixed line height, as the Mac's paragraph styles do. The plain text is `value()`.
-    Like an AppKit label it keeps its text TEXT_INSET in from each side of its frame."""
+    Like an AppKit label it keeps its text TEXT_INSET in from each side of its frame.
+
+    It paints its own lines rather than QLabel's: a wrapping label shows exactly the lines
+    theme.break_lines gives (AppKit's on the Mac, so a paragraph breaks at the Mac's words), and
+    every line is drawn as wide as AppKit drew it (theme.draw_text_at). Line pitch: the fixed line height
+    with the glyphs at the bottom of the line (the Mac's paragraph style), else the font's
+    height rounded up to whole pixels (QLabel's, which the frames were matched with).
+    `paint_offset` moves the text by a fraction of a pixel inside its whole-pixel frame, where
+    the AppKit label sat on a half point."""
 
     def __init__(self, text: str = "", parent: QWidget | None = None, *, size: float = 13.0, weight: str = "regular",
                  color: Color = theme.content, wrap: bool = False, line_height: float | None = None, font=None):
         super().__init__(parent)
         self.color = color
         self.line_height = line_height
+        self.paint_offset = QPointF(0.0, 0.0)
         self._plain = ""
+        self._laid: tuple[float, list[str]] | None = None  # (wrap width, lines) for the last width asked
         self.setFont(font or theme.ui_font(size, weight))
         inset = round(TEXT_INSET)
         self.setContentsMargins(inset, 0, inset, 0)
         self.setWordWrap(wrap)
-        self.setTextFormat(Qt.TextFormat.RichText if line_height else Qt.TextFormat.PlainText)
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.set_text(text)
         self.restyle()
 
     def set_text(self, text: str) -> None:
         self._plain = text
-        if self.line_height:
-            super().setText(f'<div style="line-height:{round(self.line_height)}px">{html.escape(text)}</div>')
-        else:
-            super().setText(text)
+        self._laid = None
+        super().setText(text)
 
     def value(self) -> str:
         return self._plain
+
+    def set_paint_offset(self, dx: float, dy: float = 0.0) -> None:
+        self.paint_offset = QPointF(dx, dy)
+        self.update()
+
+    # -- lines -------------------------------------------------------------------------------
+
+    def _pitch(self) -> float:
+        return float(self.line_height) if self.line_height else float(math.ceil(QFontMetricsF(self.font()).height()))
+
+    def lines(self, width: float | None = None) -> list[str]:
+        """The lines shown in a frame `width` wide (the label's own width when None)."""
+        if not self._plain:
+            return []
+        if not self.wordWrap():
+            return [self._plain]
+        room = max(1.0, (self.width() if width is None else width) - 2 * TEXT_INSET)
+        if self._laid is None or self._laid[0] != room:
+            self._laid = (room, theme.break_lines(self._plain, self.font(), room))
+        return self._laid[1]
+
+    def heightForWidth(self, width: int) -> int:
+        if not self.wordWrap():
+            return super().heightForWidth(width)
+        return math.ceil(round(len(self.lines(width)) * self._pitch(), 3))
+
+    def paintEvent(self, ev) -> None:
+        lines = self.lines()
+        if not lines:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.translate(self.paint_offset)
+        p.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        font = self.font()
+        fm = QFontMetricsF(font)
+        align = self.alignment()
+        room = self.width() - 2 * TEXT_INSET
+        if self.wordWrap() or self.line_height:
+            # A fixed line height puts each baseline the font's descent, rounded up to whole
+            # points, above the line's foot, as TextKit does. Otherwise the lines are where
+            # QLabel's text document put them, which the frames were matched to the Mac with:
+            # stepping by the font's height rounded up, the block (as tall as its lines with the
+            # last one at the font's own height) centred when the label is taller.
+            pitch = self._pitch()
+            block = pitch * len(lines) if self.line_height else pitch * (len(lines) - 1) + fm.height()
+            if align & Qt.AlignmentFlag.AlignBottom:
+                top = max(0.0, self.height() - block)
+            elif align & Qt.AlignmentFlag.AlignVCenter:
+                top = max(0.0, (self.height() - block) / 2)
+            else:
+                top = 0.0
+            drop = pitch - math.ceil(round(fm.descent(), 3)) if self.line_height else fm.ascent()
+            baselines = [top + i * pitch + drop for i in range(len(lines))]
+        else:
+            baselines = [(self.height() - fm.height()) / 2 + fm.ascent()]  # QPainter's vertical centring
+        for text, baseline in zip(lines, baselines, strict=True):
+            width = min(theme.text_width(text, font), room) if self.wordWrap() else theme.text_width(text, font)
+            if align & Qt.AlignmentFlag.AlignRight:
+                x = self.width() - TEXT_INSET - width
+            elif align & Qt.AlignmentFlag.AlignHCenter:
+                x = TEXT_INSET + (room - width) / 2
+            else:
+                x = TEXT_INSET
+            theme.draw_text_at(p, x, baseline, text, font, room if self.wordWrap() else None)
+        p.end()
 
     def set_color(self, color: Color) -> None:
         self.color = color
@@ -131,11 +223,12 @@ class Label(QLabel):
         self.setPalette(pal)
 
     def sizeHint(self) -> QSize:
-        """One plain line: the AppKit label frame, the advance plus the insets, one line tall.
-        Wrapping and fixed line height labels keep Qt's own measure (margins included)."""
-        if self.wordWrap() or self.line_height:
+        """One line: the AppKit label frame, the advance plus the insets, one line tall (the
+        fixed line height when there is one). A wrapping label keeps Qt's own measure."""
+        if self.wordWrap():
             return super().sizeHint()
-        return QSize(text_frame_width(theme.text_width(self._plain, self.font())), QFontMetrics(self.font()).height())
+        h = math.ceil(self.line_height) if self.line_height else QFontMetrics(self.font()).height()
+        return QSize(text_frame_width(theme.text_width(self._plain, self.font())), h)
 
     def exact_width(self) -> float:
         """One plain line's frame width as AppKit has it, on half points (half_point_width): where
@@ -218,12 +311,17 @@ class TextButton(QAbstractButton):
         self.link = link
         self.symbol = symbol
         self.hovered = False
+        self.paint_offset = QPointF(0.0, 0.0)  # see place()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         if clicked is not None:
             self.clicked.connect(lambda _checked=False: clicked())
         self.resize(self.sizeHint())
+
+    def set_paint_offset(self, dx: float, dy: float = 0.0) -> None:
+        self.paint_offset = QPointF(dx, dy)
+        self.update()
 
     def symbol_size(self) -> float:
         return self.text_size - SYMBOL_SMALLER
@@ -246,7 +344,7 @@ class TextButton(QAbstractButton):
 
     def color(self) -> QColor:
         if not self.isEnabled():
-            return theme.content(TEXT_DISABLED_ALPHA)
+            return theme.system_color("disabled")  # a disabled NSButton draws its title in this, whatever the title's colour
         return theme.content() if self.hovered or self.link else theme.content_dim()
 
     def enterEvent(self, ev) -> None:
@@ -262,6 +360,7 @@ class TextButton(QAbstractButton):
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.translate(self.paint_offset)
         color = self.color()
         x = self.title_x()
         if self.symbol:
@@ -270,10 +369,9 @@ class TextButton(QAbstractButton):
                             self.weight)
         font = self.font()
         font.setUnderline(self.link and self.hovered)
-        p.setFont(font)
         p.setPen(color)
-        p.drawText(QRectF(x, 0, self.width() - x - (self.PAD if self.symbol else 0.0), self.height()),
-                   int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter), self.text())
+        theme.draw_text(p, QRectF(x, 0, self.width() - x - (self.PAD if self.symbol else 0.0), self.height()),
+                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, self.text(), font)
         if self.hasFocus():
             p.setPen(theme.content(0.45))
             p.setBrush(Qt.BrushStyle.NoBrush)

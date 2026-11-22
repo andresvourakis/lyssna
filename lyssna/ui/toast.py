@@ -22,7 +22,7 @@ import logging
 import math
 from collections.abc import Callable
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QFont, QFontMetricsF, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -85,7 +85,10 @@ class _Text(QWidget):
         if not self.elide or not self.runs:
             return self.text()
         text, font = self.runs[0]
-        return QFontMetricsF(font).elidedText(text, Qt.TextElideMode.ElideRight, float(self.width()) - 2 * self.inset)
+        return theme.elide(text, font, self.room())
+
+    def room(self) -> float:
+        return float(self.width()) - 2 * self.inset
 
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
@@ -94,13 +97,13 @@ class _Text(QWidget):
         x = self.inset
         h = float(self.height())
         runs = [(self.shown_text(), self.runs[0][1])] if self.elide and self.runs else self.runs
-        for text, font in runs:
-            p.setFont(font)
-            w = QFontMetricsF(font).horizontalAdvance(text)  # where Qt's glyphs end, for the next run
+        cut = self.elide and bool(self.runs) and runs[0][0] != self.runs[0][0]
+        for text, font in runs:  # each run as wide as AppKit drew it
             if self.line_top is not None:
-                p.drawText(QPointF(x, self.line_top + QFontMetricsF(font).ascent()), text)
+                w = theme.draw_text_at(p, x, self.line_top + QFontMetricsF(font).ascent(), text, font, None, cut)
             else:
-                p.drawText(QRectF(x, 0, max(w, self.width() - x), h), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), text)
+                w = theme.draw_text(p, QRectF(x, 0, self.width() - x, h), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                    text, font, cut)
             x += w
         p.end()
 
@@ -128,8 +131,7 @@ class _ActionPill(HoverView):
         if self.pressed:
             p.fillPath(self.shape_path(), theme.content(0.08))
         p.setPen(theme.content())
-        p.setFont(self.font_)
-        p.drawText(QRectF(self.rect()), int(Qt.AlignmentFlag.AlignCenter), self.title)
+        theme.draw_text(p, QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.title, self.font_)
 
     def perform_click(self) -> None:
         self.clicked()

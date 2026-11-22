@@ -89,12 +89,21 @@ def is_dark() -> bool:
 
 def set_scheme(scheme: str | None) -> None:
     """Force "light" or "dark" (for the preview and tests), or None to follow the system again.
-    Listeners hear about it as about a system change."""
+    Listeners hear about it as about a system change.
+
+    Qt is asked for the same scheme, so the forced scheme draws as the system would draw it:
+    on the Mac, Qt rasterises its glyph masks dark on light when the application's scheme is
+    light and light on dark otherwise, and Core Text thickens light glyphs more than dark ones
+    (AppKit does the same by the text's own colour). Our colours alone in light mode on a Mac
+    set to dark would come out about 12 percent heavier than the app ever draws them."""
     global _override
     if scheme not in ("light", "dark", None):
         raise ValueError(f"unknown scheme {scheme!r}")
     before = is_dark()
     _override = scheme
+    if QGuiApplication.instance() is not None:
+        wanted = {"light": Qt.ColorScheme.Light, "dark": Qt.ColorScheme.Dark, None: Qt.ColorScheme.Unknown}[scheme]
+        QGuiApplication.styleHints().setColorScheme(wanted)
     if is_dark() != before and _notifier is not None:
         _notifier.changed.emit()
 
@@ -170,6 +179,23 @@ def squiggle_outline() -> QColor:
 def panel_bg() -> QColor:
     """The fixed dark background of a floating panel that does not use the brand surface."""
     return QColor.fromRgbF(*PANEL_BG)
+
+
+def secure_bullet() -> int | None:
+    """The character a password field shows for each hidden one (a code point), or None for
+    the style's own: the Mac's secure field bullet on the Mac."""
+    return (_forced or host.appearance).SECURE_BULLET
+
+
+def system_color(name: str) -> QColor:
+    """One of the Mac's named system colours for the current scheme: "red" (errors), "green"
+    (success), "placeholder" (an empty field's hint), "disabled" (a disabled button's title),
+    "selection", "selection_inactive" and "selected_text" (selected text in an active and an
+    inactive window).
+    On the Mac the system's own values
+    (host.appearance), on Windows fixed ones."""
+    r, g, b, a = (_forced or host.appearance).system_color(name, is_dark())
+    return QColor.fromRgbF(r / 255, g / 255, b / 255, a)
 
 
 def panel_border() -> QColor:
@@ -308,6 +334,207 @@ def text_width(text: str, font: QFont) -> float:
     fonts = _forced or host.appearance
     style = text_style(font)
     return fonts.text_width(text, style, QFontMetricsF(_style_font(*style)).horizontalAdvance)
+
+
+def _qt_lines(text: str, font: QFont, width: float, max_lines: int) -> list[str]:
+    """Qt's own lines of `text` on lines `width` wide, the last one shown elided when more text
+    follows: what Windows draws."""
+    from PySide6.QtGui import QTextLayout, QTextOption
+
+    layout = QTextLayout(text, font)
+    option = QTextOption()
+    option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    layout.setTextOption(option)
+    layout.beginLayout()
+    spans = []
+    while True:
+        line = layout.createLine()
+        if not line.isValid():
+            break
+        line.setLineWidth(max(1.0, width))
+        spans.append((line.textStart(), line.textStart() + line.textLength()))
+    layout.endLayout()
+    if max_lines and len(spans) > max_lines:
+        rest = " ".join(text[spans[max_lines - 1][0]:].replace(" ", " ").split())
+        last = QFontMetricsF(font).elidedText(rest, Qt.TextElideMode.ElideRight, width)
+        return [text[a:b].rstrip() for a, b in spans[: max_lines - 1]] + [last]
+    return [text[a:b].rstrip() for a, b in spans]
+
+
+def break_lines(text: str, font: QFont, width: float, max_lines: int = 0) -> list[str]:
+    """The lines a wrapping label shows of `text` in `font` (one of the text styles) on lines
+    `width` wide, with `max_lines` the last one cut with an ellipsis when more text follows. On
+    the Mac they are AppKit's lines, so a paragraph breaks at the very words it broke at in the
+    AppKit interface; on Windows Qt's. Draw each with draw_text_at, capped at `width`."""
+    fonts = _forced or host.appearance
+    style = text_style(font)
+    plain = _style_font(*style)
+    return fonts.break_lines(text, style, width, max_lines, lambda t, w, n: _qt_lines(t, plain, w, n))
+
+
+def elide(text: str, font: QFont, width: float) -> str:
+    """`text` on one line `width` wide, cut with an ellipsis when it does not fit: on the Mac
+    where an AppKit label that truncates its tail cuts it, on Windows where Qt does."""
+    fonts = _forced or host.appearance
+    style = text_style(font)
+    plain = _style_font(*style)
+    return fonts.truncate(text, style, width,
+                          lambda t, w: QFontMetricsF(plain).elidedText(t, Qt.TextElideMode.ElideRight, w))
+
+
+ELLIPSIS = "…"
+SPACINGS_KEPT = 4096  # draw_text_at's memory of spacings, emptied when full
+_spacings: dict[tuple, tuple[float, float]] = {}
+
+
+def drawn_width(text: str, font: QFont, width: float | None = None, cut: bool = False) -> float:
+    """How wide a line of `text` in `font` is drawn: text_width (on the Mac AppKit's own width of
+    that very string). When that is wider than `width` (the truncated last line of a wrapping
+    label), the line is squeezed as the platform squeezes it: on the Mac every kept character
+    loses the font set's TIGHTEN_EM of the font size (AppKit's tightening, all of it), elsewhere
+    the line is fitted to `width`. `cut`: the text ends in an ellipsis that a cut added, which
+    AppKit sets at the kept text's own advance, so the two are measured apart. A font that is not
+    one of the text styles is drawn at Qt's own width."""
+    kept = len(text) - (len(ELLIPSIS) if cut and text.endswith(ELLIPSIS) else 0)
+    try:
+        if kept < len(text):
+            w = text_width(text[:kept], font) + text_width(ELLIPSIS, font)
+        else:
+            w = text_width(text, font)
+    except ValueError:
+        return QFontMetricsF(font).horizontalAdvance(text)
+    if width is None or w <= width:
+        return w
+    tighten = (_forced or host.appearance).TIGHTEN_EM
+    return w - tighten * font.pixelSize() * kept if tighten else width
+
+
+def _spaced(text: str, font: QFont, target: float) -> QFont:
+    """`font` with the letter spacing, and then the word spacing, that make `text` `target`
+    wide. Qt keeps both in 1/64 pixel steps, so letter spacing alone misses by up to half a
+    step per letter (a pixel over 70 letters); the spaces take up what is left."""
+    key = (text, font.toString(), font.isFeatureSet(QFont.Tag("tnum")), round(target, 3))
+    hit = _spacings.get(key)
+    if hit is None:
+        letters, words = font.letterSpacing(), font.wordSpacing()
+        now = QFontMetricsF(font).horizontalAdvance(text)
+        probe = QFont(font)
+        probe.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, letters + 1.0)
+        per = QFontMetricsF(probe).horizontalAdvance(text) - now  # pixels added per pixel of letter spacing
+        if per > 0:
+            letters = round((letters + (target - now) / per) * 64) / 64
+        probe = QFont(font)
+        probe.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, letters)
+        left = target - QFontMetricsF(probe).horizontalAdvance(text)
+        probe.setWordSpacing(words + 1.0)
+        per = QFontMetricsF(probe).horizontalAdvance(text) - (target - left)  # pixels added per pixel of word spacing
+        if per > 0:
+            words += left / per
+        if len(_spacings) >= SPACINGS_KEPT:
+            _spacings.clear()
+        hit = _spacings[key] = (letters, words)
+    out = QFont(font)
+    out.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, hit[0])
+    out.setWordSpacing(hit[1])
+    return out
+
+
+def _offsets(text: str, font: QFont, cut: bool) -> list[float] | None:
+    """The x of each character of `text` as the Mac draws it (host.appearance.text_offsets), the
+    ellipsis of a cut at the kept text's end; None on Windows or for a font outside the styles."""
+    fonts = _forced or host.appearance
+    try:
+        style = text_style(font)
+    except ValueError:
+        return None
+    if cut and text.endswith(ELLIPSIS):
+        kept = fonts.text_offsets(text[: -len(ELLIPSIS)], style)
+        return None if kept is None else [*kept, kept[-1] + text_width(ELLIPSIS, font)]
+    return fonts.text_offsets(text, style)
+
+
+def _one_glyph_each(text: str) -> bool:
+    """Can every character of `text` be drawn on its own? Not a combining mark, a joiner or a
+    variation selector (they shape with their neighbours), nor anything beyond the basic plane
+    (emoji, often sequences); such text is placed word by word instead."""
+    import unicodedata
+
+    return all(ord(ch) <= 0xFFFF and not 0xD800 <= ord(ch) <= 0xDFFF and not 0xFE00 <= ord(ch) <= 0xFE0F
+               and unicodedata.category(ch) not in ("Mn", "Me", "Mc", "Cf") for ch in text)
+
+
+def draw_text_at(p: QPainter, x: float, baseline: float, text: str, font: QFont, width: float | None = None,
+                 cut: bool = False) -> float:
+    """Draw one line of `text` with its first glyph's origin at (x, baseline), drawn_width wide.
+    On the Mac every letter goes where AppKit puts it (host.appearance.text_offsets), all
+    squeezed alike when the line is (a truncated last line); text whose characters shape
+    together (combining marks, emoji) goes word by word, each word at AppKit's start and width.
+    Where there are no AppKit positions (Windows) the line is spaced to its width as a whole;
+    there the widths agree and Qt draws the line as it is. Returns the width drawn."""
+    from PySide6.QtCore import QPointF
+
+    if not text:
+        return 0.0
+    target = drawn_width(text, font, width, cut)
+    offsets = _offsets(text, font, cut) if font.letterSpacingType() == QFont.SpacingType.AbsoluteSpacing else None
+    if offsets is None or offsets[-1] <= 0:
+        natural = QFontMetricsF(font).horizontalAdvance(text)
+        if abs(target - natural) >= 0.01 and font.letterSpacingType() == QFont.SpacingType.AbsoluteSpacing:
+            font = _spaced(text, font, target)
+        p.setFont(font)
+        p.drawText(QPointF(x, baseline), text)
+        return QFontMetricsF(font).horizontalAdvance(text)
+    # A squeezed line (a truncated last line, see drawn_width) loses the same amount after every
+    # letter, as AppKit tightens it; the ellipsis a cut added keeps its width.
+    kept = len(text) - (len(ELLIPSIS) if cut and text.endswith(ELLIPSIS) else 0)
+    step = (offsets[-1] - target) / max(1, kept)
+    at = [offset - min(i, kept) * step for i, offset in enumerate(offsets)]
+    if _one_glyph_each(text) and not font.underline():
+        # Every letter where AppKit puts it: AppKit's kerning, and nothing evened out.
+        p.setFont(font)
+        for i, ch in enumerate(text):
+            if ch != " ":
+                p.drawText(QPointF(x + at[i], baseline), ch)
+        return target
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] == " ":
+            i += 1
+            continue
+        j = text.find(" ", i)
+        j = n if j < 0 else j
+        word = text[i:j]
+        want = at[j] - at[i]
+        natural = QFontMetricsF(font).horizontalAdvance(word)
+        p.setFont(_spaced(word, font, want) if abs(want - natural) >= 0.01 else font)
+        p.drawText(QPointF(x + at[i], baseline), word)
+        i = j
+    return target
+
+
+def draw_text(p: QPainter, rect: QRectF, flags, text: str, font: QFont, cut: bool = False) -> float:
+    """draw_text_at for one line placed in `rect` as QPainter.drawText places it with `flags`
+    (left, right or centred; top, bottom or centred). Returns the width drawn."""
+    fm = QFontMetricsF(font)
+    w = drawn_width(text, font, None, cut)
+    if _offsets(text, font, cut) is None and abs(w - fm.horizontalAdvance(text)) < 0.01:
+        p.setFont(font)  # nothing to follow (Windows): Qt places the line itself, as it always has
+        p.drawText(rect, int(flags), text)
+        return w
+    flags = Qt.AlignmentFlag(int(flags))
+    if flags & Qt.AlignmentFlag.AlignRight:
+        x = rect.right() - w
+    elif flags & Qt.AlignmentFlag.AlignHCenter:
+        x = rect.left() + (rect.width() - w) / 2
+    else:
+        x = rect.left()
+    if flags & Qt.AlignmentFlag.AlignBottom:
+        top = rect.bottom() - fm.height()
+    elif flags & Qt.AlignmentFlag.AlignVCenter:
+        top = rect.top() + (rect.height() - fm.height()) / 2
+    else:
+        top = rect.top()
+    return draw_text_at(p, x, top + fm.ascent(), text, font, None, cut)
 
 
 # -- motion ------------------------------------------------------------------------------------

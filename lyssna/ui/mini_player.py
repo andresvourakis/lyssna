@@ -208,12 +208,11 @@ class Text(QWidget):
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        p.setFont(self.font_)
         p.setPen(self.color())
         # The Mac's label is a text field, whose cell draws its text TEXT_INSET in from each side:
         # a left or right aligned time sits that far in from its frame's edge.
         box = QRectF(self.rect()).adjusted(TEXT_INSET, 0, -TEXT_INSET, 0)
-        p.drawText(box, int(self.align | Qt.AlignmentFlag.AlignVCenter), self._text)
+        theme.draw_text(p, box, self.align | Qt.AlignmentFlag.AlignVCenter, self._text, self.font_)
         p.end()
 
 
@@ -265,9 +264,8 @@ class Badge(HoverView):
         self.update()
 
     def paint_content(self, p: QPainter) -> None:
-        p.setFont(theme.ui_font(14, "semibold"))
         p.setPen(theme.content())
-        p.drawText(QRectF(self.rect()), int(Qt.AlignmentFlag.AlignCenter), self.letter)
+        theme.draw_text(p, QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.letter, theme.ui_font(14, "semibold"))
 
     def perform_click(self) -> None:
         if self.pickable and self.clicked is not None:
@@ -291,9 +289,8 @@ class SpeedPill(HoverView):
             self.update()
 
     def paint_content(self, p: QPainter) -> None:
-        p.setFont(theme.digits_font(12, "semibold"))
         p.setPen(theme.content())
-        p.drawText(QRectF(self.rect()), int(Qt.AlignmentFlag.AlignCenter), self._text)
+        theme.draw_text(p, QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self._text, theme.digits_font(12, "semibold"))
 
     def perform_click(self) -> None:
         if self.clicked is not None:

@@ -154,6 +154,18 @@ def _record_elisions() -> None:
             return shown
 
         cls.elidedText = elided
+    # The interface cuts its labels through theme.elide (AppKit's cut on the Mac), not elidedText.
+    from lyssna.ui import theme
+
+    real_elide = theme.elide
+
+    def elide(text, *args, **kwargs):
+        shown = real_elide(text, *args, **kwargs)
+        if shown != text and text:
+            ELIDED[text] = shown
+        return shown
+
+    theme.elide = elide
 
 
 def boot(work: Path):
@@ -308,6 +320,13 @@ def walk(root) -> list[dict]:
             return
         p = w.mapTo(root, QPoint(0, 0)) if w is not root else QPoint(0, 0)
         e: dict = {"cls": type(w).__name__, "depth": depth, "frame": [p.x(), p.y(), w.width(), w.height()]}
+        # A view that paints itself a fraction of a pixel off its whole-pixel frame, where the Mac's
+        # sits on a half point (window.place): read where it draws, which is what the Mac's frame says.
+        off = getattr(w, "paint_offset", None)
+        if off is not None and hasattr(off, "x"):
+            e["frame"] = [p.x() + off.x(), p.y() + off.y(), w.width(), w.height()]
+        if hasattr(w, "paint_dy") and callable(getattr(w, "thickness", None)):
+            e["frame"] = [p.x(), p.y() + w.paint_dy, w.width(), w.thickness()]
         text = _text_of(w)
         if text:
             e["text"] = text
@@ -765,6 +784,9 @@ def ink_check(out: Path) -> None:
     w, h = catalogue.INK_CANVAS
     cases = {}
     for case, (bg, fg) in catalogue.INK_CASES.items():
+        # Each case in the scheme it belongs to: Qt picks its glyph rasterisation by the
+        # application's scheme (theme.set_scheme), as a Mac in that appearance would.
+        theme.set_scheme("light" if fg < bg else "dark")
         img = QImage(round(w * SCALE), round(h * SCALE), QImage.Format.Format_ARGB32_Premultiplied)
         img.setDevicePixelRatio(SCALE)
         img.fill(QColor(bg, bg, bg))
@@ -776,6 +798,7 @@ def ink_check(out: Path) -> None:
         a = np.frombuffer(img.constBits(), dtype=np.uint8).reshape(img.height(), img.bytesPerLine())
         grey = a[:, : img.width() * 4].reshape(img.height(), img.width(), 4)[..., :3].mean(axis=2)
         cases[case] = catalogue.ink_sum(grey, bg, fg)
+    theme.set_scheme(None)
     (out / "ink.json").write_text(json.dumps({"platform": PLATFORM, "text": catalogue.INK_TEXT, "cases": cases}),
                                   encoding="utf-8")
 

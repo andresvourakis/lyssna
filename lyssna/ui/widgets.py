@@ -266,6 +266,11 @@ class IconButton(HoverView):
         super().mouseReleaseEvent(ev)
 
 
+# A disabled Mac pill keeps its fill and outline; only the button cell's title (and image) dims,
+# to half (measured on the legacy setup window's disabled Save, in both schemes).
+DISABLED_TITLE_ALPHA = 0.5
+
+
 class PillButton(QPushButton):
     """A pill-shaped push button in the brand colours, the twin of PillButton in
     legacy/ui/setup_window.py: primary is a content pill with surface text (13 medium), secondary a
@@ -313,8 +318,6 @@ class PillButton(QPushButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = rounded(r, r.height() / 2)
-        if not self.isEnabled():
-            p.setOpacity(0.45)
         p.fillPath(path, theme.content() if self.primary else theme.fill_soft())
         if not self.primary:
             p.setPen(QPen(theme.hairline(), 1.0))
@@ -327,9 +330,11 @@ class PillButton(QPushButton):
             p.setPen(QPen(theme.content(0.45), 2.0))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(rounded(ring, ring.height() / 2))
-        p.setPen(theme.surface() if self.primary else theme.content())
-        p.setFont(self.font())
-        p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.text())
+        title = theme.surface() if self.primary else theme.content()
+        if not self.isEnabled():
+            title.setAlphaF(title.alphaF() * DISABLED_TITLE_ALPHA)
+        p.setPen(title)
+        theme.draw_text(p, QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.text(), self.font())
         p.end()
 
 
@@ -404,9 +409,22 @@ class ProgressBar(QWidget):
         super().__init__(parent)
         self.fraction = 0.0
         self._painted = False
+        self.paint_dy = 0.0  # set_paint_offset: the bar drawn this far below the widget's top
         self._fill = _Glide(self, self.target_fill, self.update)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.resize(100, round(BAR_H))
+
+    def thickness(self) -> float:
+        """The bar's height: the widget's, less the pixel added for a paint offset."""
+        return float(self.height()) - (1.0 if self.paint_dy else 0.0)
+
+    def set_paint_offset(self, dx: float, dy: float = 0.0) -> None:
+        """Draw the bar `dy` (0 to 1) below the widget's top, where the Mac's bar sits on a half
+        point: the widget grows a pixel to hold it. `dx` is not used (the bar's x is whole)."""
+        bar = self.thickness()
+        self.paint_dy = max(0.0, min(1.0, dy))
+        self.resize(self.width(), round(bar + (1.0 if self.paint_dy else 0.0)))
+        self.update()
 
     def may_glide(self) -> bool:
         return self._painted and self.isVisible()
@@ -418,7 +436,7 @@ class ProgressBar(QWidget):
 
     def target_fill(self) -> tuple[float, float]:
         """The fill's (width, height) for the fraction and the bar's size now."""
-        w, h = float(self.width()), float(self.height())
+        w, h = float(self.width()), self.thickness()
         return min(w, max(h, w * self.fraction)), h
 
     def fill_size(self) -> tuple[float, float]:
@@ -432,8 +450,9 @@ class ProgressBar(QWidget):
         self._painted = True
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        h = float(self.height())
-        track = rounded(QRectF(self.rect()), h / 2)
+        p.translate(0.0, self.paint_dy)
+        h = self.thickness()
+        track = rounded(QRectF(0, 0, self.width(), h), h / 2)
         p.fillPath(track, theme.content(0.15))
         fw, fh = self.fill_size()
         p.setClipPath(track)

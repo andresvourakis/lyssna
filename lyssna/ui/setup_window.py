@@ -46,7 +46,7 @@ from collections.abc import Callable
 from types import ModuleType
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPalette, QPen
+from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QButtonGroup, QComboBox, QFrame, QLineEdit, QRadioButton, QScrollArea, QWidget
 
 from .. import config, host
@@ -90,8 +90,20 @@ from .layout.setup import (
 )
 from .mainthread import on_main
 from .mark import MarkView
-from .widgets import BAR_H, PillButton, ProgressBar, rounded
-from .window import TEXT_INSET, Hairline, Label, LyssnaWindow, bad, css, good, half_point_width, text_frame_width
+from .widgets import BAR_H, DISABLED_TITLE_ALPHA, PillButton, ProgressBar, rounded
+from .window import (
+    TEXT_INSET,
+    Hairline,
+    Label,
+    LyssnaWindow,
+    bad,
+    css,
+    good,
+    half_point_width,
+    place,
+    selection_style,
+    text_frame_width,
+)
 
 log = logging.getLogger("lyssna.ui.setup")
 
@@ -178,9 +190,8 @@ class Radio(QRadioButton):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(circle.adjusted(-2, -2, 2, 2))
         p.setPen(theme.content())
-        p.setFont(self.font())
         x = INDENT + self.TITLE_GAP
-        p.drawText(QRectF(x, 0, self.width() - x, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
+        theme.draw_text(p, QRectF(x, 0, self.width() - x, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text(), self.font())
         p.end()
 
 
@@ -228,17 +239,16 @@ class TabButton(QRadioButton):
             p.drawPath(rounded(QRectF(self.rect()).adjusted(1, 1, -1, -1), SEG_RADIUS - 1))
         name, status = self._parts()
         big, small = theme.ui_font(13, "medium"), theme.ui_font(11)
-        fb, fs = QFontMetricsF(big), QFontMetricsF(small)
-        nw, sw = fb.horizontalAdvance(name), fs.horizontalAdvance(status)
+        fb = QFontMetricsF(big)
+        nw = theme.text_width(name, big)  # each run as wide as AppKit drew it
+        sw = theme.text_width(status, small) if status else 0.0
         x = (self.width() - nw - sw) / 2
         base = (self.height() - fb.height()) / 2 + fb.ascent()  # one line: both runs share a baseline
-        p.setFont(big)
         p.setPen(theme.surface() if on else theme.content_dim())
-        p.drawText(QPointF(x, base), name)
+        theme.draw_text_at(p, x, base, name, big)
         if status:
-            p.setFont(small)
             p.setPen(theme.surface(0.75) if on else theme.content(0.45))
-            p.drawText(QPointF(x + nw, base), status)
+            theme.draw_text_at(p, x + nw, base, status, small)
         p.end()
 
 
@@ -317,12 +327,11 @@ class Tag(QWidget):
         # The Mac's 10 pt symbol, centred in its 12 x 12 image view at (0, 2).
         icons.draw_icon(p, self.symbol, icons.icon_rect(6, 8, 10), color, "medium")
         font = theme.ui_font(11)
-        p.setFont(font)
         p.setPen(color)
         x = self.TEXT_X + TEXT_INSET
         room = max(0.0, min(float(self.width()), exact) - x - TEXT_INSET)
-        words = QFontMetricsF(font).elidedText(self.text, Qt.TextElideMode.ElideRight, room)
-        p.drawText(QRectF(x, 0, room + TEXT_INSET, self.H), int(Qt.AlignmentFlag.AlignVCenter), words)
+        words = theme.elide(self.text, font, room)  # cut only where the Mac's label would cut it
+        theme.draw_text(p, QRectF(x, 0, room + TEXT_INSET, self.H), Qt.AlignmentFlag.AlignVCenter, words, font, words != self.text)
         p.end()
 
 
@@ -361,6 +370,11 @@ class StepIcon(QWidget):
         self.done = False
         self.setFixedSize(round(ICON), round(ICON))
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.paint_offset = QPointF(0.0, 0.0)  # see window.place()
+
+    def set_paint_offset(self, dx: float, dy: float = 0.0) -> None:
+        self.paint_offset = QPointF(dx, dy)
+        self.update()
 
     def set_done(self, done: bool) -> None:
         if done != self.done:
@@ -370,6 +384,7 @@ class StepIcon(QWidget):
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.translate(self.paint_offset)
         d = 19.0
         circle = QRectF((self.width() - d) / 2, (self.height() - d) / 2, d, d)
         if self.done:
@@ -378,8 +393,7 @@ class StepIcon(QWidget):
             p.setPen(QPen(theme.content_dim(), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(circle.adjusted(0.75, 0.75, -0.75, -0.75))
-            p.setFont(theme.ui_font(11, "semibold"))
-            p.drawText(circle, int(Qt.AlignmentFlag.AlignCenter), str(self.number))
+            theme.draw_text(p, circle, Qt.AlignmentFlag.AlignCenter, str(self.number), theme.ui_font(11, "semibold"))
         p.end()
 
 
@@ -453,7 +467,7 @@ class KeyCaps(QWidget):
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setFont(theme.ui_font(13, "medium"))
+        font = theme.ui_font(13, "medium")
         x = self.offset
         for text, w in zip(self.labels, self._cap_widths(), strict=True):
             r = QRectF(x, 0, w, self.H)
@@ -462,7 +476,7 @@ class KeyCaps(QWidget):
             p.setPen(QPen(theme.hairline(), 1.0))
             p.drawPath(path)
             p.setPen(theme.content())
-            p.drawText(r, int(Qt.AlignmentFlag.AlignCenter), text)
+            theme.draw_text(p, r, Qt.AlignmentFlag.AlignCenter, text, font)
             x += w + self.GAP
         p.end()
 
@@ -489,8 +503,6 @@ class IconPillButton(PillButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = rounded(r, r.height() / 2)
-        if not self.isEnabled():
-            p.setOpacity(0.45)
         p.fillPath(path, theme.fill_soft())
         p.setPen(QPen(theme.hairline(), 1.0))
         p.drawPath(path)
@@ -502,11 +514,11 @@ class IconPillButton(PillButton):
             p.drawPath(rounded(ring, ring.height() / 2))
         x = (self.width() - self.title_width() - self.IMAGE_W) / 2  # PILL_PAD at the natural width
         tw = self.title_width()
-        p.setPen(theme.content())
-        p.setFont(self.font())
-        p.drawText(QRectF(x + TEXT_INSET, 0, tw, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
+        title = theme.content(1.0 if self.isEnabled() else DISABLED_TITLE_ALPHA)  # a disabled Mac pill dims its title only
+        p.setPen(title)
+        theme.draw_text(p, QRectF(x + TEXT_INSET, 0, tw, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text(), self.font())
         icons.draw_icon(p, self.icon_name, icons.icon_rect(x + tw + self.ICON_SIZE / 2, self.height() / 2, self.ICON_SIZE),
-                        theme.content(), "semibold")
+                        title, "semibold")
         p.end()
 
 
@@ -526,6 +538,10 @@ class Dropdown(QComboBox):
     ARROWS_FROM_RIGHT = 13.75        # the chevrons' centre, from the frame's right edge
     ARROW_HALF_W, ARROW_NEAR, ARROW_FAR = 3.0, 2.0, 4.5  # each chevron: half width, and its ends from the bezel's middle
     ARROW_PEN = 1.5
+    # Disabled, the Mac's pop-up button keeps a faint bezel and dims its title and chevrons far
+    # more than its bezel: (bezel and shadow strength, title alpha, chevron alpha) in light and
+    # dark mode, measured on the legacy window's picture (title and chevron ink against enabled).
+    DISABLED = ((0.18, 0.31, 0.29), (0.52, 0.36, 0.34))
 
     def __init__(self, items: list[str], parent: QWidget):
         super().__init__(parent)
@@ -557,8 +573,9 @@ class Dropdown(QComboBox):
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        if not self.isEnabled():
-            p.setOpacity(0.45)
+        on = self.isEnabled()
+        strength, title_alpha, arrow_alpha = (1.0, 0.98, 0.85) if on else self.DISABLED[int(theme.is_dark())]
+        p.setOpacity(strength)
         bezel = QRectF(self.BEZEL_L, self.BEZEL_T, self.width() - self.BEZEL_L - self.BEZEL_R, self.BEZEL_H)
         r = self.RADIUS
         # The fine shadow: a faint ring all round and a little more under the bottom edge.
@@ -576,13 +593,13 @@ class Dropdown(QComboBox):
             p.setPen(QPen(theme.content(0.45), 2.0))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(rounded(bezel.adjusted(-1, -1, 1, 1), r + 1))
+        p.setOpacity(1.0)
         font = self.font()
-        p.setFont(font)
-        p.setPen(self._system(0.98))
+        p.setPen(self._system(title_alpha))
         right = self.width() - self.ARROWS_FROM_RIGHT - self.ARROW_HALF_W - 4
-        text = QFontMetricsF(font).elidedText(self.currentText(), Qt.TextElideMode.ElideRight, right - self.TITLE_X)
-        p.drawText(QPointF(self.TITLE_X, self.TITLE_Y + QFontMetricsF(font).ascent()), text)
-        pen = QPen(self._system(0.85), self.ARROW_PEN)
+        text = theme.elide(self.currentText(), font, right - self.TITLE_X)
+        theme.draw_text_at(p, self.TITLE_X, self.TITLE_Y + QFontMetricsF(font).ascent(), text, font, None, text != self.currentText())
+        pen = QPen(self._system(arrow_alpha), self.ARROW_PEN)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
@@ -592,6 +609,11 @@ class Dropdown(QComboBox):
             near, far = cy + sign * self.ARROW_NEAR, cy + sign * self.ARROW_FAR
             p.drawPolyline([QPointF(cx - hw, near), QPointF(cx, far), QPointF(cx + hw, near)])
         p.end()
+
+
+# The Mac's key field, disabled while a key is checked, keeps its text colour and draws it at
+# half alpha (measured on the legacy window's picture: the bullets' solid centres).
+DISABLED_FIELD_ALPHA = 0.5
 
 
 class KeyField(QLineEdit):
@@ -614,16 +636,17 @@ class KeyField(QLineEdit):
 
     def restyle(self) -> None:
         # The borders are mixed into the surface as solid colours: a translucent style sheet border
-        # shows its overlapping corner segments as dots.
+        # shows its overlapping corner segments as dots. The hint is the system's placeholder
+        # colour, as on the Mac's secure field; it goes in the style sheet because a style sheet
+        # that sets `color` replaces the palette's placeholder colour with that colour at half alpha.
         self.setStyleSheet(
             f"QLineEdit {{ background: {css(theme.surface())}; color: {css(theme.content())};"
+            f" placeholder-text-color: {css(theme.system_color('placeholder'))};"
             f" border: 1px solid {css(_on_surface(theme.hairline()))}; border-radius: {round(FIELD_RADIUS)}px; padding: 0 7px;"
-            f" selection-background-color: {css(theme.content(0.25))}; selection-color: {css(theme.content())}; }}"
+            + (f" lineedit-password-character: {theme.secure_bullet()};" if theme.secure_bullet() else "")
+            + f" }}{selection_style('QLineEdit')}"
             f" QLineEdit:focus {{ border-color: {css(_on_surface(theme.content(0.45)))}; }}"
-            f" QLineEdit:disabled {{ color: {css(theme.content_dim())}; }}")
-        pal = self.palette()
-        pal.setColor(QPalette.ColorRole.PlaceholderText, theme.content(0.40))
-        self.setPalette(pal)
+            f" QLineEdit:disabled {{ color: {css(theme.content(DISABLED_FIELD_ALPHA))}; }}")
 
 
 def _on_surface(color: QColor) -> QColor:
@@ -644,6 +667,7 @@ class Spinner(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.angle = 0
         self.running = False
+        self.paint_offset = QPointF(0.0, 0.0)  # see window.place()
         self._timer = QTimer(self)
         self._timer.setInterval(16 if not theme.reduce_motion() else 250)
         self._timer.timeout.connect(self._step)
@@ -662,9 +686,14 @@ class Spinner(QWidget):
         self.angle = (self.angle + 8) % 360
         self.update()
 
+    def set_paint_offset(self, dx: float, dy: float = 0.0) -> None:
+        self.paint_offset = QPointF(dx, dy)
+        self.update()
+
     def paintEvent(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.translate(self.paint_offset)
         r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
         p.setPen(QPen(theme.content(0.15), 2.0))
         p.drawEllipse(r)
@@ -1251,7 +1280,7 @@ class SetupWindow(LyssnaWindow):
             _, h = view.fit(width)
         else:
             h = view.height()
-        view.move(round(x), round(y))
+        place(view, x, y)
         self._visible.add(view)
         return h
 
@@ -1264,13 +1293,19 @@ class SetupWindow(LyssnaWindow):
                 left = math.floor(x)
                 v.set_offset(x - left)
                 x = left
-            v.move(round(x), round(y + (h - v.height()) / 2))
+            if isinstance(v, ProgressBar):  # it draws itself, so it can sit on the Mac's half point
+                top = y + (h - v.thickness()) / 2
+                v.move(round(x), math.floor(top))
+                v.set_paint_offset(0.0, top - math.floor(top))
+                self._visible.add(v)
+                continue
+            place(v, x, y + (h - v.height()) / 2)
             self._visible.add(v)
         return h
 
     def _step(self, icon: StepIcon, head: Label, y: float) -> float:
         hh = self.put(head, TEXT_X, y)
-        icon.move(round(MARGIN), round(y + (hh - ICON) / 2))
+        place(icon, MARGIN, y + (hh - ICON) / 2)
         self._visible.add(icon)
         return hh
 
@@ -1299,6 +1334,7 @@ class SetupWindow(LyssnaWindow):
         tw, th = label.fit()
         label.set_text(text)
         label.resize(tw, th)
+        bar.set_paint_offset(0.0, 0.0)
         bar.resize(round(SUB_W - tw - gap), round(BAR_H))
         return self.centre_row([(bar, SUB_X), (label, SUB_X + SUB_W - tw)], y)
 
@@ -1328,8 +1364,8 @@ class SetupWindow(LyssnaWindow):
         y = HEADER_TOP
         self.mark.move(round((W - self.mark.width()) / 2), round(y))
         y += MARK_H + 10
-        tw, th = self.title.fit()
-        self.title.move(round((W - tw) / 2), round(y))
+        _, th = self.title.fit()
+        place(self.title, (W - self.title.exact_width()) / 2, y)  # centred on its half-point frame, as on the Mac
         y += th + 6
         _, sh = self.subtitle.fit(W - 2 * MARGIN)
         self.subtitle.move(round(MARGIN), round(y))
@@ -1349,7 +1385,7 @@ class SetupWindow(LyssnaWindow):
         self.footer_line.setGeometry(0, 0, round(W), 1)
         self.done.move(round(W - 20 - self.done.width()), round((FOOTER_H - self.done.height()) / 2))
         _, sh = self.footer_status.fit()
-        self.footer_status.move(round(MARGIN), round((FOOTER_H - sh) / 2))
+        place(self.footer_status, MARGIN, (FOOTER_H - sh) / 2)
 
     def _layout_listen(self, show: dict, y: float) -> float:
         """Listen's steps (and, without a permission step, the shortcuts warning above them),
@@ -1409,7 +1445,7 @@ class SetupWindow(LyssnaWindow):
                     shift = 22.0 if self._saving else 0.0
                     h = put(self.key_status, SUB_X + shift, y + 8, SUB_W - shift)
                     if self._saving:
-                        self.spinner.move(round(SUB_X), round(y + 8 + (h - Spinner.SIZE) / 2))
+                        place(self.spinner, SUB_X, y + 8 + (h - Spinner.SIZE) / 2)
                         self._visible.add(self.spinner)
                     y += 8 + h
             y += CARD_PAD
@@ -1487,7 +1523,7 @@ class SetupWindow(LyssnaWindow):
                         shift = 24.0 if row.saving else 0.0
                         h = put(row.status, SUB_X + shift, y + 8, SUB_W - shift)
                         if row.saving:
-                            row.spinner.move(round(SUB_X), round(y + 8 + (h - Spinner.SIZE) / 2))
+                            place(row.spinner, SUB_X, y + 8 + (h - Spinner.SIZE) / 2)
                             self._visible.add(row.spinner)
                         y += 8 + h
             y += CARD_PAD

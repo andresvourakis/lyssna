@@ -239,6 +239,11 @@ def walk(root, app) -> list[dict]:
             if sym:
                 e["icon"] = sym
             title_font, title_color = _attributed_title(view) if text else (None, None)
+            if title_color is not None and not view.isEnabled():
+                # A disabled button draws its title in the system's disabled text colour,
+                # whatever colour the attributed title carries (measured: a disabled title at
+                # alpha 0.3 and at 1.0 draw the same pixels).
+                title_color = AppKit.NSColor.disabledControlTextColor()
             if text:
                 e["font"] = font_info(title_font or view.font())
             e["color"] = hexcolor(title_color or view.contentTintColor(), app)
