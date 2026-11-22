@@ -15,6 +15,9 @@ jobs:
       - run: uv sync
       - run: uvx ruff check lyssna tests
       - run: uv run pytest -q
+      # The legacy AppKit interface in a process of its own, as the app never runs AppKit's
+      # interface beside Qt's (tests/conftest.py leaves tests/legacy out of the run above).
+      - run: uv run pytest -q tests/legacy
 
   test-windows:
     # The engine, the Windows plumbing and the Qt interface on Windows; tests that need the Mac

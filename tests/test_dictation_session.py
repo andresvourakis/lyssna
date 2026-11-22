@@ -373,3 +373,14 @@ def test_a_failing_observer_does_not_break_the_session(make):
     s.stop()
     settle(s)
     assert p["pasted"] == ["Hello there."]
+
+
+def test_close_ends_the_worker_after_what_is_queued(make):
+    p = make()
+    s = p["session"]
+    s.start()
+    s.stop()  # queued before close, so it still runs
+    s.close()
+    s.thread.join(2)
+    assert not s.thread.is_alive()
+    assert p["pasted"] == ["Hello there."]

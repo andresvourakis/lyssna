@@ -12,6 +12,11 @@ You need Python 3.11 or later and [uv](https://docs.astral.sh/uv/).
     make run       # run the menu bar app from source
     make app       # build Lyssna.app and the release zip
 
+`make test` runs `uv run pytest -q` and then, on a Mac, `uv run pytest -q tests/legacy`:
+the tests of the legacy AppKit interface run in a pytest process of their own, because the app
+never runs that interface beside the Qt one. Plain `uv run pytest` leaves them out and says so
+at the end.
+
 Run `make` to list every target. Running from source, macOS asks for
 Accessibility access for your terminal app, not for the project.
 

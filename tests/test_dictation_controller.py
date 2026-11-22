@@ -501,3 +501,5 @@ def test_shutdown_cancels_and_unloads(ctl, monkeypatch):
     assert ctl.dictation.state == "idle"
     assert "cancel" in ctl.recorder.calls and ctl.dictation.watcher.stopped >= 1
     assert unloaded == [1] and not download.active()
+    ctl.dictation.thread.join(2)
+    assert not ctl.dictation.thread.is_alive()  # the session's worker ends with the controller

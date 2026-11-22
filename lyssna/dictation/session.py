@@ -81,7 +81,8 @@ class DictationSession:
         self._undo: np.ndarray | None = None   # the audio of the last cancelled recording, while Undo lasts
         self._undo_token: object | None = None   # which cancel that audio belongs to
         self._jobs: queue.Queue = queue.Queue()
-        threading.Thread(target=self._worker, daemon=True, name="lyssna-dictation").start()
+        self.thread = threading.Thread(target=self._worker, daemon=True, name="lyssna-dictation")
+        self.thread.start()
 
     # -- observation ---------------------------------------------------------------------
 
@@ -210,9 +211,16 @@ class DictationSession:
 
     # -- worker side ------------------------------------------------------------------------
 
+    def close(self) -> None:
+        """End the worker thread once it has run what is already queued (at shutdown). A
+        session nobody closes keeps its idle thread until the process ends."""
+        self._jobs.put(None)
+
     def _worker(self) -> None:
         while True:
             job = self._jobs.get()
+            if job is None:
+                return
             try:
                 job()
             except Exception:

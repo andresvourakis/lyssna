@@ -586,6 +586,7 @@ class Controller:
         from .dictation.cleaners import s1mini
 
         s1mini.unload()
+        self.dictation.close()  # after the cancel queued above, so the microphone is released first
 
     # -- dictation -------------------------------------------------------------------
 

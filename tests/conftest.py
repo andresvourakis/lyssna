@@ -13,8 +13,11 @@ call that would open a page refuses unless a test fakes it.
 The Qt interface's tests draw on Qt's offscreen platform, so no window ever reaches the screen,
 and share one QApplication (the qapp fixture)."""
 
+import gc
 import os
 import sys
+import threading
+from pathlib import Path
 
 import httpx
 import pytest
@@ -32,6 +35,37 @@ collect_ignore = [] if sys.platform == "darwin" else [
 ]
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"  # before any test module imports Qt
+
+# On the Mac the legacy AppKit interface's tests run in a pytest process of their own
+# (`uv run pytest tests/legacy`; make test, CI and CONTRIBUTING.md run both). The app runs one
+# interface per process, never AppKit's NSApplication next to a QApplication, and a run with
+# both in one process could die in native code with no Python frame to show for it.
+LEGACY_DIR = Path(__file__).resolve().parent / "legacy"
+LEGACY_COMMAND = "uv run pytest tests/legacy"
+
+
+def _legacy_asked_for(config) -> bool:
+    """Did the command line name tests/legacy or something inside it?"""
+    for arg in config.args:
+        path = (config.invocation_params.dir / arg.split("::")[0]).resolve()
+        if path == LEGACY_DIR or LEGACY_DIR in path.parents:
+            return True
+    return False
+
+
+def pytest_ignore_collect(collection_path, config):
+    if sys.platform == "darwin" and collection_path == LEGACY_DIR and not _legacy_asked_for(config):
+        return True
+    return None
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    alive = config.stash.get(_LEFTOVER_THREADS, [])
+    terminalreporter.write_line(f"Lyssna threads still alive at the end: {len(alive)}")
+    if len(alive) > MAX_LEFTOVER_THREADS:
+        terminalreporter.write_line(f"More than {MAX_LEFTOVER_THREADS} were left behind, so the run fails: {alive}", red=True)
+    if sys.platform == "darwin" and not _legacy_asked_for(config):
+        terminalreporter.write_line(f"The legacy AppKit interface's tests were not run here; they run on their own: {LEGACY_COMMAND}")
 
 
 class FakeKeychain:
@@ -179,6 +213,99 @@ def no_browser(monkeypatch):
     monkeypatch.setattr(support, "SITE_URL", "")
     monkeypatch.delenv(support.SITE_ENV, raising=False)
     monkeypatch.setattr(support, "_open", refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_leftovers(monkeypatch):
+    """Each test ends what it started, so nothing from it runs during a later test against that
+    test's state, or touches a window or widget after the test let go of it: every Controller is
+    shut down and every dictation session's worker ends; threading.Timers started during the
+    test (the Qt and AppKit later() timers, the controller's message timers) are cancelled; calls
+    queued for the Qt main thread and not run are dropped; and the test's garbage is collected
+    here, on the main thread. Left to chance, Python's cycle collector frees those objects on
+    whichever thread happens to allocate next, and an AppKit view or a Qt widget must never be
+    freed off the main thread."""
+    from lyssna.controller import Controller
+    from lyssna.dictation.session import DictationSession
+
+    before = set(threading.enumerate())
+    controllers: list = []
+    sessions: list = []
+    controller_init, session_init = Controller.__init__, DictationSession.__init__
+
+    def track_controller(self, *args, **kwargs):
+        controllers.append(self)
+        controller_init(self, *args, **kwargs)
+
+    def track_session(self, *args, **kwargs):
+        sessions.append(self)
+        session_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Controller, "__init__", track_controller)
+    monkeypatch.setattr(DictationSession, "__init__", track_session)
+    yield
+    for ctl in controllers:
+        if hasattr(ctl, "dictation"):  # built all the way
+            ctl.shutdown()
+    for session in sessions:
+        if hasattr(session, "thread"):
+            session.close()
+    for t in set(threading.enumerate()) - before:
+        if isinstance(t, threading.Timer):
+            t.cancel()
+    for t in set(threading.enumerate()) - before:
+        if isinstance(t, threading.Timer) or t.name == "lyssna-dictation":
+            t.join(2)
+    mainthread = sys.modules.get("lyssna.ui.mainthread")
+    if mainthread is not None:
+        mainthread.cancel_pending()
+        # Taken from the loaded module, not imported: some tests make importing PySide6 fail.
+        qt_core, shiboken, dispatcher = sys.modules["PySide6.QtCore"], sys.modules["shiboken6"], mainthread._dispatcher
+        if qt_core.QCoreApplication.instance() is not None and dispatcher is not None and shiboken.isValid(dispatcher):
+            qt_core.QCoreApplication.removePostedEvents(dispatcher)
+    # The Windows player's private audio thread (lyssna.win.audio) is left running: it is one
+    # per process by design, ended at exit, and stopping it per test made the next test's fresh
+    # one crash in Qt Multimedia when that thread had made the application object.
+    gc.collect(1)  # the test's young garbage; the module_garbage fixture does a full pass
+
+
+@pytest.fixture(scope="module", autouse=True)
+def module_garbage():
+    """A full garbage collection on the main thread after each test module, for whatever of its
+    garbage got old enough to escape no_leftovers' young-generation pass."""
+    yield
+    gc.collect()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def collect_on_the_main_thread_only():
+    """Python's cycle collector runs on whichever thread allocates past its threshold, and frees
+    every unreachable object there, AppKit views and Qt widgets from earlier tests included.
+    Freeing those off the main thread can crash the process. So during the tests it never runs
+    by itself: no_leftovers and module_garbage collect on the main thread instead."""
+    was_enabled = gc.isenabled()
+    gc.disable()
+    yield
+    if was_enabled:
+        gc.enable()
+
+
+# A few long-lived ones are expected: the Windows UI Automation threads tests build, and the
+# Windows player's one audio thread.
+MAX_LEFTOVER_THREADS = 8
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the run when tests leave Lyssna's threads behind (no_leftovers ends what it knows of;
+    this catches a new kind). Each one alive keeps its test's objects alive and can call into
+    them during a later test."""
+    alive = sorted(t.name for t in threading.enumerate() if t.name.startswith("lyssna-"))
+    session.config.stash[_LEFTOVER_THREADS] = alive
+    if len(alive) > MAX_LEFTOVER_THREADS and exitstatus == 0:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+_LEFTOVER_THREADS = pytest.StashKey[list]()
 
 
 @pytest.fixture(scope="session")

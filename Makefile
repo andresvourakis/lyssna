@@ -7,8 +7,9 @@ APP := /Applications/Lyssna.app
 help:            ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-9s %s\n", $$1, $$2}'
 
-test:            ## run the test suite
+test:            ## run the test suite (on a Mac, the legacy AppKit tests in a second process)
 	uv run pytest -q
+	@if [ "$$(uname)" = Darwin ]; then uv run pytest -q tests/legacy; fi
 
 run:             ## run the menu bar app from source (Accessibility goes to your terminal)
 	uv run lyssna

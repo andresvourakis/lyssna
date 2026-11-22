@@ -504,18 +504,27 @@ def test_both_font_sets_name_the_same_system_colours():
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="AppKit's own line breaks and cut")
 def test_the_mac_ends_a_folded_dictation_where_appkit_does(qapp):
-    """The history row folding a long dictation to four lines on 360 points: AppKit tightens
-    the last line's letters and keeps "Windows in…" where an untightened cut keeps "Windows…"."""
+    """The history row folding a long dictation to four lines on 360 points, and a two-line row on
+    216 (where round 3's fitted tightening kept one letter more than a real AppKit label). The
+    lines before the last are TextKit's own lines on this macOS; the last is cut where TextKit 2
+    cuts a label's last visible line, which tightens the letters first and so never keeps less
+    than an untightened cut ("Windows in…" where that keeps "Windows…" on macOS 26). Where the
+    lines break depends on the system's fonts, so every expectation is asked of the system here."""
     from lyssna.mac import appearance
 
-    text = (WORDS + " Next we look at the Windows installer, the history window and the dictionary tab.")
-    lines = appearance.break_lines(text, ("text", 14, "regular"), 360.0, 4, lambda t, w, n: [])
-    assert len(lines) == 4 and lines[-1].endswith("the Windows in" + appearance.ELLIPSIS)
-    # A width where round 3's fitted tightening kept one letter too many: a real AppKit label
-    # (drawn to PDF and read back) shows "He w…", and so does TextKit 2, which the twin now asks.
-    text = "Can you send the updated deck to Mattias before the call? He wants to check the numbers on slide four."
-    assert appearance.break_lines(text, ("text", 14, "regular"), 216.0, 2, lambda t, w, n: []) == [
-        "Can you send the updated deck", "to Mattias before the call? He w" + appearance.ELLIPSIS]
+    font = appearance._appkit_font("text", 14, "regular")
+    folded = WORDS + " Next we look at the Windows installer, the history window and the dictionary tab."
+    deck = "Can you send the updated deck to Mattias before the call? He wants to check the numbers on slide four."
+    for text, width, shown in ((folded, 360.0, 4), (deck, 216.0, 2)):
+        lines = appearance.break_lines(text, ("text", 14, "regular"), width, shown, lambda t, w, n: [])
+        spans = appearance._wrap(text, font, width)
+        assert len(spans) > shown and len(lines) == shown
+        assert lines[:-1] == [text[a:b].rstrip() for a, b in spans[: shown - 1]]
+        rest = text[spans[shown - 1][0]:]
+        assert lines[-1] == appearance._last_line(rest, font, width)
+        kept = lines[-1].removesuffix(appearance.ELLIPSIS)
+        assert lines[-1].endswith(appearance.ELLIPSIS) and rest.startswith(kept)
+        assert len(kept) >= len(appearance._cut(rest, font, width).removesuffix(appearance.ELLIPSIS))
 
 
 def test_text_buttons_are_framed_as_borderless_appkit_buttons(qapp):
@@ -608,14 +617,23 @@ def test_windows_has_no_system_symbols():
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="the system's symbols are the Mac's")
 def test_the_mac_draws_its_own_symbol_tinted_and_centred_as_appkit_does(qapp):
-    """On the Mac an icon is the system symbol's own image (play.fill at 13 pt semibold is 12 x 14
-    points), tinted through its coverage, centred on the icon box's centre on whole pixels."""
+    """On the Mac an icon is the system symbol's own image, as large as AppKit makes that symbol
+    at that size and weight on this macOS (it differs between versions), tinted through its
+    coverage, centred on the icon box's centre on whole pixels."""
+    import AppKit
+
     from lyssna.mac import appearance
     from lyssna.ui import icons
 
+    symbol = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_("play.fill", None)
+    config = AppKit.NSImageSymbolConfiguration.configurationWithPointSize_weight_(13, AppKit.NSFontWeightSemibold)
+    size = symbol.imageWithSymbolConfiguration_(config).size()
+    w, h = float(size.width), float(size.height)  # the system's answer, in points
+    pw, ph = math.ceil(w * 2 - 1e-6), math.ceil(h * 2 - 1e-6)
+
     image = appearance.symbol_image("play.fill", 13, "semibold", (200, 100, 50, 0.5), 2.0)
-    assert (image.width(), image.height(), image.devicePixelRatio()) == (24, 28, 2.0)
-    colours = {image.pixelColor(x, y).rgba() for x in range(24) for y in range(28)}
+    assert (image.width(), image.height(), image.devicePixelRatio()) == (pw, ph, 2.0)
+    colours = {image.pixelColor(x, y).rgba() for x in range(pw) for y in range(ph)}
     solid = [c for c in map(QColor.fromRgba, colours) if c.alpha() == 128]
     assert solid and all(abs(c.red() - 200) <= 2 and abs(c.green() - 100) <= 2 and abs(c.blue() - 50) <= 2 for c in solid)
     assert appearance.symbol_image("no.such.symbol", 13, "semibold", (0, 0, 0, 1.0), 2.0) is None
@@ -627,8 +645,10 @@ def test_the_mac_draws_its_own_symbol_tinted_and_centred_as_appkit_does(qapp):
     icons.draw_icon(p, "play.fill", icons.icon_rect(17, 17, 13), QColor("black"), "semibold")
     p.end()
     plain = appearance.symbol_image("play.fill", 13, "semibold", (0, 0, 0, 1.0), 2.0)
-    # The 12 x 14 image at (11, 10) points: pixel for pixel the symbol's own.
-    assert all(canvas.pixelColor(22 + x, 20 + y).alpha() == plain.pixelColor(x, y).alpha() for x in range(24) for y in range(28))
+    # Centred on (17, 17) points with its corner on a whole pixel: pixel for pixel the symbol's own.
+    left, top = round((17 - plain.width() / 4) * 2), round((17 - plain.height() / 4) * 2)
+    assert all(canvas.pixelColor(left + x, top + y).alpha() == plain.pixelColor(x, y).alpha()
+               for x in range(plain.width()) for y in range(plain.height()))
 
 
 # -- bars --------------------------------------------------------------------------------------

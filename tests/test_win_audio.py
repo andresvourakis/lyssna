@@ -213,8 +213,8 @@ def play_to_end(player, timeout=5.0) -> float:
 
 def test_real_qt_playback_of_a_quiet_tone():
     pytest.importorskip("PySide6.QtMultimedia")
-    if os.environ.get("CI"):
-        pytest.skip("no sound device on CI")
+    if not os.environ.get("LYSSNA_MANUAL_AUDIO"):
+        pytest.skip("plays through the real speakers; set LYSSNA_MANUAL_AUDIO=1 to run it")
     from PySide6.QtMultimedia import QMediaDevices
 
     if not QMediaDevices.audioOutputs():
@@ -238,7 +238,7 @@ def test_real_qt_playback_of_a_quiet_tone():
 
 def test_real_qt_rejects_bad_audio():
     pytest.importorskip("PySide6.QtMultimedia")
-    if os.environ.get("CI"):
-        pytest.skip("no sound device on CI")
+    if not os.environ.get("LYSSNA_MANUAL_AUDIO"):
+        pytest.skip("plays through the real speakers; set LYSSNA_MANUAL_AUDIO=1 to run it")
     with pytest.raises(ProviderError, match=r"Could not decode audio \(mp3\)"):
         audio.make_player(Audio(b"not audio at all" * 50, "mp3"), 1.0)
