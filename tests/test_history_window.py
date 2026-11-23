@@ -7,6 +7,7 @@ Needs a window server to build an NSWindow: the module skips without one."""
 from datetime import date, datetime, timedelta, timezone
 
 import AppKit
+import numpy as np
 import pytest
 from AppKit import NSMenuItem, NSTextField
 
@@ -537,3 +538,119 @@ def test_nothing_dictated_reaches_the_log(win, store, vocab, clock, caplog):
     logged = "\n".join(r.getMessage() for r in caplog.records).lower()
     for word in ("door", "folder", "blue", "matias", "mattias"):
         assert word not in logged
+
+
+# -- a failed dictation ----------------------------------------------------------------------------
+
+
+TONE = (0.25 * np.sin(np.arange(32000) / 7)).astype(np.float32)
+
+
+class FakeCtl:
+    def __init__(self, start=True):
+        self.calls = []
+        self.start = start
+
+    def retry_dictation(self, entry_id, paste=True, on_done=None):
+        self.calls.append((entry_id, paste))
+        self.on_done = on_done
+        return self.start
+
+
+def add_failed(store, clock, seconds=12.0, when=None):
+    if when is not None:
+        clock.t = when
+    entry = store.add_failed(TONE, seconds, "openai")
+    clock.t = NOW
+    return entry
+
+
+def test_failed_text():
+    assert HW.failed_text(12.2) == "Couldn't transcribe. 12 s of audio"
+    assert HW.failed_text(0.3) == "Couldn't transcribe. 1 s of audio"
+
+
+def test_a_failed_row_shows_retry_and_more_always(win, store, clock):
+    add(store, clock, "A normal one.", when=NOW - timedelta(minutes=5))
+    add_failed(store, clock)
+    win.prepare()
+    assert kinds(win) == ["header", "dictation", "dictation"]
+    row = win.items[1]
+    assert isinstance(row, HW._FailedRow)
+    assert "Couldn't transcribe. 12 s of audio" in strings(row.view)
+    assert not row.retry.isHidden() and not row.more.isHidden()  # not hover-only
+    assert str(row.retry.title()) == "Retry" and row.retry.isEnabled()
+    row.view.set_hover(False)
+    assert not row.retry.isHidden() and not row.more.isHidden()
+    # Retry and More sit on the first line, right-aligned like a dictation row's icons, without overlapping
+    other = win.items[2]
+    assert row.more.frame().origin.x == other.more.frame().origin.x
+    assert row.retry.frame().origin.x + row.retry.frame().size.width <= row.more.frame().origin.x
+    assert row.text.frame().origin.x + row.text.frame().size.width <= row.retry.frame().origin.x
+    assert row.time.frame().origin.y == row.text.frame().origin.y
+
+
+def test_a_failed_rows_more_menu_holds_retry_and_delete(win, store, clock):
+    entry = add_failed(store, clock)
+    win.prepare()
+    menu = win._more_menu(store.entries()[0])
+    assert [str(menu.itemAtIndex_(i).title()) for i in range(menu.numberOfItems())] == ["Retry", "Delete"]
+    win.ctl = FakeCtl()
+    win.retryEntry_(menu_item(entry.id))
+    assert win.ctl.calls == [(entry.id, False)]
+
+
+def test_retry_from_the_row_does_not_paste_and_shows_retrying(win, store, clock):
+    entry = add_failed(store, clock)
+    win.ctl = FakeCtl()
+    win.prepare()
+    win.retryEntry_(win.items[1].retry)
+    assert win.ctl.calls == [(entry.id, False)]
+    row = win.items[1]
+    assert str(row.retry.title()) == "Retrying..." and not row.retry.isEnabled()
+    win.retryEntry_(row.retry)  # a second press while it runs does nothing
+    assert len(win.ctl.calls) == 1
+    # it worked: the store holds the text now, and the row turns into a normal one
+    store.complete(entry.id, DictationResult(text="Second try.", raw="second try", source="model",
+                                             transcriber="openai", cleaner="s1-mini", audio_seconds=12.0,
+                                             seconds={}, words=2))
+    win.ctl.on_done(True)
+    row = win.items[1]
+    assert isinstance(row, HW._DictationRow) and "Second try." in strings(row.view)
+
+
+def test_a_failed_retry_leaves_the_row(win, store, clock):
+    entry = add_failed(store, clock)
+    win.ctl = FakeCtl()
+    win.prepare()
+    win.retryEntry_(win.items[1].retry)
+    win.ctl.on_done(False)
+    row = win.items[1]
+    assert isinstance(row, HW._FailedRow) and str(row.retry.title()) == "Retry" and row.retry.isEnabled()
+    assert store.entries()[0].id == entry.id
+
+
+def test_a_retry_that_cannot_start_resets_the_pill(win, store, clock):
+    add_failed(store, clock)
+    win.ctl = FakeCtl(start=False)
+    win.prepare()
+    win.retryEntry_(win.items[1].retry)
+    assert str(win.items[1].retry.title()) == "Retry"
+
+
+def test_delete_a_failed_row_removes_its_recording(win, store, clock):
+    entry = add_failed(store, clock)
+    win.prepare()
+    win.deleteEntry_(menu_item(entry.id))
+    assert store.entries() == [] and not store.recordings.exists(entry.id)
+    assert kinds(win) == ["empty"]
+
+
+def test_search_leaves_failed_rows_out(win, store, clock):
+    add(store, clock, "Findable words.")
+    add_failed(store, clock)
+    win.prepare()
+    assert len(win.items) == 3
+    win.search_field.setStringValue_("find")
+    win.controlTextDidChange_(type("N", (), {"object": lambda self: win.search_field})())
+    assert [type(i).__name__ for i in win.items] == ["_Header", "_DictationRow"]

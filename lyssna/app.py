@@ -160,7 +160,8 @@ class MenuBar(rumps.App):
           [Pause / Resume, Stop, Previous Sentence, Next Sentence] (only while reading),
           Speed ▸, [Voice ▸], Voice Provider ▸, where the text goes
         Dictate (a section header)
-          Start Dictation, History…, Transcription ▸, Cleanup ▸, where speech goes
+          Start Dictation, Paste Last Dictation, History…, Transcription ▸, Cleanup ▸,
+          where speech goes
         [What's New in 0.3.0…], [usage this month], Settings ▸, Setup…, About Lyssna,
         [Support Lyssna]
         Quit Lyssna
@@ -220,7 +221,8 @@ class MenuBar(rumps.App):
         self.cleanup_items.update(self._add_engines(self.cleanup_menu, cleaners.REGISTRY,
                                                     lambda cls: not cls.sends_text_off_device, self._set_cleaner))
         self.item_dictation_privacy = info_item(self.ctl.dictation_privacy_note())
-        return [self.item_dictate, rumps.MenuItem("History…", callback=lambda _: self.on_history()),
+        self.item_paste_last = self._item("Paste Last Dictation", self.ctl.paste_last, "paste_last")
+        return [self.item_dictate, self.item_paste_last, rumps.MenuItem("History…", callback=lambda _: self.on_history()),
                 self.transcription_menu, self.cleanup_menu, self.item_dictation_privacy]
 
     def _add_engines(self, menu: rumps.MenuItem, registry: dict, runs_here: Callable[[type], bool],
@@ -688,7 +690,7 @@ class LyssnaApp:
         self.keyboard = KeyboardTap()
         for action, fn in (("speak", self._speak_from_hotkey), ("pause", self.ctl.toggle_pause), ("stop", self.ctl.stop),
                            ("next", self.ctl.next), ("prev", self.ctl.prev), ("faster", self.ctl.faster), ("slower", self.ctl.slower),
-                           ("button", self._toggle_button_from_hotkey)):
+                           ("button", self._toggle_button_from_hotkey), ("paste_last", self.ctl.paste_last)):
             try:
                 self.keyboard.bind(hk[action], fn)
             except ValueError as e:

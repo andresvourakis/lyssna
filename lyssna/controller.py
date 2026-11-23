@@ -19,6 +19,7 @@ import logging
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -52,6 +53,12 @@ MODEL_FAILED = "The speech model did not download. Try again."
 NO_ENGINE = "Dictation can't run in this install"
 GLOBE_HINT = "Set \u201cPress Globe key to\u201d to Do Nothing in Keyboard settings"
 BUSY = "Finish dictating first"
+RETRY = "Retry"
+RETRY_SECONDS = 8.0  # how long the failure toast offers Retry (and, with history off, the recording is kept)
+RETRY_BUSY = "Can't retry while dictating."
+RECORDING_GONE = "This recording is no longer available."
+NOTHING_TO_PASTE = "Nothing to paste yet."
+MEMORY_PREFIX = "memory-"  # a failed recording kept in memory only (history off) has an id starting so
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,10 @@ class Controller:
         self._watching_models = False
         self._globe_checked = False
         self.push_to_talk = None  # the app's PushToTalk, kept in step with the session (see _dictation_changed)
+        # Retry and Paste Last Dictation. All in memory, guarded by _dictation_lock.
+        self._retry_target: tuple[str, bool] | None = None  # (entry id, paste) the failure toast's Retry runs
+        self._held: tuple[str, object, float] | None = None  # history off: (id, samples, monotonic deadline)
+        self._last: tuple[str, str] | None = None  # the latest dictation this run: ("text", text) or ("failed", id)
         self.dictation = self._make_dictation()
         keychain.subscribe(self._keys_read)
         keychain.load(key_sections(), first=self._move_keys_to_keychain)
@@ -612,7 +623,8 @@ class Controller:
         self.recorder = recorder
         session = DictationSession(
             pipeline, recorder, inserter, watcher=watcher, auto_learn=self._auto_learn,
-            before_start=self._pause_reading, on_result=self._record_result, **options,
+            before_start=self._pause_reading, on_result=self._record_result, on_failed=self._record_failure,
+            **options,
         )
         session.subscribe(self._dictation_changed)
         return session
@@ -792,16 +804,161 @@ class Controller:
             return
         if st.can_undo:
             self.toast(Notice(st.message, "Undo", self.dictation_undo, seconds=self.dictation.undo_seconds))
+        elif st.can_retry and self._retry_target is not None:
+            entry_id, paste = self._retry_target
+            self.toast(Notice(st.message, RETRY, lambda: self.retry_dictation(entry_id, paste=paste),
+                              seconds=RETRY_SECONDS))
         else:
             self.toast(Notice(st.message))
 
     def _record_result(self, result: DictationResult) -> None:
         """Keep the dictation in the history, when this build has one."""
+        if result.text.strip():
+            with self._dictation_lock:
+                self._last = ("text", result.text)
         try:
             from .dictation import history
         except ImportError:
             return
         history.shared().add(result)
+
+    # -- retry and Paste Last Dictation ------------------------------------------------
+
+    def _record_failure(self, samples, message: str) -> None:
+        """The session's on_failed: transcription failed. Save a failed history entry with its
+        recording, or with history off (or the save failing) hold the samples in memory for
+        the toast's few seconds. The toast's Retry then runs it again and pastes."""
+        from .dictation import history
+        from .dictation.failed import SAMPLE_RATE
+
+        try:
+            entry = history.shared().add_failed(samples, len(samples) / SAMPLE_RATE, self.current_transcriber())
+        except Exception:
+            log.exception("the failed dictation could not be saved; keeping it in memory")
+            entry = None
+        if entry is not None:
+            entry_id = entry.id
+        else:
+            entry_id = MEMORY_PREFIX + uuid.uuid4().hex[:12]
+            deadline = time.monotonic() + RETRY_SECONDS
+            with self._dictation_lock:
+                self._held = (entry_id, samples, deadline)
+            timer = threading.Timer(RETRY_SECONDS + 0.5, self._forget_held, args=(entry_id,))
+            timer.daemon = True
+            timer.start()
+        with self._dictation_lock:
+            self._retry_target = (entry_id, True)
+            self._last = ("failed", entry_id)
+
+    def _forget_held(self, entry_id: str) -> None:
+        """The in-memory recording's time is up: let go of the audio."""
+        with self._dictation_lock:
+            if self._held is not None and self._held[0] == entry_id:
+                self._held = None
+
+    def _failed_samples(self, entry_id: str):
+        """The kept recording of a failed dictation, from memory or from disk; None when gone."""
+        if entry_id.startswith(MEMORY_PREFIX):
+            with self._dictation_lock:
+                held = self._held
+            if held is None or held[0] != entry_id or time.monotonic() > held[2]:
+                return None
+            return held[1]
+        from .dictation import history
+
+        store = history.shared()
+        entry = next((e for e in store.entries() if e.id == entry_id), None)
+        if entry is None or not entry.failed:
+            return None
+        samples = store.recordings.load(entry_id)
+        if samples is None:
+            store.delete(entry_id)  # a failed row whose recording is gone can never be retried
+        return samples
+
+    def retry_dictation(self, entry_id: str, paste: bool = True, on_done: Callable[[bool], None] | None = None) -> bool:
+        """Run a failed dictation's kept recording again, with the engines chosen now. The
+        failure toast's Retry pastes the text like a dictation (paste=True); History fills the
+        row in place without pasting (paste=False). Each retry is one paid request with an
+        online engine, so nothing here retries on its own. on_done(worked) is called when it
+        finishes, on the session's thread. False when it could not start (dictating, or the
+        recording is gone; a toast says which)."""
+        if self.dictating():
+            self.toast(Notice(RETRY_BUSY, seconds=2.0))
+            return False
+        samples = self._failed_samples(entry_id)
+        if samples is None:
+            log.info("retry: the recording is no longer available")
+            self.toast(Notice(RECORDING_GONE))
+            return False
+        with self._dictation_lock:
+            self._retry_target = (entry_id, paste)
+
+        def worked(result: DictationResult) -> None:
+            self._retried(entry_id, result)
+            if on_done is not None:
+                on_done(True)
+
+        def failed(message: str) -> None:
+            if on_done is not None:
+                on_done(False)
+
+        if not self.dictation.retry(samples, paste=paste, on_result=worked, on_failed=failed):
+            self.toast(Notice(RETRY_BUSY, seconds=2.0))
+            return False
+        log.info("retrying a failed dictation (%s)", "paste" if paste else "history only")
+        return True
+
+    def _retried(self, entry_id: str, result: DictationResult) -> None:
+        """A retry worked: the failed entry becomes a normal one (counted now), its recording goes."""
+        with self._dictation_lock:
+            if self._held is not None and self._held[0] == entry_id:
+                self._held = None
+            if self._retry_target is not None and self._retry_target[0] == entry_id:
+                self._retry_target = None
+            if result.text.strip():
+                self._last = ("text", result.text)
+        if not entry_id.startswith(MEMORY_PREFIX):
+            from .dictation import history
+
+            history.shared().complete(entry_id, result)
+
+    def _latest(self) -> tuple[str, str] | None:
+        """The most recent dictation: ("text", text) or ("failed", entry id); None when there is
+        none. From the history when it is on, else from what this run kept in memory."""
+        try:
+            from .dictation import history
+        except ImportError:
+            history = None
+        if history is not None:
+            store = history.shared()
+            if store.days() != 0:
+                entries = store.entries()
+                if entries:
+                    latest = entries[0]
+                    return ("failed", latest.id) if latest.failed else ("text", latest.text)
+        with self._dictation_lock:
+            return self._last
+
+    def paste_last(self) -> None:
+        """Paste Last Dictation: paste the most recent dictation again through the normal paste
+        path; if it failed, retry it and paste the result. Runs off the caller's thread (the
+        keyboard tap must stay quick)."""
+        threading.Thread(target=self._paste_last, daemon=True, name="lyssna-paste-last").start()
+
+    def _paste_last(self) -> None:
+        latest = self._latest()
+        if latest is None:
+            self.toast(Notice(NOTHING_TO_PASTE, seconds=2.0))
+            return
+        kind, value = latest
+        if kind == "failed":
+            self.retry_dictation(value, paste=True)
+            return
+        if self.dictating():
+            self._busy_dictating()
+            return
+        if not self.dictation.paste_text(value):
+            self.toast(Notice(NOTHING_TO_PASTE, seconds=2.0))
 
     def _learned(self, observed: str, corrected: str) -> None:
         """A correction the user made to pasted text. A new term is announced with Undo."""

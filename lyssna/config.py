@@ -32,6 +32,7 @@ DEFAULTS: dict = {
         "faster": "ctrl+alt+=",
         "slower": "ctrl+alt+-",
         "button": "ctrl+alt+b",
+        "paste_last": "ctrl+alt+v",
     },
     "ui": {"selection_button": True, "mini_player": True, "button_timeout": 4.0,
            "player_dock": "", "player_x": -1.0, "player_y": -1.0,
@@ -82,6 +83,7 @@ prev   = "ctrl+alt+left"   # skip back one chunk
 faster = "ctrl+alt+="
 slower = "ctrl+alt+-"
 button = "ctrl+alt+b"      # toggle the play button that appears after selecting text
+paste_last = "ctrl+alt+v"  # paste your last dictation again (if it failed, retry it and paste)
 
 [ui]
 selection_button = true    # show a play button next to the cursor after you select text

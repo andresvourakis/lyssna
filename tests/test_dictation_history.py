@@ -7,9 +7,11 @@ import os
 import stat
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pytest
 
 from lyssna import config
+from lyssna.dictation import failed as failed_mod
 from lyssna.dictation import history as H
 from lyssna.dictation.history import HistoryStore
 from lyssna.dictation.types import DictationResult
@@ -61,7 +63,8 @@ def test_add_saves_the_fields_and_nothing_else(store):
     assert e.at == "2026-11-17T10:30:00+01:00"
     data = json.loads(H.default_path().read_text())
     assert set(data["entries"][0]) == {"id", "at", "text", "raw", "words", "audio_seconds", "transcriber",
-                                       "cleaner", "source"}
+                                       "cleaner", "source", "status"}
+    assert data["entries"][0]["status"] == "ok"
 
 
 def test_empty_results_are_ignored(store):
@@ -318,3 +321,125 @@ def test_log_has_counts_not_text(store, caplog, days):
     assert logged  # it does log, just not the words
     for word in ("mattias", "door", "folder", "blue"):
         assert word not in logged
+
+
+# -- failed dictations ---------------------------------------------------------------------------
+
+TONE = (0.25 * np.sin(np.arange(32000) / 7)).astype(np.float32)
+
+
+def recording(entry_id):
+    return config.STATE_DIR / "dictation" / "failed" / f"{entry_id}.wav"
+
+
+def test_a_failed_dictation_is_saved_with_its_recording(store):
+    e = store.add_failed(TONE, 2.0, "openai")
+    assert e is not None and e.failed and e.status == "failed"
+    assert (e.text, e.words, e.audio_seconds, e.transcriber) == ("", 0, 2.0, "openai")
+    assert recording(e.id).is_file()
+    assert store.recordings.load(e.id) is not None
+    [kept] = store.entries()
+    assert kept.id == e.id and kept.failed
+    data = json.loads(H.default_path().read_text())
+    assert data["entries"][0]["status"] == "failed"
+
+
+def test_failed_dictations_are_not_counted_until_a_retry_works(store):
+    store.add(result())
+    e = store.add_failed(TONE, 2.0)
+    assert store.stats()["dictations"] == 1 and store.stats()["words_total"] == 6
+    assert store.complete(e.id, result(text="Second try worked.", audio_seconds=2.0)) is True
+    [first, _] = store.entries()
+    assert first.id == e.id and not first.failed and first.text == "Second try worked."
+    assert first.raw == "send the draft to matias today" and first.words == 3
+    stats = store.stats()
+    assert stats["dictations"] == 2 and stats["words_total"] == 9 and stats["minutes"] == round(5.0 / 60, 1)
+    assert not recording(e.id).exists()
+    assert store.complete(e.id, result()) is False  # once only
+
+
+def test_a_retry_that_hears_nothing_removes_the_entry(store):
+    e = store.add_failed(TONE, 2.0)
+    assert store.complete(e.id, result(text="", raw="", words=0)) is True
+    assert store.entries() == [] and not recording(e.id).exists()
+    assert store.stats()["dictations"] == 0
+
+
+def test_old_files_without_a_status_read_as_ok(store):
+    path = H.default_path()
+    path.parent.mkdir(parents=True)
+    old = {"id": "a1", "at": "2026-11-17T09:00:00+01:00", "text": "fine", "raw": "fine", "words": 1,
+           "audio_seconds": 1.0, "transcriber": "parakeet", "cleaner": "none", "source": "rules:none"}
+    odd = {**old, "id": "b2", "status": "something else"}
+    path.write_text(json.dumps({"version": 1, "totals": {}, "entries": [old, odd]}))
+    assert [(e.id, e.status) for e in store.entries()] == [("a1", "ok"), ("b2", "ok")]
+
+
+def test_search_skips_failed_entries(store):
+    store.add(result(text="Draft for Mattias."))
+    store.add_failed(TONE, 2.0)
+    assert len(store.search("")) == 2  # the list shows them
+    assert [e.text for e in store.search("a")] == ["Draft for Mattias."]
+
+
+def test_a_failed_entry_cannot_be_fixed(store):
+    e = store.add_failed(TONE, 2.0)
+    assert store.update_text(e.id, "typed in") is False
+
+
+def test_delete_and_clear_remove_the_recordings(store):
+    a = store.add_failed(TONE, 2.0)
+    b = store.add_failed(TONE, 2.0)
+    store.add(result())
+    assert store.delete(a.id) is True
+    assert not recording(a.id).exists() and recording(b.id).exists()
+    assert store.clear() == 2
+    assert not recording(b.id).exists()
+    assert list((config.STATE_DIR / "dictation" / "failed").iterdir()) == []
+
+
+def test_failed_entries_expire_after_24_hours(store, clock, days):
+    days["days"] = -1  # keep everything else for ever: the 24 hours still apply
+    store.add(result(text="kept"))
+    e = store.add_failed(TONE, 2.0)
+    clock.t = T0 + timedelta(hours=23)
+    assert len(store.entries()) == 2
+    clock.t = T0 + timedelta(hours=24, minutes=1)
+    assert [x.text for x in store.entries()] == ["kept"]
+    assert not recording(e.id).exists()
+
+
+def test_at_most_five_failed_entries_the_oldest_going_first(store, clock):
+    ids = []
+    for i in range(H.MAX_FAILED + 1):
+        clock.t = T0 + timedelta(minutes=i)
+        ids.append(store.add_failed(TONE, 2.0).id)
+    kept = [e.id for e in store.entries()]
+    assert kept == list(reversed(ids[1:]))
+    assert not recording(ids[0]).exists() and all(recording(i).exists() for i in ids[1:])
+
+
+def test_with_history_off_nothing_failed_is_saved(store, days):
+    days["days"] = 0
+    assert store.add_failed(TONE, 2.0) is None
+    assert store.entries() == [] and not (config.STATE_DIR / "dictation" / "failed").exists()
+
+
+def test_turning_history_off_deletes_failed_recordings(store, days):
+    e = store.add_failed(TONE, 2.0)
+    days["days"] = 0
+    assert store.entries() == [] and not recording(e.id).exists()
+
+
+def test_when_the_recording_cannot_be_written_no_entry_is_saved(store, monkeypatch):
+    monkeypatch.setattr(failed_mod.FailedRecordings, "save", lambda self, entry_id, samples: False)
+    assert store.add_failed(TONE, 2.0) is None
+    assert store.entries() == []
+
+
+def test_failed_entries_log_counts_only(store, caplog):
+    with caplog.at_level("DEBUG"):
+        e = store.add_failed(TONE, 2.0)
+        store.complete(e.id, result(text="Mattias's door code"))
+    logged = "\n".join(r.getMessage() for r in caplog.records).lower()
+    assert "door" not in logged and "mattias" not in logged and e.id not in logged

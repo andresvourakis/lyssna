@@ -3,7 +3,15 @@
     idle -> recording (hold) -> working -> idle
     recording -> locked (hands-free) -> working -> idle
     recording | locked -> notice "Transcript cancelled" (Undo for UNDO_SECONDS) -> idle
+    working -> notice "Dictation failed." (can_retry) -> idle, when transcription failed
+    idle | notice -> working (retry: a kept recording runs again) -> idle
     anything that goes wrong -> notice with a short message -> idle
+
+A failure inside transcription (DictationError with `retryable`) hands the samples to
+`on_failed`, which keeps them for a retry. retry() runs such a recording through here again,
+so the pill shows the working state and a retry can never overlap a live recording; it pastes
+like a dictation, or (paste=False) only hands the result over. paste_text() pastes text through
+the same inserter, on the same worker.
 
 start(), stop(), lock(), cancel() and undo_cancel() are called from the keyboard tap (main
 thread) and the pill, so they only change the state and return; the microphone, the speech
@@ -38,6 +46,8 @@ NOTICE_SECONDS = 3.0   # how long other notices stay
 CANCELLED = "Transcript cancelled"
 COPIED = "Copied. Press ⌘V to paste"
 FAILED = "Dictation failed. Try again."
+TRANSCRIPTION_FAILED = "Dictation failed."   # a retryable failure with no message of its own
+RETRY_FAILED = "Retry failed. Try again."    # the same, on a retry
 NO_MIC = "Lyssna can't use the microphone. Allow it in System Settings > Privacy & Security > Microphone."
 ASK_MIC = "Allow the microphone, then dictate again."
 
@@ -56,6 +66,7 @@ class DictationSession:
         auto_learn: Callable[[], bool] = lambda: True,
         before_start: Callable[[], None] | None = None,
         on_result: Callable[[DictationResult], None] | None = None,
+        on_failed: Callable[[np.ndarray, str], None] | None = None,
         mic_status: Callable[[], str] = recorder_mod.microphone_status,
         request_mic: Callable[[Callable[[bool], None]], None] = recorder_mod.request_microphone,
         timer: Callable[[float, Callable[[], None]], object] | None = None,
@@ -69,6 +80,7 @@ class DictationSession:
         self.auto_learn = auto_learn
         self.before_start = before_start
         self.on_result = on_result
+        self.on_failed = on_failed
         self.mic_status, self.request_mic = mic_status, request_mic
         self.timer = timer or _timer
         self.undo_seconds, self.notice_seconds = undo_seconds, notice_seconds
@@ -111,7 +123,7 @@ class DictationSession:
         and clears what belonged to the old one. Returns the epoch. The caller then emits."""
         if "state" in changes:
             self._epoch += 1
-            defaults = {"level": 0.0, "message": "", "can_undo": False}
+            defaults = {"level": 0.0, "message": "", "can_undo": False, "can_retry": False}
             if changes["state"] not in ("recording", "locked"):
                 defaults["seconds"] = 0.0 if changes["state"] == "idle" else self._status.seconds
             changes = {**defaults, **changes}
@@ -207,6 +219,50 @@ class DictationSession:
         self._jobs.put(lambda: self._process_undo(token, epoch))
         return True
 
+    def retry(self, samples: np.ndarray, *, paste: bool = True,
+              on_result: Callable[[DictationResult], None] | None = None,
+              on_failed: Callable[[str], None] | None = None) -> bool:
+        """Run a kept recording through the pipeline again. The result goes to `on_result`
+        (not the session's own on_result: it is not a new dictation) and, with paste, is pasted
+        like a dictation. A retryable failure goes to `on_failed` with the message shown.
+        False when busy: recording or working."""
+        with self._lock:
+            if self._status.state in _ACTIVE:
+                return False
+            self._undo, self._undo_token = None, None
+            epoch = self._apply(state="working")
+        self._emit()
+        job = _Retry(paste, on_result, on_failed)
+
+        def run() -> None:
+            try:
+                self._finish(samples, epoch, job)
+            finally:
+                if not job.settled:  # dropped on the way (silent, or overtaken): still a retry that did not work
+                    job.fail("")
+        self._jobs.put(run)
+        return True
+
+    def paste_text(self, text: str) -> bool:
+        """Paste text through the inserter, on the worker, as a dictation pastes (the previous
+        clipboard comes back; with no text field in front it stays copied and says so). False
+        when busy or there is nothing to paste."""
+        if not text.strip() or self.state in _ACTIVE:
+            return False
+
+        def run() -> None:
+            try:
+                outcome = self.inserter(text)
+            except Exception as e:
+                log.warning("paste failed: %s", type(e).__name__)
+                self._notice(FAILED)
+                return
+            log.info("pasted the last dictation again: %s", outcome)
+            if outcome == "copied":
+                self._notice(COPIED)
+        self._jobs.put(run)
+        return True
+
     # -- worker side ------------------------------------------------------------------------
 
     def _worker(self) -> None:
@@ -255,7 +311,7 @@ class DictationSession:
             return
         self._finish(samples, epoch)
 
-    def _finish(self, samples: np.ndarray, epoch: int) -> None:
+    def _finish(self, samples: np.ndarray, epoch: int, retry: _Retry | None = None) -> None:
         if epoch != self._epoch:
             return  # the recording already ended another way (an error notice)
         seconds = len(samples) / recorder_mod.TARGET_RATE
@@ -267,19 +323,27 @@ class DictationSession:
             result = self.pipeline.run(samples, recorder_mod.TARGET_RATE)
         except Exception as e:
             # A DictationError's message is meant for the screen (it may quote a provider): shown, not logged.
-            log.warning("dictation pipeline failed: %s", type(e).__name__)
-            self._notice((str(e) if isinstance(e, DictationError) else "") or FAILED)
+            log.warning("dictation pipeline failed%s: %s", " on a retry" if retry else "", type(e).__name__)
+            message = str(e) if isinstance(e, DictationError) else ""
+            if isinstance(e, DictationError) and e.retryable:
+                self._failed(samples, message, retry)
+                return
+            if retry is not None:
+                retry.fail(message or FAILED)
+            self._notice(message or FAILED)
             return
         self.last_result = result
-        log.info("dictation: %.1f s of audio, %d words, %s + %s, source %s, %.2f s",
+        log.info("dictation%s: %.1f s of audio, %d words, %s + %s, source %s, %.2f s", " retried" if retry else "",
                  result.audio_seconds, result.words, result.transcriber, result.cleaner, result.source,
                  result.seconds.get("total", 0.0))
-        if self.on_result is not None:
+        if retry is not None:
+            retry.succeed(result)
+        elif self.on_result is not None:
             try:
                 self.on_result(result)
             except Exception:
                 log.exception("on_result callback failed")
-        if not result.text.strip():
+        if not result.text.strip() or (retry is not None and not retry.paste):
             self._set_if(epoch, state="idle")
             return
         try:
@@ -296,9 +360,56 @@ class DictationSession:
         if self.watcher is not None and self.auto_learn():
             self.watcher.watch(result.text)
 
-    def _notice(self, message: str) -> None:
-        epoch = self._set_if(None, state="notice", message=message)
+    def _failed(self, samples: np.ndarray, message: str, retry: _Retry | None) -> None:
+        """Transcription failed: hand the recording over to be kept, and say so with a notice
+        that can offer Retry (only when someone kept it)."""
+        message = message or (RETRY_FAILED if retry else TRANSCRIPTION_FAILED)
+        if retry is not None:
+            kept = retry.fail(message)
+        else:
+            kept = False
+            if self.on_failed is not None:
+                try:
+                    self.on_failed(samples, message)
+                    kept = True
+                except Exception:
+                    log.exception("on_failed callback failed")
+        self._notice(message, can_retry=kept)
+
+    def _notice(self, message: str, **changes) -> None:
+        epoch = self._set_if(None, state="notice", message=message, **changes)
         self.timer(self.notice_seconds, lambda: self._set_if(epoch, state="idle"))
+
+
+class _Retry:
+    """What a retry does with its outcome (see DictationSession.retry). Settles once: either
+    succeed() or fail() reaches its callback, never both."""
+
+    def __init__(self, paste: bool, on_result: Callable[[DictationResult], None] | None,
+                 on_failed: Callable[[str], None] | None):
+        self.paste = paste
+        self.on_result, self.on_failed = on_result, on_failed
+        self.settled = False
+
+    def succeed(self, result: DictationResult) -> None:
+        self.settled = True
+        if self.on_result is not None:
+            try:
+                self.on_result(result)
+            except Exception:
+                log.exception("retry on_result callback failed")
+
+    def fail(self, message: str) -> bool:
+        """Report the failure. True when someone heard it (the recording is still kept)."""
+        self.settled = True
+        if self.on_failed is None:
+            return False
+        try:
+            self.on_failed(message)
+        except Exception:
+            log.exception("retry on_failed callback failed")
+            return False
+        return True
 
 
 def _timer(delay: float, fn: Callable[[], None]) -> threading.Timer:

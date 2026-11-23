@@ -2,7 +2,14 @@
 
 One file, `STATE_DIR/dictation/history.json` (owner-only, written atomically). Each entry is
 the pasted text, the speech model's transcript before any correction, and a few numbers: words,
-seconds of audio, the engines used. Audio is never stored.
+seconds of audio, the engines used. Audio is not stored here.
+
+A dictation that failed inside transcription gets an entry too, with status "failed", no text,
+and its recording kept apart by dictation/failed.py so it can be retried. A failed entry is not
+found by search and not counted in the totals; a retry that works fills it in place and counts
+it then. It goes, with its recording, after 24 hours, when deleted, when History is cleared, or
+when more than MAX_FAILED have failed (the oldest first). With history off (0 days) none is
+saved: the app keeps that recording in memory for a few seconds only.
 
 How long entries are kept comes from `[dictation] history_days`, read each time the store is
 used, so a change in the config applies at once: N > 0 keeps the last N days, 0 keeps nothing
@@ -27,12 +34,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .. import config
+from . import failed as failed_mod
 from .types import DictationResult
 
 log = logging.getLogger("lyssna.dictation.history")
 
 DEFAULT_DAYS = 30
 WEEKS_KEPT = 12  # weeks of per-week word counts kept in the totals
+FAILED_HOURS = 24  # a failed entry and its recording are kept this long
+MAX_FAILED = failed_mod.MAX_KEPT
+OK, FAILED = "ok", "failed"
 
 
 def default_path() -> Path:
@@ -81,6 +92,11 @@ class Entry:
     transcriber: str
     cleaner: str
     source: str
+    status: str = OK      # "ok", or "failed": transcription failed and the recording waits for a retry
+
+    @property
+    def failed(self) -> bool:
+        return self.status == FAILED
 
     def to_json(self) -> dict:
         return dict(self.__dict__)
@@ -98,6 +114,7 @@ class Entry:
                 transcriber=str(data.get("transcriber") or ""),
                 cleaner=str(data.get("cleaner") or ""),
                 source=str(data.get("source") or ""),
+                status=FAILED if data.get("status") == FAILED else OK,  # older files have none: "ok"
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -132,10 +149,11 @@ class HistoryStore:
     read from the config on every call and the clock is the local time."""
 
     def __init__(self, path: Path | None = None, days: Callable[[], int] | None = None,
-                 now: Callable[[], datetime] | None = None):
+                 now: Callable[[], datetime] | None = None, recordings: failed_mod.FailedRecordings | None = None):
         self._path = path
         self._days = days or configured_days
         self._now = now or _now
+        self._recordings = recordings
         self._lock = threading.RLock()
         self._entries: list[Entry] | None = None
         self._totals: dict = _empty_totals()
@@ -147,6 +165,11 @@ class HistoryStore:
 
     def days(self) -> int:
         return self._days()
+
+    @property
+    def recordings(self) -> failed_mod.FailedRecordings:
+        """Where the failed entries' recordings are kept."""
+        return self._recordings or failed_mod.shared()
 
     # -- storage ---------------------------------------------------------------------------
 
@@ -205,22 +228,43 @@ class HistoryStore:
         self._stamp = self.stamp()
 
     def _trim(self) -> bool:
-        """Drop the entries the retention setting no longer keeps. Returns whether any went."""
+        """Drop the entries the retention setting no longer keeps, and failed entries past
+        FAILED_HOURS or past MAX_FAILED (with their recordings). Returns whether any went."""
         entries = self._load()
         days = self.days()
-        if days < 0 or not entries:
+        if not entries:
             return False
+        now = self._now()
         if days == 0:
             kept: list[Entry] = []
+        elif days < 0:
+            kept = list(entries)
         else:
-            cutoff = self._now() - timedelta(days=days)
+            cutoff = now - timedelta(days=days)
             kept = [e for e in entries if e.when() > cutoff]
-        if len(kept) == len(entries):
+        aged = len(entries) - len(kept)
+        failed_cutoff = now - timedelta(hours=FAILED_HOURS)
+        failed_seen = 0
+        kept_after: list[Entry] = []
+        for e in kept:  # newest first, so the oldest failed ones are the ones past MAX_FAILED
+            if e.failed:
+                failed_seen += 1
+                if e.when() <= failed_cutoff or failed_seen > MAX_FAILED:
+                    continue
+            kept_after.append(e)
+        expired = len(kept) - len(kept_after)
+        if not aged and not expired:
             return False
-        dropped = len(entries) - len(kept)
-        self._entries = kept
-        log.info("history: removed %d entries past the %s", dropped,
-                 "setting to keep none" if days == 0 else f"{days}-day limit")
+        kept_ids = {e.id for e in kept_after}
+        for e in entries:
+            if e.failed and e.id not in kept_ids:
+                self.recordings.delete(e.id)
+        self._entries = kept_after
+        if aged:
+            log.info("history: removed %d entries past the %s", aged,
+                     "setting to keep none" if days == 0 else f"{days}-day limit")
+        if expired:
+            log.info("history: removed %d failed entries past %d hours or %d kept", expired, FAILED_HOURS, MAX_FAILED)
         return True
 
     def _trim_and_save(self) -> None:
@@ -258,6 +302,63 @@ class HistoryStore:
             kept = len(self._entries)
         log.info("history: saved a dictation (%d words); %d kept", entry.words, kept)
 
+    def add_failed(self, samples, audio_seconds: float, transcriber: str = "") -> Entry | None:
+        """Save a dictation whose transcription failed: an entry with no text and status
+        "failed", and its recording beside the history. Not counted in the totals. Returns the
+        entry, or None when nothing was saved (history off, or the recording could not be
+        written)."""
+        with self._lock:
+            self._load()
+            if self.days() == 0:
+                self._trim_and_save()
+                return None
+            now = self._now()
+            entry = Entry(
+                id=uuid.uuid4().hex[:12],
+                at=now.isoformat(timespec="seconds"),
+                text="",
+                raw="",
+                words=0,
+                audio_seconds=round(max(0.0, float(audio_seconds)), 2),
+                transcriber=transcriber,
+                cleaner="",
+                source="",
+                status=FAILED,
+            )
+            if not self.recordings.save(entry.id, samples):
+                return None
+            self._entries.insert(0, entry)
+            self._trim()
+            self._save()
+            kept = len(self._entries)
+        log.info("history: saved a failed dictation (%.1f s of audio); %d kept", entry.audio_seconds, kept)
+        return Entry(**entry.__dict__)
+
+    def complete(self, entry_id: str, result: DictationResult) -> bool:
+        """A retry of a failed entry worked: fill it in place (text, transcript, numbers,
+        engines), count it in the totals now, and delete its recording. A retry that heard
+        nothing deletes the entry instead. False when there is no such failed entry."""
+        with self._lock:
+            entry = next((e for e in self._load() if e.id == entry_id and e.failed), None)
+            if entry is None:
+                return False
+            if not result.text.strip():
+                self._entries = [e for e in self._entries if e.id != entry_id]
+            else:
+                entry.text = result.text
+                entry.raw = result.raw
+                entry.words = max(0, int(result.words))
+                entry.audio_seconds = round(max(0.0, float(result.audio_seconds)), 2)
+                entry.transcriber = result.transcriber
+                entry.cleaner = result.cleaner
+                entry.source = result.source
+                entry.status = OK
+                self._count(entry, self._now())
+            self._save()
+        self.recordings.delete(entry_id)
+        log.info("history: a failed dictation was retried (%d words)", max(0, int(result.words)))
+        return True
+
     def _count(self, entry: Entry, now: datetime) -> None:
         t = self._totals
         t["words"] += entry.words
@@ -270,7 +371,7 @@ class HistoryStore:
         t["weeks"] = {k: v for k, v in weeks.items() if k >= oldest}
 
     def delete(self, entry_id: str) -> bool:
-        """Delete one entry. The totals keep counting it."""
+        """Delete one entry, and its recording if it failed. The totals keep counting it."""
         with self._lock:
             entries = self._load()
             kept = [e for e in entries if e.id != entry_id]
@@ -278,16 +379,19 @@ class HistoryStore:
                 return False
             self._entries = kept
             self._save()
+        self.recordings.delete(entry_id)
         log.info("history: deleted one entry")
         return True
 
     def clear(self) -> int:
-        """Delete every entry, keeping the totals. Returns how many were deleted."""
+        """Delete every entry and every failed recording, keeping the totals. Returns how many
+        entries were deleted."""
         with self._lock:
             n = len(self._load())
             if n:
                 self._entries = []
                 self._save()
+        self.recordings.clear()
         log.info("history: cleared %d entries", n)
         return n
 
@@ -299,7 +403,7 @@ class HistoryStore:
             return False
         with self._lock:
             entry = next((e for e in self._load() if e.id == entry_id), None)
-            if entry is None:
+            if entry is None or entry.failed:
                 return False
             if entry.text != new_text:
                 entry.text = new_text
@@ -319,10 +423,11 @@ class HistoryStore:
         return next((e for e in self.entries() if e.id == entry_id), None)
 
     def search(self, query: str) -> list[Entry]:
-        """Entries whose text contains `query`, ignoring case. An empty query gives them all."""
+        """Entries whose text contains `query`, ignoring case. An empty query gives them all;
+        any other skips failed entries (they have no text)."""
         q = query.strip().casefold()
         entries = self.entries()
-        return [e for e in entries if q in e.text.casefold()] if q else entries
+        return [e for e in entries if not e.failed and q in e.text.casefold()] if q else entries
 
     def totals(self) -> dict:
         with self._lock:

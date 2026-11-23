@@ -5,7 +5,9 @@
     Lyssna is free and made by one person. ♥ Support it   (past 1,000 words; see lyssna.support)
     ( Dictations | Dictionary )                        one segmented control
     Dictations: search, then the list grouped by day; each row copies, shows the original
-                transcript, takes a fix ("Fix a Word…", which teaches the dictionary) or goes
+                transcript, takes a fix ("Fix a Word…", which teaches the dictionary) or goes;
+                a dictation that failed shows "Couldn't transcribe" with Retry and More
+                always visible, and a Retry that works turns it into a normal row (not pasted)
     Dictionary: add a word, the words most used first, where each came from
     Kept for 30 days on this Mac                 Clear History…
 
@@ -62,7 +64,7 @@ from ..dictation import vocabulary as vocabulary_mod
 from ..dictation.learn import find_corrections
 from . import mark as mark_mod
 from . import theme
-from .mainthread import later
+from .mainthread import later, on_main
 from .mark import MarkView, draw_mark
 from .panel import TintedView, screen_under_mouse
 from .setup_window import EditingWindow, FlippedView, PillButton, _fit, _font, _label, _serif, _symbol, _wrapping
@@ -163,6 +165,9 @@ POLL = 0.5                    # seconds between checks for changes while the win
 COPIED_FOR = 1.2              # seconds the copy icon shows a check
 FRAME = 1 / 60                # animation tick
 
+FAILED_TEXT = "Couldn't transcribe. {n} s of audio"
+RETRY = "Retry"
+RETRYING = "Retrying..."
 EMPTY_DICTATIONS = "Your dictations will appear here. Hold fn and speak."
 EMPTY_SEARCH = "No dictations match."
 EMPTY_DICTIONARY = "Words Lyssna should know: names, products, jargon. It also learns when you correct a dictation."
@@ -200,6 +205,11 @@ def day_label(day: date, today: date) -> str:
         return "Yesterday"
     label = f"{day:%a} {day.day} {day:%b}"
     return label if day.year == today.year else f"{label} {day.year}"
+
+
+def failed_text(audio_seconds: float) -> str:
+    """The dim line of a failed row: "Couldn't transcribe. 12 s of audio"."""
+    return FAILED_TEXT.format(n=max(1, round(audio_seconds)))
 
 
 def learned_text(terms: list[str]) -> str:
@@ -796,6 +806,52 @@ class _DictationRow(_Item):
         return y
 
 
+class _FailedRow(_Item):
+    """A dictation whose transcription failed: the time, a dim line saying so, and a Retry pill
+    and the More button, both always shown (a hover-only Retry would be easy to miss). While a
+    retry runs the pill reads Retrying... and does nothing."""
+
+    kind = "dictation"
+
+    def __init__(self, owner: HistoryWindow, entry: history_mod.Entry):
+        self.entry = entry
+        self.entry_id = entry.id
+        self.retrying = entry.id in owner._retrying
+        self.view = HistoryRowView.make()
+        add = self.view.addSubview_
+
+        self.time = _styled_label(time_label(entry.when()), _tabular(TIME_SIZE), theme.CONTENT_DIM, TEXT_LINE_H, wrap=False)
+        add(self.time)
+        self.text = _styled_label(failed_text(entry.audio_seconds), _font(TEXT_SIZE), theme.CONTENT_DIM, TEXT_LINE_H)
+        self.text.cell().setTruncatesLastVisibleLine_(True)
+        self.text.setMaximumNumberOfLines_(1)
+        add(self.text)
+
+        self.retry = _pill(RETRYING if self.retrying else RETRY, owner, "retryEntry:", height=SMALL_PILL_H)
+        self.retry.setEnabled_(not self.retrying)
+        self.more = HistoryIconButton.make("ellipsis", ICON_SIZE, owner, "moreMenu:", "More")
+        for b in (self.retry, self.more):
+            b.setIdentifier_(entry.id)
+            add(b)
+
+    def layout(self, width: float, available: float = 0.0) -> float:
+        text_x = ROW_PAD_X + TIME_W
+        top = ROW_PAD_Y
+        icon_y = top + TEXT_LINE_H / 2 - ICON_BTN / 2
+        more_x = width - ROW_PAD_X + (ICON_BTN - ICON_SIZE) / 2 - ICON_BTN
+        self.more.setFrameOrigin_((more_x, icon_y))
+        pw, ph = self.retry.frame().size.width, self.retry.frame().size.height
+        pill_x = more_x - ICON_GAP - pw
+        self.retry.setFrameOrigin_((pill_x, top + TEXT_LINE_H / 2 - ph / 2))
+        text_w = max(80.0, pill_x - ICONS_TO_TEXT - text_x)
+        self.text.setFrame_(NSMakeRect(text_x - LABEL_INSET, top, text_w, TEXT_LINE_H))
+        _fit(self.time)
+        self.time.setFrameOrigin_((ROW_PAD_X - LABEL_INSET, top))
+        height = top + TEXT_LINE_H + ROW_PAD_Y
+        self.view.setFrameSize_((width, height))
+        return height
+
+
 class _TermRow(_Item):
     kind = "term"
 
@@ -871,6 +927,7 @@ class HistoryWindow(NSObject):
         self._learned: dict[str, str] = {}
         self._editing: str | None = None
         self._edit_text: str | None = None
+        self._retrying: set[str] = set()   # failed entries whose retry is running; kept across a close
         self._add_note = ""
         self._support_shown = False
         self.items: list[_Item] = []
@@ -1086,7 +1143,7 @@ class HistoryWindow(NSObject):
             if day != last_day:
                 items.append(_Header(day_label(day, today), first=last_day is None))
                 last_day = day
-            items.append(_DictationRow(self, entry))
+            items.append(_FailedRow(self, entry) if entry.failed else _DictationRow(self, entry))
         if len(entries) > self._cap:
             items.append(_PillItem(_pill("Show Older", self, "showOlder:")))
         return items
@@ -1282,11 +1339,15 @@ class HistoryWindow(NSObject):
         menu = NSMenu.alloc().initWithTitle_("More")
         menu.setAutoenablesItems_(False)
         shown = entry.id in self._originals
-        for title, action, enabled in (
-            ("Hide Original" if shown else "Show Original", "toggleOriginal:", bool(entry.raw)),
-            ("Fix a Word…", "fixWord:", True),
-            ("Delete", "deleteEntry:", True),
-        ):
+        if entry.failed:
+            rows = ((RETRY, "retryEntry:", entry.id not in self._retrying), ("Delete", "deleteEntry:", True))
+        else:
+            rows = (
+                ("Hide Original" if shown else "Show Original", "toggleOriginal:", bool(entry.raw)),
+                ("Fix a Word…", "fixWord:", True),
+                ("Delete", "deleteEntry:", True),
+            )
+        for title, action, enabled in rows:
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
             item.setTarget_(self)
             item.setRepresentedObject_(entry.id)
@@ -1307,6 +1368,26 @@ class HistoryWindow(NSObject):
         self._edit_text = None
         self._learned.pop(self._editing, None)
         self._rebuild_list()
+
+    def retryEntry_(self, sender):
+        """Run a failed dictation again, without pasting: the row fills in place when it works.
+        From the row's pill (its identifier) or the More menu (its represented object)."""
+        entry_id = str(sender.representedObject() if isinstance(sender, NSMenuItem) else sender.identifier())
+        if self.ctl is None or entry_id in self._retrying:
+            return
+        self._retrying.add(entry_id)
+        self._rebuild_list()
+        started = self.ctl.retry_dictation(entry_id, paste=False,
+                                           on_done=lambda ok: on_main(self._retry_done, entry_id, ok))
+        if not started:
+            self._retry_done(entry_id, False)
+
+    @objc.python_method
+    def _retry_done(self, entry_id: str, ok: bool) -> None:
+        """A retry finished. Worked: the store changed and the row redraws as a dictation.
+        Failed: the row stays (the toast said why) and its pill reads Retry again."""
+        self._retrying.discard(entry_id)
+        self._refresh(force=True)
 
     def deleteEntry_(self, sender):
         entry_id = str(sender.representedObject())
