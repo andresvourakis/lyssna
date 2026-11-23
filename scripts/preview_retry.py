@@ -3,13 +3,17 @@ and one failed one (its Retry pill and More button, and the pill while a retry r
 failure toast with its Retry pill, and the menu with Paste Last Dictation. Each in light and
 dark appearance.
 
+Every shot is the whole display, with each element where the app puts it: the History window
+opened as its menu item opens it, the toast presented as after a failed dictation (above the
+dictation pill, which then goes back to its resting sliver), and the menu dropped down from
+Lyssna's own menu bar icon. One Lyssna element per shot.
+
 Everything runs against a temporary state folder: the real config, history and Keychain are
 never touched, nothing is recorded, transcribed or pasted, and nothing goes online.
 
     uv run python scripts/preview_retry.py <folder for the PNGs>
 
-Windows are captured with `screencapture -l <window id>` (the terminal needs Screen Recording
-access); if that fails the History window falls back to its own offscreen snapshot."""
+The shots are taken with `screencapture` (the terminal needs Screen Recording access)."""
 
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ from pathlib import Path
 
 import AppKit
 import numpy as np
+import Quartz
 from Foundation import NSDate, NSRunLoop, NSTimer
 
 
@@ -64,19 +69,22 @@ def set_appearance(dark: bool) -> None:
     AppKit.NSApp.setAppearance_(AppKit.NSAppearance.appearanceNamed_(name))
 
 
-def capture(window, path: Path) -> bool:
-    """The window as it is on screen, without its shadow."""
-    result = subprocess.run(["screencapture", "-x", "-o", "-l", str(window.windowNumber()), str(path)],
+def display_of(screen) -> int:
+    """screencapture's -D number for `screen` (1 is the main display)."""
+    number = screen.deviceDescription()["NSScreenNumber"] if screen is not None else None
+    _err, ids, count = Quartz.CGGetActiveDisplayList(16, None, None)
+    ids = list(ids[:count]) if ids else []
+    return ids.index(number) + 1 if number in ids else 1
+
+
+def capture(screen, path: Path) -> bool:
+    """The whole display `screen` is on, as it is now."""
+    result = subprocess.run(["screencapture", "-x", "-D", str(display_of(screen)), str(path)],
                             capture_output=True, check=False)
-    return result.returncode == 0 and path.is_file() and path.stat().st_size > 0
-
-
-def snapshot(view, path: Path) -> None:
-    """The view's own offscreen drawing (no window chrome), for when screencapture cannot run."""
-    rep = view.bitmapImageRepForCachingDisplayInRect_(view.bounds())
-    view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep)
-    data = rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, {})
-    data.writeToFile_atomically_(str(path), True)
+    ok = result.returncode == 0 and path.is_file() and path.stat().st_size > 0
+    if not ok:
+        print(f"could not capture {path.name}: {result.stderr.decode().strip() or 'screencapture failed'}")
+    return ok
 
 
 def fill_history(store) -> None:
@@ -101,6 +109,8 @@ class NoRetry:
 
 
 def shoot_history(out: Path) -> list[Path]:
+    """Opened as LyssnaApp.show_history opens it: HistoryWindow.show, centred on the screen
+    under the mouse, the app brought to the front."""
     from lyssna.dictation import history
     from lyssna.ui.history_window import HistoryWindow
 
@@ -112,94 +122,110 @@ def shoot_history(out: Path) -> list[Path]:
     win.show()
     pump(0.6)
     shots = []
-    for dark in (False, True):
-        set_appearance(dark)
-        win._refresh(force=True)
-        pump(0.5)
-        path = out / f"history-{'dark' if dark else 'light'}.png"
-        if not capture(win.window, path):
-            snapshot(win.content, path)
-        shots.append(path)
-    # The failed row while its retry runs.
     failed_id = next(e.id for e in store.entries() if e.failed)
-    win._retrying.add(failed_id)
-    for dark in (False, True):
-        set_appearance(dark)
-        win._refresh(force=True)
-        pump(0.5)
-        path = out / f"history-retrying-{'dark' if dark else 'light'}.png"
-        if not capture(win.window, path):
-            snapshot(win.content, path)
-        shots.append(path)
+    for name, retrying in (("history", False), ("history-retrying", True)):
+        if retrying:
+            win._retrying.add(failed_id)  # the failed row while its retry runs
+        for dark in (False, True):
+            set_appearance(dark)
+            win._refresh(force=True)
+            pump(0.5)
+            path = out / f"{name}-{'dark' if dark else 'light'}.png"
+            if capture(win.window.screen(), path):
+                shots.append(path)
     win.window.close()
+    pump(0.4)
     return shots
 
 
-def shoot_toast(out: Path) -> list[Path]:
+def make_pill(ctl):
+    """The dictation pill, set up from the config as LyssnaApp sets it up."""
+    from lyssna.ui.mini_player import MiniPlayer
+
+    ui_cfg = ctl.cfg.get("ui", {})
+    if not ui_cfg.get("mini_player", True):
+        return None
+    pill = MiniPlayer.alloc().init()
+    pill.layout = ctl.player_layout()
+    pill.dictation_layout = ctl.dictation_layout()
+    pill.idle_pill = bool(ui_cfg.get("idle_pill", True))
+    pill.auto_hide = bool(ui_cfg.get("auto_hide", True))
+    pill.rest_wave = bool(ui_cfg.get("wave", True))
+    return pill
+
+
+def shoot_toast(out: Path, ctl) -> list[Path]:
+    """As after a failed dictation (or retry): the pill is in its dictate form ("working")
+    when the session turns to "notice". The controller's toast is queued first, so the toast
+    is presented while the pill still shows the dictate capsule (LyssnaApp._present_toast:
+    its screen and toast_floor), then the pill leaves dictation for its resting sliver."""
     from lyssna.controller import RETRY, RETRY_SECONDS, Notice
     from lyssna.dictation.session import RETRY_FAILED, TRANSCRIPTION_FAILED
     from lyssna.ui.toast import Toast
 
     toast = Toast.alloc().init()
+    pill = make_pill(ctl)
     shots = []
     for name, text in (("toast", TRANSCRIPTION_FAILED), ("toast-provider", "OpenAI did not answer. Try again."),
                        ("toast-retry-failed", RETRY_FAILED)):
         for dark in (False, True):
             set_appearance(dark)
-            toast.present(Notice(text, RETRY, lambda: None, seconds=RETRY_SECONDS))
+            if pill is not None:
+                pill._set_dictation("working")  # the wave only animates: nothing is recorded
+                pump(0.4)
+            screen, floor = None, None
+            if pill is not None and pill.visible():
+                screen = pill.panel.screen()
+                floor = pill.toast_floor()
+            toast.present(Notice(text, RETRY, lambda: None, seconds=RETRY_SECONDS), screen, floor)
+            if pill is not None:
+                pill._set_dictation("notice")
             pump(0.6)
             path = out / f"{name}-{'dark' if dark else 'light'}.png"
-            if capture(toast.panel, path):
+            if capture(toast.panel.screen(), path):
                 shots.append(path)
-            else:
-                print(f"could not capture the toast ({path.name}): screencapture failed")
             toast.dismiss()
-            pump(0.4)
+            if pill is not None:
+                pill._stop_auto_watch()
+                pill._stop_wave_timer()
+                pill.hide()
+                pill._set_dictation("idle")
+            pump(0.5)
     return shots
 
 
-def shoot_menu(out: Path) -> list[Path]:
-    """Pop the real menu up under the mouse and capture its window from a timer that runs
-    inside the menu's tracking loop, then close it."""
-    import Quartz
+def shoot_menu(out: Path, ctl) -> list[Path]:
+    """Lyssna's status item, made as rumps makes it at launch, and its menu opened by clicking
+    the menu bar icon. A timer inside the menu's tracking loop takes the shot, then closes it."""
+    import rumps
 
-    from lyssna import config
     from lyssna.app import MenuBar
-    from lyssna.controller import Controller
 
-    config.ensure_dirs()
-    config.CONFIG_PATH.write_text(config.TEMPLATE)
-    menubar = MenuBar(Controller())
-    nsmenu = menubar._menu._menu
+    menubar = MenuBar(ctl)
     menubar._refresh_checks()
     menubar._apply_visibility()
+    nsapp = rumps.rumps.NSApp.alloc().init()
+    nsapp._app = menubar.__dict__
+    nsapp.initializeStatusBar()
+    item = nsapp.nsstatusitem
+    nsmenu = menubar._menu._menu
+    pump(0.5)
     shots = []
-    pid = AppKit.NSProcessInfo.processInfo().processIdentifier()
-
     for dark in (False, True):
         set_appearance(dark)
+        pump(0.3)
         path = out / f"menu-{'dark' if dark else 'light'}.png"
 
         def grab(timer, path=path):
-            windows = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
-            ours = [w for w in windows if w.get("kCGWindowOwnerPID") == pid and w.get("kCGWindowLayer", 0) > 0
-                    and w.get("kCGWindowBounds", {}).get("Height", 0) > 200]
-            if ours:
-                subprocess.run(["screencapture", "-x", "-o", "-l", str(ours[0]["kCGWindowNumber"]), str(path)],
-                               capture_output=True, check=False)
+            if capture(item.button().window().screen(), path):
+                shots.append(path)
             nsmenu.cancelTracking()
 
         timer = NSTimer.timerWithTimeInterval_repeats_block_(0.8, False, grab)
         NSRunLoop.currentRunLoop().addTimer_forMode_(timer, AppKit.NSEventTrackingRunLoopMode)
-        NSRunLoop.currentRunLoop().addTimer_forMode_(timer, AppKit.NSDefaultRunLoopMode)
-        screen = AppKit.NSScreen.mainScreen().visibleFrame()
-        at = (screen.origin.x + 80, screen.origin.y + screen.size.height - 20)
-        nsmenu.popUpMenuPositioningItem_atLocation_inView_(None, at, None)
+        item.button().performClick_(None)  # returns once the menu closes
         pump(0.3)
-        if path.is_file() and path.stat().st_size > 0:
-            shots.append(path)
-        else:
-            print(f"could not capture the menu ({path.name})")
+    AppKit.NSStatusBar.systemStatusBar().removeStatusItem_(item)
     return shots
 
 
@@ -218,7 +244,13 @@ def main() -> int:
     app.activateIgnoringOtherApps_(True)
 
     try:
-        shots = shoot_history(out) + shoot_toast(out) + shoot_menu(out)
+        from lyssna import config
+        from lyssna.controller import Controller
+
+        config.ensure_dirs()
+        config.CONFIG_PATH.write_text(config.TEMPLATE)
+        ctl = Controller()
+        shots = shoot_history(out) + shoot_toast(out, ctl) + shoot_menu(out, ctl)
     finally:
         set_appearance(False)
         shutil.rmtree(home, ignore_errors=True)
