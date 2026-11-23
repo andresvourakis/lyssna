@@ -17,6 +17,7 @@ The shots are taken with `screencapture` (the terminal needs Screen Recording ac
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -248,7 +249,9 @@ def main() -> int:
         from lyssna.controller import Controller
 
         config.ensure_dirs()
-        config.CONFIG_PATH.write_text(config.TEMPLATE)
+        # LYSSNA_PREVIEW_DOCK=left|right puts the resting pill on that screen edge, to see where the toast goes then.
+        dock = os.environ.get("LYSSNA_PREVIEW_DOCK", "")
+        config.CONFIG_PATH.write_text(config.TEMPLATE.replace('dictation_dock = ""', f'dictation_dock = "{dock}"'))
         ctl = Controller()
         shots = shoot_history(out) + shoot_toast(out, ctl) + shoot_menu(out, ctl)
     finally:
