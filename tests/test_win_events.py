@@ -300,10 +300,11 @@ def test_default_hotkeys_all_bind_with_the_windows_table():
     tap = KeyboardTap()
     for spec in config.DEFAULTS["hotkeys"].values():
         tap.bind(spec, lambda: None)
-    assert len(tap._bindings) == 8
+    assert len(tap._bindings) == 9
     assert (CTRL | ALT, VK_S) in tap._bindings
     assert (CTRL | ALT, 0x20) in tap._bindings  # space
     assert (CTRL | ALT, 0x27) in tap._bindings  # right arrow
+    assert (CTRL | ALT, 0x56) in tap._bindings  # V, paste last dictation
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="checks the behaviour off Windows")

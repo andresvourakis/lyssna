@@ -1,8 +1,10 @@
 """Small notice panels that sit next to the pill, never part of it.
 
-Toast: a one-line notice at the bottom centre of the screen ("Transcript cancelled" with
+Toast: a one-line notice beside the pill ("Transcript cancelled" with
 Undo, "Copied. Press ⌘V to paste", "Learned: Mattias" with Undo, permission and download
-messages, errors). At most one action button; it fades in, stays a few seconds and fades out,
+messages, errors): above it when the pill is on the bottom edge (at the bottom centre of the
+screen), on its inner side when it is docked on a side, at the bottom centre with no pill
+on screen. At most one action button; it fades in, stays a few seconds and fades out,
 and a new notice replaces the one on screen (in place when both carry the same key, so a
 download's percentage counts up without flickering).
 
@@ -27,7 +29,7 @@ from ...ui.layout.toast import (
     ACTION_H,
     ACTION_PAD,
     ACTION_RIGHT,
-    BOTTOM,
+    BOTTOM,  # noqa: F401  (re-exported)
     FADE_IN,
     FADE_OUT,
     MAX_W,
@@ -35,8 +37,10 @@ from ...ui.layout.toast import (
     TIP_GAP,  # noqa: F401  (re-exported)
     TIP_H,
     TIP_PAD,
+    TOAST_GAP,  # noqa: F401  (re-exported)
     TOAST_H,
     tip_origin,
+    toast_origin,
     toast_width,
 )
 from . import theme
@@ -64,6 +68,7 @@ class Toast(FloatingPanel):
         self.panel.setAlphaValue_(0.0)
         self._notice = None
         self._key = ""
+        self._place = None  # (screen, anchor) the toast on screen was placed with
         self._token = None
         self._on_action: Callable[[], None] | None = None
         return self
@@ -108,15 +113,19 @@ class Toast(FloatingPanel):
         return width
 
     @objc.python_method
-    def present(self, notice, screen=None, floor: float | None = None) -> None:
-        """Show a notice (lyssna.controller.Notice) on `screen` (default: under the mouse).
-        `floor` is the lowest y it may start at (above the pill when that sits on the bottom edge)."""
-        screen = screen or screen_under_mouse()
-        vf = visible_frame(screen)
+    def present(self, notice, screen=None, anchor: tuple[tuple[float, float, float, float], str] | None = None) -> None:
+        """Show a notice (lyssna.controller.Notice) on `screen` (default: under the mouse),
+        beside the pill: `anchor` is its frame (x, y, w, h) and edge (see toast_origin), None
+        with no pill on screen. A notice updating the one on screen (same key) keeps its spot."""
         same = bool(notice.key) and notice.key == self._key and self.visible() and self._token is not None
-        width = self.layout(notice.text, notice.action, min(MAX_W, vf.size.width - 40))
-        x = round(vf.origin.x + (vf.size.width - width) / 2)
-        y = max(vf.origin.y + BOTTOM, floor) if floor is not None else vf.origin.y + BOTTOM
+        if same and self._place is not None:
+            screen, anchor = self._place
+        screen = screen or screen_under_mouse()
+        self._place = (screen, anchor)
+        r = visible_frame(screen)
+        vf = (r.origin.x, r.origin.y, r.size.width, r.size.height)
+        width = self.layout(notice.text, notice.action, min(MAX_W, vf[2] - 40))
+        x, y = toast_origin(vf, width, anchor)
         self.panel.setFrame_display_(((x, y), (width, TOAST_H)), True)
         self._notice, self._key, self._on_action = notice, notice.key, notice.on_action
         self.action_bg.set_hover(False)

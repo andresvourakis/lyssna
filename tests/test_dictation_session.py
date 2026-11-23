@@ -96,6 +96,7 @@ def make():
             "results": [],
             "hooks": [],
             "asked": [],
+            "failed": [],
         }
 
         def inserter(text):
@@ -109,6 +110,7 @@ def make():
             watcher=parts["watcher"], auto_learn=lambda: auto_learn,
             before_start=lambda: parts["hooks"].append("before_start"),
             on_result=parts["results"].append,
+            on_failed=lambda samples, message: parts["failed"].append((samples, message)),
             mic_status=lambda: mic, request_mic=lambda cb: parts["asked"].append(cb),
             timer=parts["timers"],
         )
@@ -384,3 +386,164 @@ def test_close_ends_the_worker_after_what_is_queued(make):
     s.thread.join(2)
     assert not s.thread.is_alive()
     assert p["pasted"] == ["Hello there."]
+
+
+# -- a failed transcription kept for a retry -------------------------------------------------
+
+
+class FlakyPipeline(FakePipeline):
+    """Fails the first `failures` runs with `error`, then works."""
+
+    def __init__(self, error, failures=1, text="Hello there."):
+        super().__init__(text=text)
+        self.error, self.failures = error, failures
+
+    def run(self, samples, sample_rate=16000):
+        if self.failures > 0:
+            self.failures -= 1
+            self.runs.append((len(samples), sample_rate))
+            raise self.error
+        return super().run(samples, sample_rate)
+
+
+def dictate(s):
+    s.start()
+    s.stop()
+    settle(s)
+
+
+def test_a_transcription_failure_hands_over_the_samples_and_offers_retry(make):
+    p = make(pipeline=FlakyPipeline(DictationError("OpenAI did not answer.", retryable=True)))
+    s = p["session"]
+    dictate(s)
+    [(samples, message)] = p["failed"]
+    assert samples is SPEECH and message == "OpenAI did not answer."
+    st = s.status
+    assert (st.state, st.message, st.can_retry) == ("notice", "OpenAI did not answer.", True)
+    assert p["results"] == [] and p["pasted"] == []
+
+
+def test_a_failure_without_a_message_says_dictation_failed(make):
+    p = make(pipeline=FlakyPipeline(DictationError("", retryable=True)))
+    dictate(p["session"])
+    assert p["failed"][0][1] == session_mod.TRANSCRIPTION_FAILED == "Dictation failed."
+
+
+def test_other_failures_are_not_kept(make):
+    p = make(pipeline=FakePipeline(fail=DictationError("Dictation needs a speech engine, and none can run.")))
+    dictate(p["session"])
+    assert p["failed"] == [] and p["session"].status.can_retry is False
+    p = make(pipeline=FakePipeline(fail=RuntimeError("boom")))
+    dictate(p["session"])
+    assert p["failed"] == [] and p["session"].status.message == session_mod.FAILED
+
+
+def test_microphone_errors_and_silence_are_not_kept(make):
+    p = make(recorder=FakeRecorder(fail=RecorderError("No microphone found.")),
+             pipeline=FlakyPipeline(DictationError("x", retryable=True)))
+    s = p["session"]
+    s.start()
+    settle(s)
+    s.stop()
+    settle(s)
+    assert p["failed"] == [] and s.status.can_retry is False
+    p = make(recorder=FakeRecorder(samples=np.zeros(16000, dtype=np.float32)),
+             pipeline=FlakyPipeline(DictationError("x", retryable=True)))
+    dictate(p["session"])
+    assert p["failed"] == [] and p["pipeline"].runs == []
+
+
+def test_no_keeper_means_no_retry_offered(make):
+    p = make(pipeline=FlakyPipeline(DictationError("x", retryable=True)))
+    p["session"].on_failed = None
+    dictate(p["session"])
+    assert p["session"].status.can_retry is False
+
+
+def test_retry_pastes_through_the_working_state(make):
+    p = make(pipeline=FlakyPipeline(DictationError("x", retryable=True)))
+    s = p["session"]
+    dictate(s)
+    got, failed = [], []
+    assert s.retry(SPEECH, paste=True, on_result=got.append, on_failed=failed.append) is True
+    settle(s)
+    assert [r.text for r in got] == ["Hello there."] and failed == []
+    assert p["pasted"] == ["Hello there."] and p["watcher"].watched == ["Hello there."]
+    assert p["results"] == []  # a retry is not a new dictation: the session's on_result is not called
+    assert states(p)[-3:] == ["notice", "working", "idle"]
+
+
+def test_retry_without_paste_only_hands_the_result_over(make):
+    p = make()
+    s = p["session"]
+    got = []
+    assert s.retry(SPEECH, paste=False, on_result=got.append) is True
+    settle(s)
+    assert [r.text for r in got] == ["Hello there."]
+    assert p["pasted"] == [] and s.state == "idle"
+
+
+def test_a_retry_that_fails_again_says_so(make):
+    p = make(pipeline=FlakyPipeline(DictationError("", retryable=True), failures=2))
+    s = p["session"]
+    dictate(s)
+    failed = []
+    s.retry(SPEECH, on_result=lambda r: pytest.fail("worked"), on_failed=failed.append)
+    settle(s)
+    assert failed == [session_mod.RETRY_FAILED] == ["Retry failed. Try again."]
+    st = s.status
+    assert (st.state, st.message, st.can_retry) == ("notice", "Retry failed. Try again.", True)
+    assert len(p["failed"]) == 1  # the first failure only: a retry's recording is kept already
+
+
+def test_a_retry_with_a_provider_message_shows_it(make):
+    p = make(pipeline=FlakyPipeline(DictationError("Inworld: rate limited.", retryable=True)))
+    s = p["session"]
+    failed = []
+    s.retry(SPEECH, on_failed=failed.append)
+    settle(s)
+    assert failed == ["Inworld: rate limited."] and s.status.message == "Inworld: rate limited."
+
+
+def test_a_retry_always_settles(make):
+    p = make(pipeline=FakePipeline(fail=DictationError("No engine can run.")))
+    s = p["session"]
+    failed = []
+    s.retry(SPEECH, on_failed=failed.append)
+    settle(s)
+    assert failed == ["No engine can run."] and s.status.can_retry is False
+    p = make()
+    s = p["session"]
+    failed = []
+    s.retry(np.zeros(100, dtype=np.float32), on_failed=failed.append)  # silent: dropped on the way
+    settle(s)
+    assert failed == [""] and s.state == "idle"
+
+
+def test_retry_cannot_overlap_a_dictation(make):
+    p = make()
+    s = p["session"]
+    s.start()
+    assert s.retry(SPEECH) is False
+    s.stop()
+    assert s.state == "working" and s.retry(SPEECH) is False
+    settle(s)
+    assert s.retry(SPEECH, paste=False) is True
+    assert s.start() is False  # and a dictation cannot start while a retry works
+    settle(s)
+
+
+def test_paste_text_uses_the_inserter_and_says_when_it_copied(make):
+    p = make()
+    s = p["session"]
+    assert s.paste_text("Again.") is True
+    settle(s)
+    assert p["pasted"] == ["Again."] and s.state == "idle"
+    p = make(outcome="copied")
+    s = p["session"]
+    s.paste_text("Again.")
+    settle(s)
+    assert s.status.message == session_mod.COPIED
+    assert s.paste_text("  ") is False
+    s.start()
+    assert s.paste_text("Again.") is False

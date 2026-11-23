@@ -108,6 +108,9 @@ def empty_dictations(key: str = "fn") -> str:
     return f"Your dictations will appear here. Hold {key} and speak."
 
 
+FAILED_TEXT = "Couldn't transcribe. {n} s of audio"
+RETRY = "Retry"
+RETRYING = "Retrying…"
 EMPTY_DICTATIONS = empty_dictations()
 EMPTY_SEARCH = "No dictations match."
 EMPTY_DICTIONARY = "Words Lyssna should know: names, products, jargon. It also learns when you correct a dictation."
@@ -141,6 +144,11 @@ def day_label(day: date, today: date) -> str:
         return "Yesterday"
     label = f"{day:%a} {day.day} {day:%b}"
     return label if day.year == today.year else f"{label} {day.year}"
+
+
+def failed_text(audio_seconds: float) -> str:
+    """The dim line of a failed row: "Couldn't transcribe. 12 s of audio"."""
+    return FAILED_TEXT.format(n=max(1, round(audio_seconds)))
 
 
 def learned_text(terms: list[str]) -> str:

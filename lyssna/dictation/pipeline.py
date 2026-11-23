@@ -166,10 +166,10 @@ class DictationPipeline:
             raw = transcriber.transcribe(audio, language, hints)
         except TranscriberError as e:
             log.warning("dictation failed in %s: %s", transcriber.name, error_summary(e))
-            raise DictationError(str(e)) from e
+            raise DictationError(str(e), retryable=True) from e
         except Exception as e:
             log.warning("dictation failed in %s: %s", transcriber.name, error_summary(e))
-            raise DictationError("The speech engine failed. Try again.") from e
+            raise DictationError("The speech engine failed. Try again.", retryable=True) from e
         timings["transcribe"] = round(time.monotonic() - t, 3)
         if not raw.strip():
             return result("", raw, "empty")

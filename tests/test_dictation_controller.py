@@ -503,3 +503,234 @@ def test_shutdown_cancels_and_unloads(ctl, monkeypatch):
     assert unloaded == [1] and not download.active()
     ctl.dictation.thread.join(2)
     assert not ctl.dictation.thread.is_alive()  # the session's worker ends with the controller
+
+
+# -- retry a failed dictation, and Paste Last Dictation ----------------------------------------
+
+
+class FlakyPipeline(FakePipeline):
+    """Fails the first `failures` runs inside transcription, then works."""
+
+    def __init__(self, failures=1, message="OpenAI did not answer."):
+        self.failures, self.message = failures, message
+        self.runs = 0
+
+    def run(self, samples, sample_rate=16000):
+        from lyssna.dictation.types import DictationError
+
+        self.runs += 1
+        if self.failures > 0:
+            self.failures -= 1
+            raise DictationError(self.message, retryable=True)
+        return super().run(samples, sample_rate)
+
+
+def fail_once(ctl, failures=1, message="OpenAI did not answer."):
+    ctl.dictation.pipeline = FlakyPipeline(failures, message)
+    ctl.dictation_start()
+    ctl.dictation_stop()
+    settle(ctl)
+
+
+def history():
+    from lyssna.dictation import history as history_mod
+
+    return history_mod.shared()
+
+
+def history_off():
+    config.update(**{"dictation.history_days": 0})
+
+
+def test_a_failed_dictation_is_kept_and_the_toast_offers_retry(ctl):
+    fail_once(ctl)
+    [entry] = history().entries()
+    assert entry.failed and history().recordings.exists(entry.id)
+    toast = ctl.toasts[-1]
+    assert (toast.text, toast.action, toast.seconds) == ("OpenAI did not answer.", "Retry", controller.RETRY_SECONDS)
+    assert controller.RETRY_SECONDS == 8.0
+    assert texts(ctl).count("OpenAI did not answer.") == 1
+
+
+def test_the_toast_retry_pastes_and_fills_the_entry(ctl):
+    fail_once(ctl)
+    ctl.toasts[-1].on_action()
+    settle(ctl)
+    assert ctl.pasted == ["Hello."]
+    [entry] = history().entries()
+    assert not entry.failed and entry.text == "Hello." and not history().recordings.exists(entry.id)
+    assert history().stats()["dictations"] == 1
+
+
+def test_a_retry_that_fails_again_toasts_with_retry(ctl):
+    fail_once(ctl, failures=2, message="")
+    assert ctl.toasts[-1].text == "Dictation failed."
+    ctl.toasts[-1].on_action()
+    settle(ctl)
+    toast = ctl.toasts[-1]
+    assert (toast.text, toast.action) == ("Retry failed. Try again.", "Retry")
+    assert history().entries()[0].failed
+    toast.on_action()
+    settle(ctl)
+    assert ctl.pasted == ["Hello."] and not history().entries()[0].failed
+
+
+def test_history_retry_does_not_paste_and_reports_back(ctl):
+    fail_once(ctl)
+    entry_id = history().entries()[0].id
+    done = []
+    assert ctl.retry_dictation(entry_id, paste=False, on_done=done.append) is True
+    settle(ctl)
+    assert done == [True] and ctl.pasted == []
+    assert history().entries()[0].text == "Hello."
+
+
+def test_history_retry_failing_reports_back_and_its_toast_retries_without_paste(ctl):
+    fail_once(ctl, failures=2)
+    entry_id = history().entries()[0].id
+    done = []
+    ctl.retry_dictation(entry_id, paste=False, on_done=done.append)
+    settle(ctl)
+    assert done == [False] and history().entries()[0].failed
+    ctl.toasts[-1].on_action()
+    settle(ctl)
+    assert ctl.pasted == [] and history().entries()[0].text == "Hello."
+
+
+def test_no_retry_while_dictating(ctl):
+    fail_once(ctl)
+    entry_id = history().entries()[0].id
+    ctl.dictation_start()
+    assert ctl.retry_dictation(entry_id) is False
+    assert ctl.toasts[-1].text == "Can't retry while dictating."
+    ctl.dictation_cancel(quiet=True)
+    settle(ctl)
+
+
+def test_a_recording_that_is_gone_says_so(ctl):
+    fail_once(ctl)
+    entry = history().entries()[0]
+    history().recordings.delete(entry.id)
+    assert ctl.retry_dictation(entry.id) is False
+    assert ctl.toasts[-1].text == "This recording is no longer available."
+    assert history().entries() == []  # a row that can never be retried goes
+    assert ctl.retry_dictation("nonexistent") is False
+
+
+def test_mic_errors_offer_no_retry(ctl):
+    ctl.mic = "denied"
+    ctl.dictation_start()
+    assert all(t.action != "Retry" for t in ctl.toasts)
+    assert history().entries() == []
+
+
+def test_with_history_off_the_recording_stays_in_memory_for_the_toast_only(ctl, monkeypatch):
+    history_off()
+    fail_once(ctl)
+    assert history().entries() == []
+    assert not (config.STATE_DIR / "dictation" / "failed").exists()
+    toast = ctl.toasts[-1]
+    assert toast.action == "Retry"
+    toast.on_action()
+    settle(ctl)
+    assert ctl.pasted == ["Hello."] and ctl._held is None
+    # past the toast's seconds the audio is gone
+    fail_once(ctl)
+    entry_id = ctl._held[0]
+    ctl._forget_held(entry_id)
+    assert ctl.retry_dictation(entry_id) is False
+    assert ctl.toasts[-1].text == "This recording is no longer available."
+
+
+def test_paste_last_pastes_the_latest_dictation(ctl):
+    ctl.dictation_start()
+    ctl.dictation_stop()
+    settle(ctl)
+    ctl.pasted.clear()
+    ctl._paste_last()
+    settle(ctl)
+    assert ctl.pasted == ["Hello."]
+
+
+def test_paste_last_uses_a_fixed_text(ctl):
+    ctl.dictation_start()
+    ctl.dictation_stop()
+    settle(ctl)
+    entry = history().entries()[0]
+    history().update_text(entry.id, "Hello, fixed.")
+    ctl._paste_last()
+    settle(ctl)
+    assert ctl.pasted[-1] == "Hello, fixed."
+
+
+def test_paste_last_retries_a_failed_one_then_pastes(ctl):
+    fail_once(ctl)
+    ctl._paste_last()
+    settle(ctl)
+    assert ctl.pasted == ["Hello."] and history().entries()[0].text == "Hello."
+
+
+def test_paste_last_with_nothing_yet(ctl):
+    ctl._paste_last()
+    assert ctl.toasts[-1].text == "Nothing to paste yet."
+    assert ctl.pasted == []
+
+
+def test_paste_last_with_history_off_uses_memory(ctl):
+    history_off()
+    ctl._paste_last()
+    assert ctl.toasts[-1].text == "Nothing to paste yet."
+    ctl.dictation_start()
+    ctl.dictation_stop()
+    settle(ctl)
+    ctl.pasted.clear()
+    ctl._paste_last()
+    settle(ctl)
+    assert ctl.pasted == ["Hello."] and history().entries() == []
+    fail_once(ctl)
+    ctl._paste_last()  # the latest failed: retried from memory, then pasted
+    settle(ctl)
+    assert ctl.pasted == ["Hello.", "Hello."]
+
+
+def test_paste_last_says_copied_when_no_field_is_in_front(ctl):
+    ctl.dictation_start()
+    ctl.dictation_stop()
+    settle(ctl)
+    ctl.dictation.inserter = lambda text: "copied"
+    ctl._paste_last()
+    settle(ctl)
+    assert ctl.toasts[-1] == Notice("Copied. Press ⌘V to paste")
+
+
+def test_paste_last_while_dictating(ctl):
+    ctl.dictation_start()
+    ctl.dictation_stop()
+    settle(ctl)
+    ctl.dictation_start()
+    ctl._paste_last()
+    assert ctl.toasts[-1].text == BUSY
+    ctl.dictation_cancel(quiet=True)
+    settle(ctl)
+
+
+def test_paste_last_runs_off_the_callers_thread(ctl, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ctl, "_paste_last", lambda: seen.append(threading.current_thread().name))
+    ctl.paste_last()
+    for _ in range(100):
+        if seen:
+            break
+        time.sleep(0.01)
+    assert seen == ["lyssna-paste-last"]
+
+
+def test_paste_last_hotkey_default():
+    assert config.DEFAULTS["hotkeys"]["paste_last"] == "ctrl+alt+v"
+    assert 'paste_last = "ctrl+alt+v"' in config.TEMPLATE
+
+
+def test_an_old_config_gets_the_paste_last_default():
+    config.ensure_dirs()
+    config.CONFIG_PATH.write_text('[hotkeys]\nspeak = "ctrl+alt+s"\n')
+    assert config.load()["hotkeys"]["paste_last"] == "ctrl+alt+v"

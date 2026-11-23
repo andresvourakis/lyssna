@@ -161,7 +161,8 @@ class MenuBar(rumps.App):
           [Pause / Resume, Stop, Previous Sentence, Next Sentence] (only while reading),
           Speed ▸, [Voice ▸], Voice Provider ▸, where the text goes
         Dictate (a section header)
-          Start Dictation, History…, Transcription ▸, Cleanup ▸, where speech goes
+          Start Dictation, Paste Last Dictation, History…, Transcription ▸, Cleanup ▸,
+          where speech goes
         [What's New in 0.3.0…], [usage this month], Settings ▸, Setup…, About Lyssna,
         [Support Lyssna]
         Quit Lyssna
@@ -221,7 +222,8 @@ class MenuBar(rumps.App):
         self.cleanup_items.update(self._add_engines(self.cleanup_menu, cleaners.REGISTRY,
                                                     lambda cls: not cls.sends_text_off_device, self._set_cleaner))
         self.item_dictation_privacy = info_item(self.ctl.dictation_privacy_note())
-        return [self.item_dictate, rumps.MenuItem("History…", callback=lambda _: self.on_history()),
+        self.item_paste_last = self._item("Paste Last Dictation", self.ctl.paste_last, "paste_last")
+        return [self.item_dictate, self.item_paste_last, rumps.MenuItem("History…", callback=lambda _: self.on_history()),
                 self.transcription_menu, self.cleanup_menu, self.item_dictation_privacy]
 
     def _add_engines(self, menu: rumps.MenuItem, registry: dict, runs_here: Callable[[type], bool],
@@ -689,7 +691,7 @@ class LyssnaApp:
         self.keyboard = KeyboardTap()
         for action, fn in (("speak", self._speak_from_hotkey), ("pause", self.ctl.toggle_pause), ("stop", self.ctl.stop),
                            ("next", self.ctl.next), ("prev", self.ctl.prev), ("faster", self.ctl.faster), ("slower", self.ctl.slower),
-                           ("button", self._toggle_button_from_hotkey)):
+                           ("button", self._toggle_button_from_hotkey), ("paste_last", self.ctl.paste_last)):
             try:
                 self.keyboard.bind(hk[action], fn)
             except ValueError as e:
@@ -780,13 +782,13 @@ class LyssnaApp:
         self.ctl.push_to_talk = ptt
 
     def _present_toast(self, notice: Notice) -> None:
-        """On the screen the pill is on, else the one under the mouse; above the pill when it
-        sits on the bottom edge."""
-        screen, floor = None, None
+        """On the screen the pill is on, else the one under the mouse; beside the pill when it
+        is docked on an edge (above it on the bottom edge)."""
+        screen, anchor = None, None
         if self.mini_player and self.mini_player.visible():
             screen = self.mini_player.panel.screen()
-            floor = self.mini_player.toast_floor()
-        self.toast.present(notice, screen, floor)
+            anchor = self.mini_player.toast_anchor()
+        self.toast.present(notice, screen, anchor)
 
     def show_history(self) -> None:
         """The dictation history window, from the module the history task adds."""

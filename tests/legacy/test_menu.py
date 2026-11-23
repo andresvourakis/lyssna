@@ -1,6 +1,8 @@
 """The menu bar menu: its rules (lyssna.menu) and the real menu built from a real controller.
 Nothing is shown on screen: the NSMenu is built but the app never runs."""
 
+import time
+
 import pytest
 from AppKit import NSMenu, NSMenuItem
 
@@ -121,7 +123,7 @@ def test_top_level_menu_when_idle(menubar):
     assert visible_rows(menubar._menu._menu) == [
         "Listen", "Read Selection", "Read Clipboard",
         "Speed: 1.2×", "Voice: Heart", "Voice Provider: On this Mac (Kokoro)", "Text stays on this Mac", "---",
-        "Dictate", "Start Dictation · hold fn", "History…", "Transcription: On this Mac (Parakeet)",
+        "Dictate", "Start Dictation · hold fn", "Paste Last Dictation", "History…", "Transcription: On this Mac (Parakeet)",
         "Cleanup: On this Mac (S1-mini by Superwhisper)", "Speech stays on this Mac", "---",
         "Settings", "Setup…", "About Lyssna", "---",
         "Quit Lyssna",
@@ -375,4 +377,20 @@ def test_history_entry_calls_the_app(menubar):
     menubar.on_history = lambda: called.append(1)
     item = next(i for i in menubar._menu._menu.itemArray() if i.title() == "History…")
     item.target().performSelector_withObject_(item.action(), item)
+    assert called == [1]
+
+
+def test_paste_last_dictation_shows_its_shortcut_and_calls_the_controller(menubar, monkeypatch):
+    import AppKit
+
+    called = []
+    item = next(i for i in menubar._menu._menu.itemArray() if i.title() == "Paste Last Dictation")
+    assert item.keyEquivalent() == "v"
+    assert item.keyEquivalentModifierMask() == AppKit.NSEventModifierFlagControl | AppKit.NSEventModifierFlagOption
+    monkeypatch.setattr(menubar.ctl, "_paste_last", lambda: called.append(1))
+    item.target().performSelector_withObject_(item.action(), item)
+    for _ in range(100):
+        if called:
+            break
+        time.sleep(0.01)
     assert called == [1]

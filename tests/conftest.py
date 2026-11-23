@@ -178,7 +178,7 @@ def offline_kokoro(isolated_paths, monkeypatch):
 @pytest.fixture(autouse=True)
 def offline_dictation(isolated_paths, monkeypatch):
     """Dictation state starts fresh in every test; no model loads, nothing goes online."""
-    from lyssna.dictation import history, models, vocabulary
+    from lyssna.dictation import failed, history, models, vocabulary
     from lyssna.dictation.cleaners import s1mini
     from lyssna.dictation.transcribers import parakeet
 
@@ -191,6 +191,7 @@ def offline_dictation(isolated_paths, monkeypatch):
     monkeypatch.setattr(models, "DOWNLOADS", {})
     monkeypatch.setattr(vocabulary, "_shared", None)
     monkeypatch.setattr(history, "_shared", None)  # its file is under STATE_DIR, so the temp home
+    monkeypatch.setattr(failed, "_shared", None)  # the failed recordings too
     monkeypatch.setattr(parakeet, "_make_model", no_model)
     monkeypatch.setattr(parakeet, "_model", None)
     monkeypatch.setattr(parakeet, "_warming", None)

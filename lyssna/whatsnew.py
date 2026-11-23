@@ -20,6 +20,11 @@ from . import config
 log = logging.getLogger("lyssna.whatsnew")
 
 NOTES: dict[str, tuple[str, ...]] = {
+    "0.3.2": (
+        "Retry a dictation that failed, from the message or from History. No need to speak again.",
+        "Paste Last Dictation (⌃⌥V) pastes your latest dictation again, in case it landed in the wrong place.",
+        "Messages now appear next to the wave when it sits on a side of the screen.",
+    ),
     "0.3.1": (
         "The full player moves freely when you drag it. Use its arrow button to tuck it into the edge.",
     ),
