@@ -57,6 +57,7 @@ Select text and a small play button appears just above the selection. Click it, 
 | Next / previous sentence | ⌃⌥→ / ⌃⌥←     |
 | Faster / slower          | ⌃⌥= / ⌃⌥-     |
 | Play button on / off     | ⌃⌥B           |
+| Paste last dictation     | ⌃⌥V           |
 
 If nothing is selected, Control-Option-S reads the clipboard instead.
 

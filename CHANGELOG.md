@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+- Retry a failed dictation. When a dictation fails, for example because an
+  online engine did not answer, the message has a Retry button, and the
+  dictation stays in History for 24 hours with its own Retry button, so you
+  do not have to speak again. Only failed recordings are saved, and only
+  until they are retried, deleted or 24 hours old.
+- Paste Last Dictation (⌃⌥V, also in the menu) pastes your latest dictation
+  again, for when it did not land or landed in the wrong place. If the latest
+  one failed, it retries it first.
+- Messages appear next to the wave when it is docked on the left or right
+  edge of the screen.
+
 ## 0.3.1
 
 - The full player moves freely when you drag it. It no longer docks when it
