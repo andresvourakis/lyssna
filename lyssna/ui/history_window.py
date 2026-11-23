@@ -7,7 +7,9 @@ same window in Qt.
     Lyssna is free and made by one person. ♥ Support it   (past 1,000 words; see lyssna.support)
     ( Dictations | Dictionary )                        one segmented control
     Dictations: search, then the list grouped by day; each row copies, shows the original
-                transcript, takes a fix ("Fix a Word…", which teaches the dictionary) or goes
+                transcript, takes a fix ("Fix a Word…", which teaches the dictionary) or goes;
+                a dictation that failed shows "Couldn't transcribe" with Retry and More
+                always visible, and a Retry that works turns it into a normal row (not pasted)
     Dictionary: add a word, the words most used first, where each came from
     Kept for 30 days on this Mac                 Clear History…
 
@@ -102,6 +104,8 @@ from .layout.history import (
     NOTE_TOP,
     PILL_ABOVE,
     POLL,
+    RETRY,
+    RETRYING,
     ROW_CAP,
     ROW_GAP,
     ROW_PAD_X,
@@ -140,10 +144,12 @@ from .layout.history import (
     day_label,
     ease_out,
     empty_dictations,
+    failed_text,
     figure,
     learned_text,
     retention_text,
 )
+from .mainthread import on_main
 from .mark import draw_mark
 from .widgets import IconButton, PillButton, rounded
 from .window import Hairline, Header, Label, LyssnaWindow, TextButton, css, ink_left, place, selection_style
@@ -790,6 +796,56 @@ class DictationRow(Row):
         p.end()
 
 
+class FailedRow(Row):
+    """A dictation whose transcription failed: the time, a dim line saying so, and a Retry pill
+    and the More button, both always shown (a hover-only Retry would be easy to miss). While a
+    retry runs the pill reads Retrying… and does nothing."""
+
+    kind = "dictation"
+
+    def __init__(self, parent: QWidget, owner: HistoryWindow, entry: history_mod.Entry):
+        super().__init__(parent)
+        self.owner = owner
+        self.entry = entry
+        self.entry_id = entry.id
+        self.retrying = entry.id in owner._retrying
+        self.edit_field = None  # never fixed, but read wherever a dictation row is
+
+        self.time = _Text(time_label(entry.when()), theme.digits_font(TIME_SIZE), theme.content_dim)
+        self.text = _Text(failed_text(entry.audio_seconds), theme.ui_font(TEXT_SIZE), theme.content_dim, TEXT_LINE_H)
+        self.retry = _pill(RETRYING if self.retrying else RETRY, self, lambda: owner.retry_entry(entry.id),
+                           height=SMALL_PILL_H)
+        self.retry.setEnabled(not self.retrying)
+        self.more = RowIcon("ellipsis", ICON_SIZE, "More", lambda: owner.more_menu(entry.id, self.more), self)
+
+        self.text_x = ROW_PAD_X + TIME_W
+        self.text_w = 0.0
+
+    def layout_for(self, width: float, available: float = 0.0) -> float:
+        top = ROW_PAD_Y
+        icon_y = top + TEXT_LINE_H / 2 - ICON_BTN / 2
+        more_x = width - ROW_PAD_X + (ICON_BTN - ICON_SIZE) / 2 - ICON_BTN
+        self.more.move(round(more_x), round(icon_y))
+        pill_x = more_x - ICON_GAP - self.retry.width()
+        self.retry.move(round(pill_x), round(top + TEXT_LINE_H / 2 - self.retry.height() / 2))
+        self.text_w = _wrap(max(80.0, pill_x - ICONS_TO_TEXT - self.text_x))
+        height = top + TEXT_LINE_H + ROW_PAD_Y
+        self.resize(round(width), round(height))
+        return height
+
+    def texts(self) -> list[str]:
+        return [self.time.value, self.text.value, self.retry.text()]
+
+    def paintEvent(self, ev) -> None:
+        p = self.painter()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self.paint_hover(p)
+        p.setPen(theme.content_dim())
+        theme.draw_text_at(p, ROW_PAD_X, ROW_PAD_Y + self.text.first_baseline(self.text_w), self.time.value, self.time.font)
+        self.text.paint(p, self.text_x, ROW_PAD_Y, self.text_w, 1)
+        p.end()
+
+
 class TermRow(Row):
     kind = "term"
 
@@ -875,6 +931,7 @@ class HistoryWindow(LyssnaWindow):
         self._learned: dict[str, str] = {}
         self._editing: str | None = None
         self._edit_text: str | None = None
+        self._retrying: set[str] = set()   # failed entries whose retry is running; kept across a close
         self._add_note = ""
         self._support_shown = False
         self._menu: QMenu | None = None
@@ -1084,7 +1141,7 @@ class HistoryWindow(LyssnaWindow):
             if day != last_day:
                 items.append(DayHeader(self.doc, day_label(day, today), first=last_day is None))
                 last_day = day
-            items.append(DictationRow(self.doc, self, entry))
+            items.append(FailedRow(self.doc, self, entry) if entry.failed else DictationRow(self.doc, self, entry))
         if len(entries) > self._cap:
             items.append(PillItem(self.doc, "Show Older", self.show_older))
         return items
@@ -1093,8 +1150,8 @@ class HistoryWindow(LyssnaWindow):
         entries = self._vocab().entries()
         return [TermRow(self.doc, self, e) for e in entries] or [Note(self.doc, EMPTY_DICTIONARY)]
 
-    def _row(self, entry_id: str) -> DictationRow | None:
-        return next((i for i in self.items if isinstance(i, DictationRow) and i.entry_id == entry_id), None)
+    def _row(self, entry_id: str) -> DictationRow | FailedRow | None:
+        return next((i for i in self.items if isinstance(i, (DictationRow, FailedRow)) and i.entry_id == entry_id), None)
 
     # -- layout --------------------------------------------------------------------------
 
@@ -1258,11 +1315,15 @@ class HistoryWindow(LyssnaWindow):
         menu.setToolTipsVisible(False)
         menu.setStyleSheet(menu_style())
         shown = entry.id in self._originals
-        for title, action, enabled in (
-            ("Hide Original" if shown else "Show Original", self.toggle_original, bool(entry.raw)),
-            ("Fix a Word…", self.fix_word, True),
-            ("Delete", self.delete_entry, True),
-        ):
+        if entry.failed:
+            rows = ((RETRY, self.retry_entry, entry.id not in self._retrying), ("Delete", self.delete_entry, True))
+        else:
+            rows = (
+                ("Hide Original" if shown else "Show Original", self.toggle_original, bool(entry.raw)),
+                ("Fix a Word…", self.fix_word, True),
+                ("Delete", self.delete_entry, True),
+            )
+        for title, action, enabled in rows:
             item = menu.addAction(title)
             item.setEnabled(enabled)
             item.triggered.connect(lambda _checked=False, fn=action, entry_id=entry.id: fn(entry_id))
@@ -1283,6 +1344,24 @@ class HistoryWindow(LyssnaWindow):
         row = self._row(entry_id)
         if row is not None and row.edit_field is not None:
             row.edit_field.selectAll()  # as the Mac's field takes the keyboard: the whole text, ready to fix
+
+    def retry_entry(self, entry_id: str) -> None:
+        """Run a failed dictation again, without pasting: the row fills in place when it works.
+        From the row's pill or the More menu."""
+        if self.ctl is None or entry_id in self._retrying:
+            return
+        self._retrying.add(entry_id)
+        self._rebuild_list()
+        started = self.ctl.retry_dictation(entry_id, paste=False,
+                                           on_done=lambda ok: on_main(self._retry_done, entry_id, ok))
+        if not started:
+            self._retry_done(entry_id, False)
+
+    def _retry_done(self, entry_id: str, ok: bool) -> None:
+        """A retry finished. Worked: the store changed and the row redraws as a dictation.
+        Failed: the row stays (the toast said why) and its pill reads Retry again."""
+        self._retrying.discard(entry_id)
+        self._refresh(force=True)
 
     def delete_entry(self, entry_id: str) -> None:
         if self._editing == entry_id:

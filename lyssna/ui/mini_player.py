@@ -28,8 +28,8 @@ Coordinates: the rules in layout/pill.py work in Mac-style rectangles (y up from
 primary screen). So does this file, almost line for line with the Mac's: frames go through
 FloatingPanel.frame_mac and set_frame_mac, screens through the _vf, _screen_at and
 _screen_under_mouse helpers below, and the drag hooks turn Qt's cursor point into a Mac-style one.
-`tip.show_beside` gets a Mac-style anchor rect, and toast_floor returns a Mac-style y, exactly as
-on the Mac.
+`tip.show_beside` gets a Mac-style anchor rect, and toast_anchor returns a Mac-style rect, exactly
+as on the Mac.
 
 Motion: the hover growth scales a picture of the pill or the menu inside a window already sized
 for the open form (the Mac scales a layer the same way), the auto-hide slide moves the squiggle
@@ -1778,13 +1778,13 @@ class MiniPlayer(FloatingPanel):
         self._grow_anim = anim
         anim.start()
 
-    def toast_floor(self, gap: float = 12.0) -> float | None:
-        """When the pill is on screen on the bottom edge, the lowest y (Mac-style, y up) a toast may
-        start at so it sits above the pill; else None."""
-        if not self.visible() or not is_flat(self.form_edge()):
+    def toast_anchor(self) -> tuple[coords.Rect, str] | None:
+        """What a toast sits beside (layout/toast.py toast_origin): the pill's frame (x, y, w, h,
+        Mac-style: y up) and the edge it is docked on, while it is on screen on an edge; else None."""
+        edge = self.form_edge()
+        if not self.visible() or not edge:
             return None
-        _, y, _, h = self.frame_mac()
-        return y + h + gap
+        return self.frame_mac(), edge
 
     # -- tooltip pill ------------------------------------------------------------------
 

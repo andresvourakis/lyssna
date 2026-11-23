@@ -157,13 +157,14 @@ def lyssna(make_app):
     return make_app()
 
 
-def test_the_eight_hotkeys_are_bound_to_the_controller(lyssna):
+def test_the_nine_hotkeys_are_bound_to_the_controller(lyssna):
     hk = lyssna.ctl.cfg["hotkeys"]
     ctl = lyssna.ctl
     want = {"speak": lyssna._speak_from_hotkey, "pause": ctl.toggle_pause, "stop": ctl.stop, "next": ctl.next,
-            "prev": ctl.prev, "faster": ctl.faster, "slower": ctl.slower, "button": lyssna._toggle_button_from_hotkey}
+            "prev": ctl.prev, "faster": ctl.faster, "slower": ctl.slower, "button": lyssna._toggle_button_from_hotkey,
+            "paste_last": ctl.paste_last}
     bound = lyssna.keyboard.bound
-    assert len(bound) == 8
+    assert len(bound) == 9
     for action, fn in want.items():
         assert bound[hk[action]] == fn, action
     assert lyssna.keyboard.on_any_key == lyssna._dismiss_button
@@ -174,7 +175,7 @@ def test_a_bad_hotkey_is_logged_and_skipped(make_app, caplog):
     assert template != config.TEMPLATE
     a = make_app(template=template)
     assert "bad hotkey for speak" in caplog.text
-    assert len(a.keyboard.bound) == 7 and "ctrl+alt+nosuchkey" not in a.keyboard.bound
+    assert len(a.keyboard.bound) == 8 and "ctrl+alt+nosuchkey" not in a.keyboard.bound
 
 
 def test_the_speak_hotkey_dismisses_the_play_button(lyssna, monkeypatch):
@@ -258,15 +259,16 @@ def test_controller_status_reaches_the_player(lyssna, monkeypatch):
     assert seen[0].state == "playing" and seen[0].index == 1
 
 
-def test_a_toast_is_presented_above_the_player(lyssna, monkeypatch):
+def test_a_toast_is_presented_beside_the_player(lyssna, monkeypatch):
     shown = []
-    monkeypatch.setattr(lyssna.toast, "present", lambda notice, screen=None, floor=None: shown.append((notice.text, screen, floor)))
+    monkeypatch.setattr(lyssna.toast, "present", lambda notice, screen=None, anchor=None: shown.append((notice.text, screen, anchor)))
     monkeypatch.setattr(lyssna.mini_player, "visible", lambda: True)
-    monkeypatch.setattr(lyssna.mini_player, "toast_floor", lambda gap=12.0: 123.0)
+    anchor = ((6.0, 400.0, 34.0, 118.0), "left")
+    monkeypatch.setattr(lyssna.mini_player, "toast_anchor", lambda: anchor)
     lyssna.ctl.toast(Notice("Hello"))
     assert shown == []  # queued, never inline
     pump(lambda: shown)
-    assert shown == [("Hello", lyssna.mini_player.panel.screen(), 123.0)]
+    assert shown == [("Hello", lyssna.mini_player.panel.screen(), anchor)]
 
 
 def test_the_control_channel_gets_ui_and_quit(lyssna, monkeypatch):
@@ -342,7 +344,7 @@ def test_a_bad_dictation_key_is_logged_and_toasted_and_the_app_still_starts(make
     [(text, seconds)] = toasts
     assert "nosuchkey" in text and seconds == 8.0
     assert a.ctl.push_to_talk is None and a.keyboard.push_to_talk is None
-    assert a.taps_ok is True and len(a.keyboard.bound) == 8  # everything else runs as usual
+    assert a.taps_ok is True and len(a.keyboard.bound) == 9  # everything else runs as usual
     assert (1.0, a._welcome_once) in a.deferred
 
 

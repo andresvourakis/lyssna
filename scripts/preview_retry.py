@@ -1,7 +1,7 @@
-"""Screenshots for reviewing "retry a failed dictation": the History window with two dictations
-and one failed one (its Retry pill and More button, and the pill while a retry runs), the
-failure toast with its Retry pill, and the menu with Paste Last Dictation. Each in light and
-dark appearance.
+"""Screenshots of the Mac's AppKit interface (lyssna/legacy) for reviewing "retry a failed dictation":
+the History window with two dictations and one failed one (its Retry pill and More button, and
+the pill while a retry runs), the failure toast with its Retry pill, and the menu with Paste
+Last Dictation. Each in light and dark appearance.
 
 Every shot is the whole display, with each element where the app puts it: the History window
 opened as its menu item opens it, the toast presented as after a failed dictation (above the
@@ -33,7 +33,8 @@ from Foundation import NSDate, NSRunLoop, NSTimer
 
 def isolate(home: Path) -> None:
     """Point every path Lyssna writes at a temporary folder, and keep the Keychain in memory."""
-    from lyssna import config, keychain, migrate, usage
+    from lyssna import config, keystore, usage
+    from lyssna.mac import speechy
 
     config.CONFIG_DIR = home / "config"
     config.CONFIG_PATH = home / "config" / "config.toml"
@@ -43,9 +44,9 @@ def isolate(home: Path) -> None:
     config.SOCKET_PATH = home / "state" / "lyssna.sock"
     usage.USAGE_PATH = home / "state" / "usage.json"
     # The old Speechy locations the one-time migration copies (and moves) from.
-    migrate.OLD_CONFIG_PATH = home / "old" / "config.toml"
-    migrate.OLD_STATE_DIR = home / "old" / "state"
-    migrate.OLD_CACHE_DIR = home / "old" / "cache"
+    speechy.OLD_CONFIG_PATH = home / "old" / "config.toml"
+    speechy.OLD_STATE_DIR = home / "old" / "state"
+    speechy.OLD_CACHE_DIR = home / "old" / "cache"
 
     class MemoryKeychain:
         def get(self, account):
@@ -57,8 +58,8 @@ def isolate(home: Path) -> None:
         def delete(self, account):
             return -25300
 
-    keychain._backend = MemoryKeychain()
-    keychain._spawn = lambda fn: fn()
+    keystore._backend = MemoryKeychain()
+    keystore._spawn = lambda fn: fn()
 
 
 def pump(seconds: float) -> None:
@@ -113,7 +114,7 @@ def shoot_history(out: Path) -> list[Path]:
     """Opened as LyssnaApp.show_history opens it: HistoryWindow.show, centred on the screen
     under the mouse, the app brought to the front."""
     from lyssna.dictation import history
-    from lyssna.ui.history_window import HistoryWindow
+    from lyssna.legacy.ui.history_window import HistoryWindow
 
     store = history.HistoryStore(days=lambda: 30)
     fill_history(store)
@@ -141,7 +142,7 @@ def shoot_history(out: Path) -> list[Path]:
 
 def make_pill(ctl):
     """The dictation pill, set up from the config as LyssnaApp sets it up."""
-    from lyssna.ui.mini_player import MiniPlayer
+    from lyssna.legacy.ui.mini_player import MiniPlayer
 
     ui_cfg = ctl.cfg.get("ui", {})
     if not ui_cfg.get("mini_player", True):
@@ -162,7 +163,7 @@ def shoot_toast(out: Path, ctl) -> list[Path]:
     its screen and toast_anchor), then the pill leaves dictation for its resting sliver."""
     from lyssna.controller import RETRY, RETRY_SECONDS, Notice
     from lyssna.dictation.session import RETRY_FAILED, TRANSCRIPTION_FAILED
-    from lyssna.ui.toast import Toast
+    from lyssna.legacy.ui.toast import Toast
 
     toast = Toast.alloc().init()
     pill = make_pill(ctl)
@@ -200,7 +201,7 @@ def shoot_menu(out: Path, ctl) -> list[Path]:
     the menu bar icon. A timer inside the menu's tracking loop takes the shot, then closes it."""
     import rumps
 
-    from lyssna.app import MenuBar
+    from lyssna.legacy.app import MenuBar
 
     menubar = MenuBar(ctl)
     menubar._refresh_checks()

@@ -1137,25 +1137,26 @@ def test_hands_free_tips(dictating, btn, text, key):
     assert shown[-1] == "hidden"
 
 
-def test_toast_floor_above_a_bottom_dictation(dictating):
+def test_toast_anchor_is_a_bottom_dictation(dictating):
     p = dictating
     p.dictation_layout = {"dock": "bottom", "y": -1.0}
     p._set_dictation("recording")
-    _, y, _, h = frame(p)
-    assert p.toast_floor() == y + h + 12
+    assert p.form == "dictate" and p.toast_anchor() == (frame(p), "bottom")
 
 
 # -- toasts --------------------------------------------------------------------------------------
 
 
-def test_toast_floor_only_on_the_bottom(pill):
-    assert pill.toast_floor() is None  # not on screen
+def test_toast_anchor_is_the_pill_and_its_edge(pill):
+    assert pill.toast_anchor() is None  # not on screen
     pill.show_idle()  # right edge
-    assert pill.toast_floor() is None
+    assert pill.toast_anchor() == (frame(pill), "right")
+    pill.dictation_layout = {"dock": "left", "y": -1.0}
+    pill.show_idle()
+    assert pill.toast_anchor() == (frame(pill), "left")
     pill.dictation_layout = {"dock": "bottom", "y": -1.0}
     pill.show_idle()
-    _, y, _, h = frame(pill)
-    assert pill.toast_floor() == y + h + 12 and pill.toast_floor(gap=20) == y + h + 20
+    assert pill.toast_anchor() == (frame(pill), "bottom")
 
 
 # -- the sliver ----------------------------------------------------------------------------------

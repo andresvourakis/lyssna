@@ -48,7 +48,7 @@ from .selection import SelectionWatcher
 log = logging.getLogger("lyssna.app")
 
 SHOW_REQUEST = {"cmd": "ui", "show": "setup"}  # what a second launch sends the running copy
-HOTKEY_ACTIONS = ("speak", "pause", "stop", "next", "prev", "faster", "slower", "button")
+HOTKEY_ACTIONS = ("speak", "pause", "stop", "next", "prev", "faster", "slower", "button", "paste_last")
 DICTATION_PIECES = ("mic", "insert", "field_probe", "pushtotalk")  # the host modules dictation needs
 SCREEN_SETTLE_MS = 300  # screen signals come in bursts; re-place once they stop
 SIGNAL_POLL_MS = 250  # how often Python gets to run, so Ctrl+C is seen while Qt waits
@@ -180,7 +180,8 @@ class LyssnaApp:
         self.keyboard = self._events.KeyboardTap()
         for action, fn in (("speak", self._speak_from_hotkey), ("pause", self.ctl.toggle_pause), ("stop", self.ctl.stop),
                            ("next", self.ctl.next), ("prev", self.ctl.prev), ("faster", self.ctl.faster),
-                           ("slower", self.ctl.slower), ("button", self._toggle_button_from_hotkey)):
+                           ("slower", self.ctl.slower), ("button", self._toggle_button_from_hotkey),
+                           ("paste_last", self.ctl.paste_last)):
             try:
                 self.keyboard.bind(hk[action], fn)
             except ValueError as e:
@@ -249,13 +250,13 @@ class LyssnaApp:
         self.ctl.push_to_talk = ptt
 
     def _present_toast(self, notice: Notice) -> None:
-        """On the screen the pill is on, else the one under the mouse; above the pill when it
-        sits on the bottom edge."""
-        screen, floor = None, None
+        """On the screen the pill is on, else the one under the mouse; beside the pill when it
+        is docked on an edge (above it on the bottom edge)."""
+        screen, anchor = None, None
         if self.mini_player and self.mini_player.visible():
             screen = self.mini_player.panel.screen()
-            floor = self.mini_player.toast_floor()
-        self.toast.present(notice, screen, floor)
+            anchor = self.mini_player.toast_anchor()
+        self.toast.present(notice, screen, anchor)
 
     def show_history(self) -> None:
         """The dictation history and the dictionary, made on first use. It reads the shared
@@ -732,8 +733,8 @@ class Demo:
         self._show(self._status("playing", 2, index=5, position=200.0))
 
     def _toast_and_setup(self) -> None:
-        floor = self.mini_player.toast_floor() if self.mini_player.visible() else None
-        self.toast.present(Notice("This is the demo. Nothing is being read.", "Undo", lambda: None, seconds=3.0), None, floor)
+        anchor = self.mini_player.toast_anchor() if self.mini_player.visible() else None
+        self.toast.present(Notice("This is the demo. Nothing is being read.", "Undo", lambda: None, seconds=3.0), None, anchor)
         self.show_setup()
 
     def _idle(self) -> None:

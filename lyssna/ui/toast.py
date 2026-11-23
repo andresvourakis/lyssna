@@ -1,20 +1,22 @@
 """Small notice panels that sit next to the pill, never part of it: the Windows twins of Toast and
 Tip in legacy/ui/toast.py.
 
-Toast: a one-line notice at the bottom centre of the screen ("Transcript cancelled" with Undo,
-"Copied. Press Ctrl+V to paste", permission and download messages, errors). At most one action
-pill; it fades in, stays a few seconds and fades out, and a new notice replaces the one on
-screen (in place when both carry the same key, so a download's percentage counts up without
-flickering). Text that does not fit is cut at the end, with the whole of it as the tooltip.
+Toast: a one-line notice beside the pill ("Transcript cancelled" with Undo, "Copied. Press
+Ctrl+V to paste", permission and download messages, errors): above it when the pill is on the
+bottom edge (at the bottom centre of the screen), on its inner side when it is docked on a side,
+at the bottom centre with no pill on screen. At most one action pill; it fades in, stays a few
+seconds and fades out, and a new notice replaces the one on screen (in place when both carry
+the same key, so a download's percentage counts up without flickering). Text that does not fit
+is cut at the end, with the whole of it as the tooltip.
 
 Tip: the pill-shaped tooltip beside the mic button and the hands-free buttons ("Dictate fn",
 "Cancel esc"), on the inner side of the screen. It never takes the mouse.
 
-Sizes, timings and the tip's placement come from layout/toast.py, which speaks the Mac's
-coordinates (y up). Tip.show_beside takes its anchor in those coordinates too, as the player
-passes it, and the toast's `floor` is a Mac-style y; both are converted here with coords. Both
-panels are FloatingPanels, so clicking the toast's action never takes focus from the app the
-user is typing in. Every colour comes from theme and is read at paint time."""
+Sizes, timings and both panels' placement come from layout/toast.py, which speaks the Mac's
+coordinates (y up). Tip.show_beside and Toast.present take their anchors in those coordinates
+too, as the player passes them; both are converted here with coords. Both panels are
+FloatingPanels, so clicking the toast's action never takes focus from the app the user is
+typing in. Every colour comes from theme and is read at paint time."""
 
 from __future__ import annotations
 
@@ -31,7 +33,6 @@ from .layout.toast import (
     ACTION_H,
     ACTION_PAD,
     ACTION_RIGHT,
-    BOTTOM,
     FADE_IN,
     FADE_OUT,
     MAX_W,
@@ -40,6 +41,7 @@ from .layout.toast import (
     TIP_PAD,
     TOAST_H,
     tip_origin,
+    toast_origin,
     toast_width,
 )
 from .mainthread import later
@@ -162,6 +164,7 @@ class Toast(FloatingPanel):
     def __init__(self) -> None:
         self._notice = None
         self._key = ""
+        self._place = None  # (screen, anchor) the toast on screen was placed with
         self._token = None
         self._on_action: Callable[[], None] | None = None
         super().__init__()
@@ -195,19 +198,20 @@ class Toast(FloatingPanel):
                                     round(ACTION_H))
         return width
 
-    def present(self, notice, screen=None, floor: float | None = None) -> None:
+    def present(self, notice, screen=None, anchor: tuple[coords.Rect, str] | None = None) -> None:
         """Show a notice (lyssna.controller.Notice) on `screen` (a QScreen; default: the one
-        under the mouse). `floor` is the lowest y it may start at, Mac-style (y up), so it sits
-        above the pill when that is on the bottom edge."""
-        screen = screen or coords.screen_under_mouse()
-        vx, vy, vw, vh = coords.visible_frame(screen)
+        under the mouse), beside the pill: `anchor` is its frame (x, y, w, h, Mac-style: y up)
+        and edge (see toast_origin), None with no pill on screen. A notice updating the one on
+        screen (same key) keeps its spot."""
         same = bool(notice.key) and notice.key == self._key and self.visible() and self._token is not None
-        width = self.layout(notice.text, notice.action, min(MAX_W, vw - 40))
-        x = round(vx + (vw - width) / 2)
-        top = vy + vh - BOTTOM - TOAST_H
-        if floor is not None:
-            top = min(top, coords.primary_height() - floor - TOAST_H)
-        self.set_frame((x, round(top), width, TOAST_H))
+        if same and self._place is not None:
+            screen, anchor = self._place
+        screen = screen or coords.screen_under_mouse()
+        self._place = (screen, anchor)
+        vf = coords.visible_frame_mac(screen)
+        width = self.layout(notice.text, notice.action, min(MAX_W, vf[2] - 40))
+        x, y = toast_origin(vf, width, anchor)
+        self.set_frame(coords.qt_rect_from_mac((x, y, width, TOAST_H)))
         self._notice, self._key, self._on_action = notice, notice.key, notice.on_action
         self.action.set_hover(False, animate=False)
         token = object()

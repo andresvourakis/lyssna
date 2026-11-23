@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 import types
 from pathlib import Path
 
@@ -142,7 +143,8 @@ def test_top_level_menu_when_idle(tray):
     assert rows(tray.menu) == [
         LISTEN_HEADER, "Read Selection", "Read Clipboard",
         "Speed: 1.2×", "Voice: Heart", kokoro_provider_title(tray), f"Text stays on this {d}", "---",
-        DICTATE_HEADER, f"Start Dictation · hold {key_name(host.DICTATION_KEY_DEFAULT)}", "History…",
+        DICTATE_HEADER, f"Start Dictation · hold {key_name(host.DICTATION_KEY_DEFAULT)}",
+        "Paste Last Dictation", "History…",
         f"Transcription: On this {d} (Parakeet)",
         cleanup, f"Speech stays on this {d}", "---",
         "Settings", "Setup…", "About Lyssna", "---",
@@ -202,6 +204,22 @@ def test_hotkeys_show_at_the_right_without_being_shortcuts(tray):
     for menu in all_menus(tray.menu):
         for a in menu.actions():
             assert a.shortcut().isEmpty(), a.text()  # the global hook owns the keys
+
+
+def test_paste_last_dictation_shows_ctrl_alt_v_and_calls_the_controller(tray, monkeypatch, make_tray):
+    item = find(tray.menu, "Paste Last Dictation")
+    assert item.text() == "Paste Last Dictation\tCtrl+Alt+V"  # Windows
+    assert item.shortcut().isEmpty() and item.isEnabled()
+    rows_ = rows(tray.menu)
+    assert rows_.index("Paste Last Dictation") == rows_.index("History…") - 1  # right under Start Dictation
+    called = []
+    monkeypatch.setattr(tray.ctl, "_paste_last", lambda: called.append(1))  # paste_last runs it on its own thread
+    item.trigger()
+    deadline = time.monotonic() + 2.0
+    while not called and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert called == [1]
+    assert find(make_tray(system="mac").menu, "Paste Last Dictation").text() == "Paste Last Dictation\tMeta+Alt+V"
 
 
 def test_provider_menu_groups_local_and_online(tray):

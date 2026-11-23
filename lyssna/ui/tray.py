@@ -237,7 +237,8 @@ class Tray:
           [Pause / Resume, Stop, Previous Sentence, Next Sentence] (only while reading),
           Speed >, [Voice >], Voice Provider >, where the text goes
         Dictate (a section header)
-          Start Dictation, History..., Transcription >, Cleanup >, where speech goes]
+          Start Dictation, Paste Last Dictation, History..., Transcription >, Cleanup >,
+          where speech goes]
         [What's New in 0.3.0...], [usage this month], Settings >, Setup..., About Lyssna,
         [Support Lyssna]
         Quit Lyssna (⌘Q on the Mac)
@@ -381,6 +382,7 @@ class Tray:
 
     def _build_dictation(self, m: QMenu) -> None:
         self.item_dictate = self._action(m, self._dictate_title(), self._dictate)
+        self.item_paste_last = self._action(m, "Paste Last Dictation", self.ctl.paste_last, "paste_last")
         self.item_history = self._action(m, "History…", lambda: self.on_history())
         self.transcription_menu = self._submenu(m, "Transcription")
         self.transcriber_items = self._add_engines(self.transcription_menu, transcribers.REGISTRY,
@@ -899,7 +901,7 @@ class _PreviewController:
 
     def __getattr__(self, name):  # every action: does nothing in a preview
         if name.startswith(("set_", "speak_", "toggle_", "dictation_", "remove_", "notify", "toast", "stop", "next", "prev",
-                            "faster", "slower")):
+                            "faster", "slower", "paste_")):
             return lambda *args, **kwargs: None
         raise AttributeError(name)
 

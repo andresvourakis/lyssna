@@ -11,7 +11,7 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from lyssna.controller import Notice
-from lyssna.ui.layout.toast import ACTION_PAD, BOTTOM, MAX_W, TIP_GAP, TIP_H, TOAST_H, toast_width
+from lyssna.ui.layout.toast import ACTION_PAD, BOTTOM, MAX_W, TIP_GAP, TIP_H, TOAST_GAP, TOAST_H, toast_origin, toast_width
 
 SCREEN_H = 720.0
 VF = (0.0, 0.0, 1280.0, 680.0)  # the taskbar takes the bottom 40
@@ -100,12 +100,62 @@ def test_present_sits_at_the_bottom_centre_and_fades_in(toast):
     assert toast.alpha() == 1.0
 
 
-def test_floor_keeps_it_above_the_pill(toast):
-    floor = SCREEN_H - 500.0  # Mac-style: the toast's bottom may not go below Qt y 500
-    toast.present(Notice("Copied"), floor=floor)
-    assert toast.frame()[1] == 500.0 - TOAST_H
-    toast.present(Notice("Copied"), floor=10.0)  # below the usual spot: no change
+def test_a_bottom_pill_keeps_it_above_the_pill(toast):
+    pill = (600.0, SCREEN_H - 500.0 - 12.0 - 34.0, 118.0, 34.0)  # Mac-style: its top 12 below Qt y 500
+    toast.present(Notice("Copied"), anchor=(pill, "bottom"))
+    x, y, w, _ = toast.frame()
+    assert y == 500.0 - TOAST_H and abs((x + w / 2) - VF[2] / 2) <= 1  # centred on the screen, not the pill
+    toast.present(Notice("Copied"), anchor=((600.0, SCREEN_H - 676.0, 118.0, 4.0), "bottom"))  # a low pill: no change
     assert toast.frame()[1] == VF[3] - BOTTOM - TOAST_H
+
+
+def test_beside_a_pill_docked_on_the_left(toast):
+    pill = (6.0, SCREEN_H - 400.0 - 118.0, 34.0, 118.0)  # Mac-style; its top at Qt y 400
+    toast.present(Notice("OpenAI did not answer.", "Retry"), anchor=(pill, "left"))
+    x, y, _, h = toast.frame()
+    assert x == 6.0 + 34.0 + TOAST_GAP
+    assert y + h / 2 == 400.0 + 118.0 / 2  # centred on the pill
+
+
+def test_beside_a_pill_docked_on_the_right(toast):
+    pill = (1240.0, SCREEN_H - 400.0 - 118.0, 34.0, 118.0)
+    toast.present(Notice("OpenAI did not answer.", "Retry"), anchor=(pill, "right"))
+    x, y, w, h = toast.frame()
+    assert x + w == 1240.0 - TOAST_GAP and y + h / 2 == 400.0 + 118.0 / 2
+
+
+def test_an_update_keeps_its_spot(toast):
+    pill = (6.0, SCREEN_H - 400.0 - 118.0, 34.0, 118.0)
+    toast.present(Notice("Getting the speech model ready, 10%", key="model"), anchor=(pill, "left"))
+    first = toast.frame()
+    toast.present(Notice("Getting the speech model ready, 20%", key="model"))  # the pill went meanwhile
+    assert toast.frame()[:2] == first[:2]
+    toast.present(Notice("Something else"))
+    assert toast.frame()[1] == VF[3] - BOTTOM - TOAST_H
+
+
+# The shared placement rule (layout/toast.py), Mac-style: y up from the screen's bottom.
+MAC_VF = (0, 25, 1440, 875)
+
+
+def test_toast_origin_without_a_pill_sits_at_the_bottom_centre():
+    assert toast_origin(MAC_VF, 300) == (570, 25 + BOTTOM)
+    assert toast_origin(MAC_VF, 301) == (round(1139 / 2), 25 + BOTTOM)  # whole points
+
+
+def test_toast_origin_above_a_bottom_pill_at_the_screen_centre():
+    pill = (600, 31, 118, 34)  # the dictate capsule, off centre on the bottom edge
+    assert toast_origin(MAC_VF, 300, (pill, "bottom")) == (570, 31 + 34 + TOAST_GAP)
+    assert toast_origin(MAC_VF, 300, ((600, 25, 118, 4), "bottom")) == (570, 25 + BOTTOM)
+
+
+def test_toast_origin_beside_a_side_pill_and_on_screen():
+    assert toast_origin(MAC_VF, 300, ((6, 400, 34, 118), "left")) == (6 + 34 + TOAST_GAP, 400 + (118 - TOAST_H) / 2)
+    assert toast_origin(MAC_VF, 300, ((1400, 400, 34, 118), "right")) == (1400 - TOAST_GAP - 300, 400 + (118 - TOAST_H) / 2)
+    assert toast_origin(MAC_VF, 300, ((6, 880, 34, 30), "left"))[1] == 25 + 875 - TOAST_H
+    assert toast_origin(MAC_VF, 300, ((6, 20, 34, 30), "left"))[1] == 25
+    assert toast_origin(MAC_VF, 600, ((900, 400, 34, 118), "left"))[0] == 1440 - 600
+    assert toast_origin(MAC_VF, 300, ((100, 400, 34, 118), "right"))[0] == 0
 
 
 def test_max_width_leaves_room_on_a_narrow_screen(toast, monkeypatch):
