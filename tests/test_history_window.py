@@ -607,7 +607,7 @@ def test_retry_from_the_row_does_not_paste_and_shows_retrying(win, store, clock)
     win.retryEntry_(win.items[1].retry)
     assert win.ctl.calls == [(entry.id, False)]
     row = win.items[1]
-    assert str(row.retry.title()) == "Retrying..." and not row.retry.isEnabled()
+    assert str(row.retry.title()) == "Retrying…" and not row.retry.isEnabled()
     win.retryEntry_(row.retry)  # a second press while it runs does nothing
     assert len(win.ctl.calls) == 1
     # it worked: the store holds the text now, and the row turns into a normal one

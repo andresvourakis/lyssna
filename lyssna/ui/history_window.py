@@ -167,7 +167,7 @@ FRAME = 1 / 60                # animation tick
 
 FAILED_TEXT = "Couldn't transcribe. {n} s of audio"
 RETRY = "Retry"
-RETRYING = "Retrying..."
+RETRYING = "Retrying…"
 EMPTY_DICTATIONS = "Your dictations will appear here. Hold fn and speak."
 EMPTY_SEARCH = "No dictations match."
 EMPTY_DICTIONARY = "Words Lyssna should know: names, products, jargon. It also learns when you correct a dictation."
@@ -809,7 +809,7 @@ class _DictationRow(_Item):
 class _FailedRow(_Item):
     """A dictation whose transcription failed: the time, a dim line saying so, and a Retry pill
     and the More button, both always shown (a hover-only Retry would be easy to miss). While a
-    retry runs the pill reads Retrying... and does nothing."""
+    retry runs the pill reads Retrying… and does nothing."""
 
     kind = "dictation"
 
