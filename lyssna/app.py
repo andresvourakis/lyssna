@@ -781,13 +781,13 @@ class LyssnaApp:
         self.ctl.push_to_talk = ptt
 
     def _present_toast(self, notice: Notice) -> None:
-        """On the screen the pill is on, else the one under the mouse; above the pill when it
-        sits on the bottom edge."""
-        screen, floor = None, None
+        """On the screen the pill is on, else the one under the mouse; beside the pill when it
+        is docked on an edge (above it on the bottom edge)."""
+        screen, anchor = None, None
         if self.mini_player and self.mini_player.visible():
             screen = self.mini_player.panel.screen()
-            floor = self.mini_player.toast_floor()
-        self.toast.present(notice, screen, floor)
+            anchor = self.mini_player.toast_anchor()
+        self.toast.present(notice, screen, anchor)
 
     def show_history(self) -> None:
         """The dictation history window, from the module the history task adds."""

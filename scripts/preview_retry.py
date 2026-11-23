@@ -159,7 +159,7 @@ def shoot_toast(out: Path, ctl) -> list[Path]:
     """As after a failed dictation (or retry): the pill is in its dictate form ("working")
     when the session turns to "notice". The controller's toast is queued first, so the toast
     is presented while the pill still shows the dictate capsule (LyssnaApp._present_toast:
-    its screen and toast_floor), then the pill leaves dictation for its resting sliver."""
+    its screen and toast_anchor), then the pill leaves dictation for its resting sliver."""
     from lyssna.controller import RETRY, RETRY_SECONDS, Notice
     from lyssna.dictation.session import RETRY_FAILED, TRANSCRIPTION_FAILED
     from lyssna.ui.toast import Toast
@@ -174,11 +174,11 @@ def shoot_toast(out: Path, ctl) -> list[Path]:
             if pill is not None:
                 pill._set_dictation("working")  # the wave only animates: nothing is recorded
                 pump(0.4)
-            screen, floor = None, None
+            screen, anchor = None, None
             if pill is not None and pill.visible():
                 screen = pill.panel.screen()
-                floor = pill.toast_floor()
-            toast.present(Notice(text, RETRY, lambda: None, seconds=RETRY_SECONDS), screen, floor)
+                anchor = pill.toast_anchor()
+            toast.present(Notice(text, RETRY, lambda: None, seconds=RETRY_SECONDS), screen, anchor)
             if pill is not None:
                 pill._set_dictation("notice")
             pump(0.6)

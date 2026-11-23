@@ -1,8 +1,10 @@
 """Small notice panels that sit next to the pill, never part of it.
 
-Toast: a one-line notice at the bottom centre of the screen ("Transcript cancelled" with
+Toast: a one-line notice beside the pill ("Transcript cancelled" with
 Undo, "Copied. Press ⌘V to paste", "Learned: Mattias" with Undo, permission and download
-messages, errors). At most one action button; it fades in, stays a few seconds and fades out,
+messages, errors): above it when the pill is on the bottom edge (at the bottom centre of the
+screen), on its inner side when it is docked on a side, at the bottom centre with no pill
+on screen. At most one action button; it fades in, stays a few seconds and fades out,
 and a new notice replaces the one on screen (in place when both carry the same key, so a
 download's percentage counts up without flickering).
 
@@ -36,6 +38,7 @@ ACTION_PAD = 12.0      # inside the action pill, either side of its label
 ACTION_RIGHT = 8.0     # the action pill from the right edge
 ACTION_GAP = 12.0      # between the text and the action pill
 BOTTOM = 28.0          # above the bottom of the screen's visible frame
+TOAST_GAP = 12.0       # between the pill and the toast
 MAX_W = 640.0
 FADE_IN, FADE_OUT = 0.15, 0.25
 
@@ -49,6 +52,28 @@ def toast_width(text_w: float, action_w: float) -> float:
     if action_w <= 0:
         return PAD_L + text_w + PAD_L
     return PAD_L + text_w + ACTION_GAP + (action_w + 2 * ACTION_PAD) + ACTION_RIGHT
+
+
+def toast_origin(vf: tuple[float, float, float, float], width: float,
+                 anchor: tuple[tuple[float, float, float, float], str] | None = None) -> tuple[float, float]:
+    """Where a toast `width` wide goes in the visible frame vf (x, y, w, h). `anchor` is the
+    pill's frame (x, y, w, h) and the edge it is on, or None with no pill on screen. With no
+    pill, and with the pill on the bottom edge, at the bottom centre of the screen, kept
+    TOAST_GAP above a bottom pill. Beside a pill docked on a side: TOAST_GAP from it on the
+    inner side, centred on it, kept inside vf."""
+    vx, vy, vw, vh = vf
+    x = round(vx + (vw - width) / 2)
+    y = vy + BOTTOM
+    if anchor is None:
+        return x, y
+    (px, py, pw, ph), edge = anchor
+    if edge == "bottom":
+        return x, max(y, py + ph + TOAST_GAP)
+    x = px + pw + TOAST_GAP if edge == "left" else px - TOAST_GAP - width
+    y = py + (ph - TOAST_H) / 2
+    x = min(max(x, vx), vx + vw - width)
+    y = min(max(y, vy), vy + vh - TOAST_H)
+    return round(x), round(y)
 
 
 def tip_origin(anchor: tuple[float, float, float, float], edge: str, width: float) -> tuple[float, float]:
@@ -79,6 +104,7 @@ class Toast(FloatingPanel):
         self.panel.setAlphaValue_(0.0)
         self._notice = None
         self._key = ""
+        self._place = None  # (screen, anchor) the toast on screen was placed with
         self._token = None
         self._on_action: Callable[[], None] | None = None
         return self
@@ -123,15 +149,19 @@ class Toast(FloatingPanel):
         return width
 
     @objc.python_method
-    def present(self, notice, screen=None, floor: float | None = None) -> None:
-        """Show a notice (lyssna.controller.Notice) on `screen` (default: under the mouse).
-        `floor` is the lowest y it may start at (above the pill when that sits on the bottom edge)."""
-        screen = screen or screen_under_mouse()
-        vf = visible_frame(screen)
+    def present(self, notice, screen=None, anchor: tuple[tuple[float, float, float, float], str] | None = None) -> None:
+        """Show a notice (lyssna.controller.Notice) on `screen` (default: under the mouse),
+        beside the pill: `anchor` is its frame (x, y, w, h) and edge (see toast_origin), None
+        with no pill on screen. A notice updating the one on screen (same key) keeps its spot."""
         same = bool(notice.key) and notice.key == self._key and self.visible() and self._token is not None
-        width = self.layout(notice.text, notice.action, min(MAX_W, vf.size.width - 40))
-        x = round(vf.origin.x + (vf.size.width - width) / 2)
-        y = max(vf.origin.y + BOTTOM, floor) if floor is not None else vf.origin.y + BOTTOM
+        if same and self._place is not None:
+            screen, anchor = self._place
+        screen = screen or screen_under_mouse()
+        self._place = (screen, anchor)
+        r = visible_frame(screen)
+        vf = (r.origin.x, r.origin.y, r.size.width, r.size.height)
+        width = self.layout(notice.text, notice.action, min(MAX_W, vf[2] - 40))
+        x, y = toast_origin(vf, width, anchor)
         self.panel.setFrame_display_(((x, y), (width, TOAST_H)), True)
         self._notice, self._key, self._on_action = notice, notice.key, notice.on_action
         self.action_bg.set_hover(False)

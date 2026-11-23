@@ -50,7 +50,7 @@ from lyssna.ui.mini_player import (
     snap_edge,
     tuck_due,
 )
-from lyssna.ui.toast import ACTION_PAD, ACTION_RIGHT, BOTTOM, PAD_L, TOAST_H, tip_origin, toast_width
+from lyssna.ui.toast import ACTION_PAD, ACTION_RIGHT, BOTTOM, PAD_L, TOAST_GAP, TOAST_H, tip_origin, toast_origin, toast_width
 from lyssna.ui.widgets import (
     CAPSULE_H,
     CAPSULE_INSET,
@@ -311,6 +311,32 @@ def test_wave_points_run_down_the_meter_with_one_and_a_half_cycles():
 def test_toast_width():
     assert toast_width(100, 0) == PAD_L + 100 + PAD_L
     assert toast_width(100, 40) == PAD_L + 100 + 12 + (40 + 2 * ACTION_PAD) + ACTION_RIGHT
+
+
+def test_toast_without_a_pill_sits_at_the_bottom_centre():
+    assert toast_origin(VF, 300) == (570, 25 + BOTTOM)
+    assert toast_origin(VF, 301) == (round(1139 / 2), 25 + BOTTOM)  # whole points
+
+
+def test_toast_sits_above_a_bottom_pill_at_the_screen_centre():
+    pill = (600, 31, 118, 34)  # the dictate capsule, off centre on the bottom edge
+    assert toast_origin(VF, 300, (pill, "bottom")) == (570, 31 + 34 + TOAST_GAP)
+    assert toast_origin(VF, 300, ((600, 25, 118, 4), "bottom")) == (570, 25 + BOTTOM)  # a low pill: its own spot
+
+
+def test_toast_origin_beside_a_side_pill():
+    pill = (6, 400, 34, 118)
+    assert toast_origin(VF, 300, (pill, "left")) == (6 + 34 + TOAST_GAP, 400 + (118 - TOAST_H) / 2)
+    pill = (1400, 400, 34, 118)
+    assert toast_origin(VF, 300, (pill, "right")) == (1400 - TOAST_GAP - 300, 400 + (118 - TOAST_H) / 2)
+
+
+def test_toast_beside_a_side_pill_stays_on_screen():
+    top, bottom = (6, 880, 34, 30), (6, 20, 34, 30)  # pills overlapping the menu bar and the Dock
+    assert toast_origin(VF, 300, (top, "left"))[1] == 25 + 875 - TOAST_H
+    assert toast_origin(VF, 300, (bottom, "left"))[1] == 25
+    assert toast_origin(VF, 600, ((900, 400, 34, 118), "left"))[0] == 1440 - 600  # too wide for the room
+    assert toast_origin(VF, 300, ((100, 400, 34, 118), "right"))[0] == 0
 
 
 def test_tip_goes_on_the_inner_side():
@@ -1129,13 +1155,15 @@ def test_one_form_at_a_time_across_orientations(pill):
 
 
 @appkit
-def test_toast_floor_only_on_the_bottom(pill):
+def test_toast_anchor_is_the_pill_and_its_edge(pill):
+    assert pill.toast_anchor() is None  # not on screen
     pill.show_idle()  # right edge
-    assert pill.toast_floor() is None
+    assert pill.toast_anchor() == (frame(pill), "right")
     pill.dictation_layout = {"dock": "bottom", "y": -1.0}
     pill.show_idle()
-    _, y, _, h = frame(pill)
-    assert pill.toast_floor() == y + h + 12
+    assert pill.toast_anchor() == (frame(pill), "bottom")
+    pill._set_dictation("working")
+    assert pill.form == "dictate" and pill.toast_anchor() == (frame(pill), "bottom")
 
 
 # -- the toast on AppKit ----------------------------------------------------------------------
@@ -1188,10 +1216,32 @@ def test_toast_with_the_same_key_updates_in_place(toast):
 
 @appkit
 def test_toast_sits_above_a_bottom_pill(toast):
-    toast.present(Notice("Transcript cancelled"), floor=25 + 70)
-    assert toast.panel.frame().origin.y == 95
-    toast.present(Notice("Transcript cancelled"), floor=10)  # below its own spot: no change
+    toast.present(Notice("Transcript cancelled"), anchor=((600, 25, 118, 58), "bottom"))
+    assert toast.panel.frame().origin.y == 25 + 58 + TOAST_GAP
+    toast.present(Notice("Transcript cancelled"), anchor=((600, 25, 118, 4), "bottom"))  # below its own spot
     assert toast.panel.frame().origin.y == 25 + BOTTOM
+
+
+@appkit
+def test_toast_sits_beside_a_side_pill(toast):
+    toast.present(Notice("Dictation failed.", "Retry"), anchor=((6, 400, 34, 118), "left"))
+    f = toast.panel.frame()
+    assert f.origin.x == 6 + 34 + TOAST_GAP and f.origin.y + TOAST_H / 2 == 400 + 118 / 2
+    toast.present(Notice("Dictation failed.", "Retry"), anchor=((1400, 400, 34, 118), "right"))
+    f = toast.panel.frame()
+    assert f.origin.x + f.size.width == 1400 - TOAST_GAP and f.origin.y + TOAST_H / 2 == 459
+
+
+@appkit
+def test_toast_updated_in_place_keeps_its_spot(toast):
+    toast._fade = lambda alpha, seconds, done=None: None
+    toast.visible = lambda: True  # as if on screen
+    toast.present(Notice("Getting the speech model ready, 10%", key="models"), anchor=((6, 400, 34, 118), "left"))
+    first = toast.panel.frame().origin
+    toast.present(Notice("Getting the speech model ready, 11%", key="models"), anchor=((0, 300, 4, 60), "left"))
+    assert toast.panel.frame().origin == first  # the pill changed form: the toast stays put
+    toast.present(Notice("Copied"), anchor=((0, 300, 4, 60), "left"))
+    assert toast.panel.frame().origin.y == 300 + (60 - TOAST_H) / 2  # a new toast goes by the pill now
 
 
 @appkit

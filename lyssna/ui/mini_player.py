@@ -1759,13 +1759,14 @@ class MiniPlayer(FloatingPanel):
         NSAnimationContext.runAnimationGroup_completionHandler_(changes, settled)
 
     @objc.python_method
-    def toast_floor(self, gap: float = 12.0) -> float | None:
-        """When the pill is on screen on the bottom edge, the lowest y a toast may start at so
-        it sits above the pill; else None."""
-        if not self.visible() or not is_flat(self.form_edge()):
+    def toast_anchor(self) -> tuple[tuple[float, float, float, float], str] | None:
+        """What a toast sits beside (lyssna.ui.toast.toast_origin): the pill's frame (x, y, w, h)
+        and the edge it is docked on, while it is on screen on an edge; else None."""
+        edge = self.form_edge()
+        if not self.visible() or not edge:
             return None
         f = self.panel.frame()
-        return f.origin.y + f.size.height + gap
+        return (f.origin.x, f.origin.y, f.size.width, f.size.height), edge
 
     # -- tooltip pill ------------------------------------------------------------------
 
