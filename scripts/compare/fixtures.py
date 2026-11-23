@@ -1,6 +1,6 @@
 """The fake data both sides draw from, so a legacy screen and its Qt twin show exactly the same
 state: the reading, the voices, the setup conditions, the history entries with their fixed
-clock, the dictionary, the What's New notes, the toasts and the tips.
+clock (and a failed dictation), the dictionary, the What's New notes, the toasts and the tips.
 
 Pure Python: nothing here imports AppKit or Qt."""
 
@@ -157,13 +157,15 @@ HISTORY_ENTRIES = (  # (days ago, hour, minute, text, original): the Qt preview'
     (1, 10, 12, "Remind me to call the dentist tomorrow.", ""),
     (4, 14, 20, "The quarterly summary is in the shared folder.", ""),
 )
+HISTORY_FAILED = (15, 55, 12.0)  # a failed dictation today: hour, minute, seconds of audio
 HISTORY_STATS = {"words_this_week": 1204, "words_total": 18930, "dictations": 412, "minutes": 0.0, "wpm": 0}
 HISTORY_SIZE = (560.0, 680.0)
 HISTORY_WIDE = (1040.0, 720.0)
 
 
-def history_data(folder: Path, *, entries: bool = True, terms: bool = True):
-    """(store, vocabulary, clock) in `folder`, filled as the Qt preview fills them."""
+def history_data(folder: Path, *, entries: bool = True, terms: bool = True, failed: bool = False):
+    """(store, vocabulary, clock) in `folder`, filled as the Qt preview fills them; with `failed`,
+    a dictation whose transcription failed sits on top (its recording a short tone)."""
     from lyssna.dictation import history as history_mod
     from lyssna.dictation import vocabulary as vocabulary_mod
     from lyssna.dictation.types import DictationResult
@@ -181,6 +183,13 @@ def history_data(folder: Path, *, entries: bool = True, terms: bool = True):
             clock["t"] = (HISTORY_NOW - timedelta(days=days_ago)).replace(hour=hour, minute=minute).astimezone()
             store.add(DictationResult(text=text, raw=raw or text.lower(), source="model", transcriber="parakeet",
                                       cleaner="s1-mini", audio_seconds=2.0, seconds={}, words=len(text.split())))
+        clock["t"] = HISTORY_NOW.astimezone()
+    if failed:
+        import numpy as np
+
+        hour, minute, seconds = HISTORY_FAILED
+        clock["t"] = HISTORY_NOW.replace(hour=hour, minute=minute).astimezone()
+        store.add_failed((0.25 * np.sin(np.arange(16000) / 7)).astype(np.float32), seconds, "openai")
         clock["t"] = HISTORY_NOW.astimezone()
     if terms:
         vocab.add("Parakeet")
@@ -208,6 +217,14 @@ TOASTS = {
     "toast.long": ("That key didn't work. Cartesia error 401: the API key you sent is not valid for this account, so "
                    "check it in your dashboard and paste it again.", "Open Settings", 460.0),
     "toast.download": ("Getting the speech model ready, 43%", "", 640.0),
+}
+
+# A toast placed beside the resting pill, through the app's own path (the pill's toast_anchor and
+# the toast's present), drawn together as one scene: the edge the pill rests on, the text, the action.
+TOAST_SCENES = {
+    "toast.beside-left": ("left", "OpenAI did not answer.", "Retry"),
+    "toast.beside-right": ("right", "OpenAI did not answer.", "Retry"),
+    "toast.above-bottom": ("bottom", "OpenAI did not answer.", "Retry"),
 }
 
 TIP_ANCHOR = (100.0, 100.0, 34.0, 34.0)  # a Mac-style button rect the tip sits beside

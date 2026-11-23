@@ -514,6 +514,61 @@ def build_toast(params: dict) -> dict:
     return {"owner": t, "notes": ["painted shadow switched off"]}
 
 
+def build_toast_scene(params: dict, work: Path) -> dict:
+    """The resting pill on its edge and a toast presented beside it as the app presents it (the
+    pill's toast_anchor, the toast's present, both on the fake screen), drawn together: each
+    panel's picture where its frame puts it, in one widget the size of both frames' union."""
+    import math
+
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtWidgets import QWidget
+
+    from lyssna.controller import Notice
+    from lyssna.ui import coords
+    from lyssna.ui.toast import Toast
+
+    mp = _player()
+    mp.dictation_layout = {"dock": params["edge"], "y": -1.0}
+    mp.show_idle()
+    if mp._scale_anim is not None:
+        mp._cancel_anim()
+    t = Toast()
+    _keep.append(t)
+    real = coords.visible_frame_mac
+    coords.visible_frame_mac = lambda screen=None: fx.VF  # the fake screen, as the player's _vf
+    try:
+        t.present(Notice(params["text"], params["action"], lambda: None), None, mp.toast_anchor())
+    finally:
+        coords.visible_frame_mac = real
+    t.set_alpha(1.0)
+    parts = []
+    for i, owner in enumerate((mp, t)):
+        path = work / f"scene-{len(_keep)}-{i}.png"
+        w, h = render(subject_widget({"owner": owner}), path, False, owner)
+        x, y, _, _ = owner.frame()
+        image = QImage(str(path))
+        image.setDevicePixelRatio(SCALE)
+        parts.append((x, y, w, h, image))
+    ux, uy = min(p[0] for p in parts), min(p[1] for p in parts)
+    uw = max(p[0] + p[2] for p in parts) - ux
+    uh = max(p[1] + p[3] for p in parts) - uy
+
+    class Scene(QWidget):
+        def paintEvent(self, ev) -> None:
+            painter = QPainter(self)
+            for x, y, _w, _h, image in parts:
+                painter.drawImage(QPointF(x - ux, y - uy), image)
+            painter.end()
+
+    scene = Scene()
+    scene.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    scene.resize(math.ceil(uw), math.ceil(uh))
+    _keep.append(scene)
+    return {"widget": scene, "notes": ["the pill and the toast drawn where their frames put them on the fake screen",
+                                       "painted shadows switched off"]}
+
+
 def build_tip(params: dict) -> dict:
     from lyssna.ui.toast import Tip
 
@@ -610,7 +665,8 @@ def build_history(params: dict, work: Path) -> dict:
     from lyssna.ui import history_window as HW
 
     folder = work / f"history-{len(_keep)}"
-    store, vocab, clock = fx.history_data(folder, entries=params.get("entries", True), terms=params.get("terms", True))
+    store, vocab, clock = fx.history_data(folder, entries=params.get("entries", True), terms=params.get("terms", True),
+                                          failed=params.get("failed", False))
     w = HW.HistoryWindow()
     _keep.append(w)
     w.store, w.vocabulary, w.now = store, vocab, clock
@@ -651,6 +707,11 @@ def build_history(params: dict, work: Path) -> dict:
             w._layout()
         if params.get("terms", True):
             next(i for i in w.items if isinstance(i, HW.TermRow)).set_hover(True)
+    if params.get("retrying"):  # the state retry_entry puts it in while the retry runs
+        w._retrying.add(next(i for i in w.items if isinstance(i, HW.FailedRow)).entry_id)
+        w._rebuild_list()
+    if params.get("hover_failed"):
+        next(i for i in w.items if isinstance(i, HW.FailedRow)).set_hover(True)
     return {"widget": w, "window": True, "title": w.windowTitle()}
 
 
@@ -674,6 +735,8 @@ def build(pair, work: Path) -> dict:
                 "mark": build_mark, "wave": build_wave, "setup": build_setup, "whats_new": build_whats_new}
     if kind == "history":
         return build_history(pair.params, work)
+    if kind == "toast_scene":
+        return build_toast_scene(pair.params, work)
     return builders[kind](pair.params)
 
 
@@ -780,6 +843,14 @@ def menus(out: Path, only: str | None) -> None:
         w.prepare()
         entry = next(i for i in w.items if isinstance(i, HW.DictationRow)).entry
         result["popup.history-more"] = dump_menu(w._more_menu(entry))
+    if "popup.history-more-failed" in names:
+        store, vocab, clock = fx.history_data(out / "menus-history-failed-qt", failed=True)
+        w = HW.HistoryWindow()
+        _keep.append(w)
+        w.store, w.vocabulary, w.now = store, vocab, clock
+        w.prepare()
+        entry = next(i for i in w.items if isinstance(i, HW.FailedRow)).entry
+        result["popup.history-more-failed"] = dump_menu(w._more_menu(entry))
     (out / "menus.json").write_text(json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8")
     # A picture of the top-level menu, for the record (an NSMenu cannot be drawn offscreen).
     for scheme in catalogue.SCHEMES:

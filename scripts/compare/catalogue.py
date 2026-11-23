@@ -116,6 +116,9 @@ HISTORY = {
     "history.dictionary-empty": {"variant": "dictionary", "terms": False},
     "history.dictionary-too-long": {"variant": "dictionary", "note": "That is too long for the dictionary."},
     "history.wide": {"variant": "plain", "supporter": True, "size": fx.HISTORY_WIDE},
+    "history.failed": {"variant": "plain", "failed": True},
+    "history.failed-retrying": {"variant": "plain", "failed": True, "retrying": True},
+    "history.failed-hover": {"variant": "plain", "failed": True, "hover_failed": True},
 }
 
 
@@ -125,6 +128,9 @@ def _build() -> list[Pair]:
         pairs.append(Pair(name, "player", kind, params, moment))
     for name, (text, action, max_w) in fx.TOASTS.items():
         pairs.append(Pair(name, "toast", "toast", {"text": text, "action": action, "max_w": max_w}, "faded in, alpha 1"))
+    for name, (edge, text, action) in fx.TOAST_SCENES.items():
+        pairs.append(Pair(name, "toast", "toast_scene", {"edge": edge, "text": text, "action": action},
+                          "faded in, alpha 1; the pill resting on its edge"))
     for name, (edge, text, key) in fx.TIPS.items():
         pairs.append(Pair(name, "tip", "tip", {"edge": edge, "text": text, "key": key}))
     pairs.append(Pair("selection-button", "selection", "selection", {"hover": False}))
@@ -150,7 +156,7 @@ PAIRS: list[Pair] = _build()
 
 # The menus, compared as structure (titles, order, enabled, checks, shortcuts, headers).
 MENUS = ("menu.idle", "menu.reading", "menu.speed", "menu.voice", "menu.provider", "menu.transcription", "menu.cleanup",
-         "menu.settings", "menu.keys", "popup.speed", "popup.voice", "popup.history-more")
+         "menu.settings", "menu.keys", "popup.speed", "popup.voice", "popup.history-more", "popup.history-more-failed")
 
 TOOLTIPS = {  # what the app wiring sets on the player's buttons (the config's default hotkeys)
     "toggle": "Pause / resume  ⌃⌥Space", "stop": "Stop  ⌃⌥X", "back": "Previous sentence  ⌃⌥←",

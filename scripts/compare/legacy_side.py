@@ -635,6 +635,43 @@ def build_toast(params: dict, app) -> dict:
             "notes": ["no window shadow (window server)", "window alpha (the fade) is not part of the picture"]}
 
 
+def build_toast_scene(params: dict, app, work: Path) -> dict:
+    """The resting pill on its edge and a toast presented beside it as the app presents it (the
+    pill's toast_anchor, the toast's present, both on the fake screen), drawn together: each
+    panel's picture where its frame puts it, in one view the size of both frames' union."""
+    from lyssna.controller import Notice
+    from lyssna.legacy.ui.toast import Toast
+
+    p = _player_owner()
+    p.panel.setAppearance_(app)
+    p.dictation_layout = {"dock": params["edge"], "y": -1.0}
+    p.show_idle()
+    t = Toast.alloc().init()
+    _keep.append(t)
+    t.panel.setAppearance_(app)
+    t.present(Notice(params["text"], params["action"], lambda: None), None, p.toast_anchor())
+    frames = []
+    for i, panel in enumerate((p.panel, t.panel)):
+        f = panel.frame()
+        path = work / f"scene-{len(_keep)}-{i}.png"
+        w, h, _ = render(panel.contentView(), app, path, "layer")
+        image = AppKit.NSImage.alloc().initWithContentsOfFile_(str(path))
+        image.setSize_((w, h))
+        frames.append((f.origin.x, f.origin.y, w, h, image))
+    ux, uy = min(f[0] for f in frames), min(f[1] for f in frames)
+    uw = max(f[0] + f[2] for f in frames) - ux
+    uh = max(f[1] + f[3] for f in frames) - uy
+    scene = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, math.ceil(uw), math.ceil(uh)))
+    for x, y, w, h, image in frames:
+        iv = AppKit.NSImageView.alloc().initWithFrame_(AppKit.NSMakeRect(x - ux, y - uy, w, h))
+        iv.setImageScaling_(AppKit.NSImageScaleNone)
+        iv.setImage_(image)
+        scene.addSubview_(iv)
+    return {"view": host_window(scene), "method": "cache", "ages": None,
+            "notes": ["the pill and the toast drawn where their frames put them on the fake screen",
+                      "no window shadows (window server)", "window alpha (the fade) is not part of the picture"]}
+
+
 def build_tip(params: dict, app) -> dict:
     from lyssna.legacy.ui.toast import Tip
 
@@ -757,7 +794,8 @@ def build_history(params: dict, app, work: Path) -> dict:
     from lyssna.legacy.ui import history_window as HW
 
     folder = work / f"history-{len(_keep)}"
-    store, vocab, clock = fx.history_data(folder, entries=params.get("entries", True), terms=params.get("terms", True))
+    store, vocab, clock = fx.history_data(folder, entries=params.get("entries", True), terms=params.get("terms", True),
+                                          failed=params.get("failed", False))
     w = HW.HistoryWindow.alloc().init()
     _keep.append(w)
     w.store, w.vocabulary, w.now = store, vocab, clock
@@ -808,6 +846,11 @@ def build_history(params: dict, app, work: Path) -> dict:
             w._layout()
         if params.get("terms", True):
             next(i for i in w.items if isinstance(i, HW._TermRow)).view.set_hover(True)
+    if params.get("retrying"):  # the state retryEntry_ puts it in while the retry runs
+        w._retrying.add(next(i for i in w.items if isinstance(i, HW._FailedRow)).entry_id)
+        w._rebuild_list()
+    if params.get("hover_failed"):
+        next(i for i in w.items if isinstance(i, HW._FailedRow)).view.set_hover(True)
     return {"view": w.window.contentView(), "method": "cache", "ages": None, "title": str(w.window.title()),
             "notes": notes, "owner": w}
 
@@ -836,6 +879,8 @@ def build(pair, scheme: str, work: Path) -> dict:
         return build_player(pair.params, app)
     if kind == "toast":
         return build_toast(pair.params, app)
+    if kind == "toast_scene":
+        return build_toast_scene(pair.params, app, work)
     if kind == "tip":
         return build_tip(pair.params, app)
     if kind == "selection":
@@ -939,6 +984,14 @@ def menus(out: Path, only: str | None) -> None:
         w.prepare()
         entry = next(i for i in w.items if isinstance(i, HW._DictationRow)).entry
         result["popup.history-more"] = dump_menu(w._more_menu(entry))
+    if "popup.history-more-failed" in names:
+        store, vocab, clock = fx.history_data(out / "menus-history-failed", failed=True)
+        w = HW.HistoryWindow.alloc().init()
+        _keep.append(w)
+        w.store, w.vocabulary, w.now = store, vocab, clock
+        w.prepare()
+        entry = next(i for i in w.items if isinstance(i, HW._FailedRow)).entry
+        result["popup.history-more-failed"] = dump_menu(w._more_menu(entry))
     (out / "menus.json").write_text(json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8")
 
 

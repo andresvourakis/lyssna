@@ -45,7 +45,7 @@ def isolate(root: str | os.PathLike | None = None) -> Path:
     import httpx
 
     from lyssna import cache, config, download, keystore, policy, support, usage
-    from lyssna.dictation import history, models, vocabulary
+    from lyssna.dictation import failed, history, models, vocabulary
     from lyssna.dictation.cleaners import s1mini
     from lyssna.dictation.transcribers import parakeet
     from lyssna.mac import credentials as mac_credentials
@@ -92,6 +92,7 @@ def isolate(root: str | os.PathLike | None = None) -> Path:
     models.DOWNLOADS = {}
     vocabulary._shared = None
     history._shared = None
+    failed._shared = None
     parakeet._make_model = _refuse("load a dictation model")
     parakeet._model = None
     parakeet._warming = None

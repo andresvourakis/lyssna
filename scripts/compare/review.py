@@ -87,6 +87,10 @@ TITLES = {
     "history.fix": "Fixing a word", "history.search": "Searching", "history.search-none": "A search with no results",
     "history.empty": "Nothing dictated yet", "history.dictionary": "The dictionary", "history.dictionary-empty": "An empty dictionary",
     "history.dictionary-too-long": "A word that is too long", "history.wide": "A wide window",
+    "history.failed": "A dictation that failed", "history.failed-retrying": "A failed dictation while it retries",
+    "history.failed-hover": "Pointer over a failed dictation",
+    "toast.beside-left": "A notice beside the pill on the left", "toast.beside-right": "A notice beside the pill on the right",
+    "toast.above-bottom": "A notice above the pill at the bottom",
     "whats-new": "The notes", "whats-new.support": "The notes with the support link",
 }
 
@@ -404,7 +408,8 @@ MOTION_TITLES = {"pill-grow": "The docked bar grows into the pill", "menu-grow":
 MENU_TITLES = {"menu.idle": "Menu bar menu", "menu.reading": "Menu bar menu while reading", "menu.speed": "Speed",
                "menu.voice": "Voice", "menu.provider": "Reading engine", "menu.transcription": "Transcription",
                "menu.cleanup": "Clean-up", "menu.settings": "Settings", "menu.keys": "Keys",
-               "popup.speed": "Player: speed", "popup.voice": "Player: voice", "popup.history-more": "History: more"}
+               "popup.speed": "Player: speed", "popup.voice": "Player: voice", "popup.history-more": "History: more",
+               "popup.history-more-failed": "History: more, on a failed dictation"}
 FLAG_WORDS = {"header": "heading", "disabled": "greyed out", "checked": "ticked", "submenu": "opens more",
               "icon": "with an icon"}
 
