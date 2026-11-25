@@ -58,6 +58,7 @@ def test_the_config_file_falls_back_to_the_legacy_interface(mac):
     assert host.interface() == "new"
 
 
+@pytest.mark.skipif(host.IS_WINDOWS, reason="the Windows template has no legacy line to turn on")
 def test_the_template_hint_turns_on_the_legacy_interface(mac):
     write_config(config.TEMPLATE.replace('# interface = "legacy"', 'interface = "legacy"'))
     assert host.interface() == "legacy"
