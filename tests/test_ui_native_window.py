@@ -194,7 +194,9 @@ def _public_functions(module) -> set[str]:
 def test_the_twins_offer_the_same_functions():
     assert _public_functions(mac_window) == _public_functions(win_window)
     assert {"make_floating", "set_click_through", "bring_to_top", "is_on_screen", "prepare_app", "hide_dock_icon",
-            "activate_app", "set_dark_title_bar", "left_button_down"} == _public_functions(mac_window)
+            "activate_app", "set_dark_title_bar", "left_button_down", "popups_over"} == _public_functions(mac_window)
+    assert win_window.DETECTS_POPUPS is True and mac_window.DETECTS_POPUPS is False
+    assert mac_window.popups_over((0, 0, 100, 100)) == []
     assert host.MODULES["window"] == ("lyssna.mac.window", "lyssna.win.window")
 
 
@@ -241,6 +243,81 @@ def test_the_windows_twin_sets_the_same_extended_styles(monkeypatch):
     w.bring_to_top(FakeWidget())
     assert u.pos_calls == [(4242, w.HWND_TOPMOST, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE | w.SWP_SHOWWINDOW)]
     assert w.is_on_screen(FakeWidget()) is None
+
+
+class FakeDwm:
+    def __init__(self, cloaked: set):
+        self.cloaked = cloaked
+
+    def DwmGetWindowAttribute(self, hwnd, attr, ref, size):
+        assert attr == win_window.DWMWA_CLOAKED
+        ref._obj.value = 1 if hwnd in self.cloaked else 0
+        return 0
+
+
+class FakeEnumUser32:
+    """Top-level windows as {hwnd: dict(pid, owner, style, visible, rect=(l, t, r, b))}."""
+
+    def __init__(self, windows: dict):
+        self.windows = windows
+
+    def EnumWindows(self, callback, lparam):
+        for hwnd in self.windows:
+            if not callback(hwnd, lparam):
+                break
+        return 1
+
+    def IsWindowVisible(self, hwnd):
+        return self.windows[hwnd].get("visible", True)
+
+    def GetWindowThreadProcessId(self, hwnd, ref):
+        ref._obj.value = self.windows[hwnd]["pid"]
+        return 1
+
+    def GetWindow(self, hwnd, cmd):
+        assert cmd == win_window.GW_OWNER
+        return self.windows[hwnd].get("owner", 0)
+
+    def GetWindowLongPtrW(self, hwnd, index):
+        assert index == win_window.GWL_STYLE
+        return self.windows[hwnd].get("style", 0)
+
+    def GetWindowRect(self, hwnd, ref):
+        r = ref._obj
+        r.left, r.top, r.right, r.bottom = self.windows[hwnd]["rect"]
+        return 1
+
+
+EDGE_TOOLBAR = (1502, 826, 1662, 1234)  # measured on a Windows 11 PC, physical pixels
+
+
+def test_popups_over_finds_only_other_apps_owned_visible_pop_ups(monkeypatch):
+    from types import SimpleNamespace
+
+    popup = 0x96000000  # WS_POPUP | WS_VISIBLE ..., as Edge's selection toolbar
+    other = 4321
+    windows = {
+        1: {"pid": other, "owner": 99, "style": popup, "rect": EDGE_TOOLBAR},              # Edge's toolbar
+        2: {"pid": os.getpid(), "owner": 99, "style": popup, "rect": EDGE_TOOLBAR},       # one of ours
+        3: {"pid": other, "owner": 0, "style": popup, "rect": EDGE_TOOLBAR},              # unowned
+        4: {"pid": other, "owner": 99, "style": popup, "rect": EDGE_TOOLBAR, "visible": False},
+        5: {"pid": other, "owner": 99, "style": popup, "rect": EDGE_TOOLBAR},              # cloaked
+        6: {"pid": other, "owner": 99, "style": 0x00CF0000, "rect": EDGE_TOOLBAR},         # not a pop-up
+        7: {"pid": other, "owner": 99, "style": popup, "rect": (0, 0, 100, 100)},          # elsewhere
+        8: {"pid": other, "owner": 99, "style": popup, "rect": (1500, 1100, 1500, 1300)},  # empty
+    }
+    api = SimpleNamespace(user32=FakeEnumUser32(windows), dwmapi=FakeDwm({5}), callback=lambda fn: fn)
+    monkeypatch.setattr(win_window, "_popup_api", lambda: api)
+    button = (1480, 1151, 1514, 1185)  # the play button's default spot beside the cursor at (1497, 1208)
+    assert win_window.popups_over(button) == [EDGE_TOOLBAR]
+    assert win_window.popups_over((1300, 1151, 1334, 1185)) == []  # left of the toolbar: nothing
+
+
+def test_popups_over_never_raises(monkeypatch):
+    def boom():
+        raise OSError("no user32 here")
+    monkeypatch.setattr(win_window, "_popup_api", boom)
+    assert win_window.popups_over((0, 0, 10, 10)) == []
 
 
 class FakeNSWindow:

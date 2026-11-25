@@ -38,3 +38,41 @@ def place(qx: float, qy: float, size: tuple[float, float], screen_h: float, avoi
     if avoid is not None and _intersects((x, y, width, height), avoid):
         y = H - (top + (sh if selection else LINE_HEIGHT)) - offset - height  # flip below
     return x, y
+
+
+def _overlaps(a, b) -> bool:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+
+
+def clear_spot(default: tuple[float, float], size: tuple[float, float], qx: float, qy: float, obstacles,
+               selection=None, offset: float = OFFSET) -> tuple[float, float]:
+    """Where the button goes when another app's pop-up (Edge's selection toolbar) covers it.
+
+    Everything is in one y-down space (Quartz on the Mac, Qt logical on Windows): `default` is
+    the button's top-left corner where it already sits, `size` its (w, h), (qx, qy) the cursor,
+    `selection` the selected text's (x, y, w, h) when known, and `obstacles` a list of
+    (x, y, w, h) rects to stay clear of. The answer is the top-left corner of the first spot
+    that touches no obstacle, tried in this order: the default; below the selection; above the
+    selection just left of the obstacle the default hits; above it just right of that obstacle.
+    When none is clear, the default."""
+    width, height = size
+    obstacles = list(obstacles)
+    x, y = default
+
+    def clear(px: float, py: float) -> bool:
+        return not any(_overlaps((px, py, width, height), o) for o in obstacles)
+
+    if clear(x, y):
+        return default
+    if selection is not None:
+        _, top, _, sh = selection
+    else:
+        top, sh = qy - LINE_HEIGHT / 2, LINE_HEIGHT
+    above = top - offset - height
+    spots = [(x, top + sh + offset)]
+    hit = next(o for o in obstacles if _overlaps((x, y, width, height), o))
+    ox, _, ow, _ = hit
+    spots += [(ox - offset - width, above), (ox + ow + offset, above)]
+    return next(((px, py) for px, py in spots if clear(px, py)), default)

@@ -159,6 +159,17 @@ def map_physical_rect_to_logical(rect, screens: Sequence[tuple[Rect, float]]) ->
     return (lx, ly, w / scale, h / scale)
 
 
+def map_logical_rect_to_physical(rect, screens: Sequence[tuple[Rect, float]]) -> Rect:
+    """The inverse of map_physical_rect_to_logical: the top-left corner picks the screen (by its
+    logical rect) and the size scales by that screen's factor."""
+    x, y, w, h = as_rect(rect)
+    if not screens:
+        return (x, y, w, h)
+    px, py = map_logical_to_physical(x, y, screens)
+    _, scale = next(((lg, s) for lg, s in screens if _contains(lg, x, y)), min(screens, key=lambda s: _dist2(s[0], x, y)))
+    return (px, py, w * scale, h * scale)
+
+
 # -- Qt readers --------------------------------------------------------------------------------
 
 
@@ -192,6 +203,14 @@ def physical_rect_to_logical(rect) -> Rect:
     if not host.window.POINTS_ARE_PHYSICAL:
         return as_rect(rect)
     return map_physical_rect_to_logical(rect, _screen_table())
+
+
+def logical_rect_to_physical(rect) -> Rect:
+    """A Qt logical rect in the hooks' pixels (unchanged where those are logical): a window's
+    own frame, to ask host.window about what overlaps it."""
+    if not host.window.POINTS_ARE_PHYSICAL:
+        return as_rect(rect)
+    return map_logical_rect_to_physical(rect, _screen_table())
 
 
 def primary_screen() -> QScreen | None:

@@ -32,6 +32,10 @@ log = logging.getLogger("lyssna.mac.window")
 # report points, which are Qt's logical units. coords.py asks this.
 POINTS_ARE_PHYSICAL = False
 
+# Whether popups_over can find other apps' pop-ups. Not here: the play button's spot is the
+# legacy one and stays put, so it starts no checks.
+DETECTS_POPUPS = False
+
 # AppKit's values (NSWindow.h), written out so this module loads without AppKit.
 STYLE_BORDERLESS = 0
 STYLE_NONACTIVATING_PANEL = 1 << 7
@@ -186,6 +190,12 @@ def activate_app() -> None:
 def set_dark_title_bar(widget, dark: bool) -> bool:
     """Nothing to do on the Mac: the system draws the title bar in the app's appearance."""
     return False
+
+
+def popups_over(rect) -> list[tuple]:
+    """Nothing to find on the Mac (DETECTS_POPUPS is False): the Windows twin answers the rects
+    of other apps' pop-ups over `rect`."""
+    return []
 
 
 def left_button_down() -> bool:

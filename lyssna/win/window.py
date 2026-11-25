@@ -14,12 +14,24 @@ any window exists."""
 from __future__ import annotations
 
 import logging
+import os
+from types import SimpleNamespace
 
 log = logging.getLogger("lyssna.win.window")
 
 # The Windows hooks (win/events.py) and UI Automation (win/capture.py) report physical pixels,
 # which coords.py turns into Qt's logical ones.
 POINTS_ARE_PHYSICAL = True
+
+# Other apps' pop-ups (Edge's selection toolbar) can be found with popups_over, so the play
+# button asks for them. The interface asks this flag, never the OS.
+DETECTS_POPUPS = True
+
+# Window styles and the calls popups_over makes.
+GWL_STYLE = -16
+WS_POPUP = 0x80000000
+GW_OWNER = 4
+DWMWA_CLOAKED = 14
 
 # Extended window styles.
 GWL_EXSTYLE = -20
@@ -120,6 +132,77 @@ def set_dark_title_bar(widget, dark: bool) -> bool:
     except Exception:
         log.debug("could not set the title bar colour", exc_info=True)
         return False
+
+
+def _popup_api():
+    """user32, dwmapi and the EnumWindows callback type, with the argument types popups_over
+    needs. Its own function so the tests can hand in stand-ins (ctypes has no Windows DLLs or
+    WINFUNCTYPE elsewhere)."""
+    import ctypes
+    from ctypes import wintypes
+
+    u = _user32()
+    callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)  # type: ignore[attr-defined]  # Windows only
+    u.EnumWindows.argtypes = [callback, wintypes.LPARAM]
+    u.EnumWindows.restype = wintypes.BOOL
+    u.IsWindowVisible.argtypes = [wintypes.HWND]
+    u.IsWindowVisible.restype = wintypes.BOOL
+    u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    u.GetWindowThreadProcessId.restype = wintypes.DWORD
+    u.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    u.GetWindow.restype = wintypes.HWND
+    u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    u.GetWindowRect.restype = wintypes.BOOL
+    dwm = ctypes.windll.dwmapi
+    dwm.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    dwm.DwmGetWindowAttribute.restype = ctypes.c_long
+    return SimpleNamespace(user32=u, dwmapi=dwm, callback=callback)
+
+
+def popups_over(rect) -> list[tuple]:
+    """The rects (left, top, right, bottom, physical pixels) of other apps' pop-up windows that
+    overlap `rect` (the same form). A pop-up here is a visible, not cloaked, top-level window of
+    another process that has an owner and the WS_POPUP style: Edge's selection toolbar is one
+    (Chrome_WidgetWin_1, owned by the Edge window). Cheap, and never raises: any failure is []."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        api = _popup_api()
+        u, dwm = api.user32, api.dwmapi
+        left, top, right, bottom = rect
+        windows: list = []
+
+        def collect(hwnd, _lparam):
+            windows.append(hwnd)  # only collect here: an error inside a ctypes callback is lost
+            return True
+
+        u.EnumWindows(api.callback(collect), 0)
+        me = os.getpid()
+        found = []
+        for hwnd in windows:
+            if not hwnd or not u.IsWindowVisible(hwnd):
+                continue
+            pid = wintypes.DWORD(0)
+            u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == me or not u.GetWindow(hwnd, GW_OWNER):
+                continue
+            if not u.GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_POPUP:
+                continue
+            cloaked = ctypes.c_int(0)
+            if dwm.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)) == 0 and cloaked.value:
+                continue
+            r = wintypes.RECT()
+            if not u.GetWindowRect(hwnd, ctypes.byref(r)):
+                continue
+            if r.right <= r.left or r.bottom <= r.top:
+                continue
+            if r.left < right and r.right > left and r.top < bottom and r.bottom > top:
+                found.append((r.left, r.top, r.right, r.bottom))
+        return found
+    except Exception:
+        log.debug("could not look for pop-up windows", exc_info=True)
+        return []
 
 
 def left_button_down() -> bool:

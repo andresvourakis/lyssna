@@ -178,3 +178,134 @@ def test_never_takes_focus(button):
     assert flags & Qt.WindowType.WindowDoesNotAcceptFocus
     assert button.panel.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
     assert button.button.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+# -- moving off another app's pop-up (Edge's selection toolbar) ------------------------------
+
+# Measured on a Windows 11 PC at 100 %: the cursor at (1497, 1208) after selecting a line, and
+# Edge's toolbar at left 1502, top 826, right 1662, bottom 1234 (so x, y, w, h below).
+CURSOR = (1497.0, 1208.0)
+LINE = (1300.0, 1195.0, 197.0, 26.0)  # the selected text, ending at the cursor
+TOOLBAR = (1502.0, 826.0, 160.0, 408.0)
+SIZE = (34.0, 34.0)
+DEFAULT = (1480.0, 1151.0)  # centred on the cursor, 10 above the line: what place() answers
+
+
+def test_clear_spot_keeps_the_default_without_an_obstacle():
+    from lyssna.ui.layout.button import clear_spot
+
+    assert clear_spot(DEFAULT, SIZE, *CURSOR, [], LINE) == DEFAULT
+    assert clear_spot(DEFAULT, SIZE, *CURSOR, [(0.0, 0.0, 100.0, 100.0)], LINE) == DEFAULT
+
+
+def test_clear_spot_flips_below_the_selection():
+    from lyssna.ui.layout.button import OFFSET, clear_spot
+
+    short = (1502.0, 1000.0, 160.0, 200.0)  # a toolbar that ends above the line
+    assert clear_spot(DEFAULT, SIZE, *CURSOR, [short], LINE) == (DEFAULT[0], 1195.0 + 26.0 + OFFSET)
+
+
+def test_clear_spot_goes_left_of_edges_toolbar():
+    from lyssna.ui.layout.button import OFFSET, clear_spot
+
+    # Below is covered too (the toolbar reaches 26 px under the cursor), so: just left of it.
+    assert clear_spot(DEFAULT, SIZE, *CURSOR, [TOOLBAR], LINE) == (1502.0 - OFFSET - 34.0, 1151.0)
+
+
+def test_clear_spot_goes_right_when_left_is_covered():
+    from lyssna.ui.layout.button import OFFSET, clear_spot
+
+    left = (1400.0, 1100.0, 80.0, 200.0)  # e.g. the player, beside the toolbar
+    assert clear_spot(DEFAULT, SIZE, *CURSOR, [TOOLBAR, left], LINE) == (1662.0 + OFFSET, 1151.0)
+
+
+def test_clear_spot_keeps_the_default_when_nothing_is_clear():
+    from lyssna.ui.layout.button import clear_spot
+
+    # The toolbar, plus something under the line and on both sides of the toolbar.
+    walls = [TOOLBAR, (1000.0, 1200.0, 1000.0, 100.0), (1400.0, 1100.0, 80.0, 200.0), (1662.0, 1100.0, 80.0, 200.0)]
+    assert clear_spot(DEFAULT, SIZE, *CURSOR, walls, LINE) == DEFAULT
+    # Without a selection the cursor's line stands in for it.
+    assert clear_spot(DEFAULT, SIZE, *CURSOR, walls) == DEFAULT
+
+
+class PopupTwin:
+    """host.window for the button: answers popups_over with `popups` (physical l, t, r, b)."""
+
+    POINTS_ARE_PHYSICAL = False
+
+    def __init__(self, detects: bool = True, popups=()):
+        self.DETECTS_POPUPS = detects
+        self.popups = list(popups)
+        self.asked: list = []
+
+    def popups_over(self, rect):
+        self.asked.append(rect)
+        return [p for p in self.popups if p[0] < rect[2] and p[2] > rect[0] and p[1] < rect[3] and p[3] > rect[1]]
+
+    def __getattr__(self, name):  # the panel's native calls: nothing to do
+        return lambda *a, **k: None
+
+
+@pytest.fixture
+def popup_twin(monkeypatch):
+    from lyssna import host
+    from lyssna.ui import selection_button
+
+    def make(**kw):
+        twin = PopupTwin(**kw)
+        monkeypatch.setattr(host, "window", twin)
+        return twin
+    monkeypatch.setattr(selection_button, "POPUP_CHECKS", (0.01, 0.03))
+    return make
+
+
+def test_moves_off_a_pop_up_that_covers_it(button, popup_twin):
+    from lyssna.ui.layout.button import OFFSET
+
+    # The toolbar to the right of the cursor, from above the selection to just under it.
+    twin = popup_twin(popups=[(155, 100, 315, 335)])
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.frame() == (133.0, 256.0, 34.0, 34.0)  # the default spot first
+    pump(until=lambda: button.frame()[0] != 133.0)
+    assert button.frame() == (155 - OFFSET - 34.0, 256.0, 34.0, 34.0)
+    assert twin.asked[0] == (133.0, 256.0, 167.0, 290.0)  # its own rect, (l, t, r, b)
+    assert button.visible()
+
+
+def test_does_not_move_without_a_pop_up(button, popup_twin):
+    twin = popup_twin(popups=[(600, 100, 700, 200)])  # elsewhere on screen
+    button._present(150, 310, None, (100, 300, 200, 20))
+    pump(until=lambda: len(twin.asked) >= 2)
+    pump(0.02)
+    assert len(twin.asked) == 2 and button.frame() == (133.0, 256.0, 34.0, 34.0)
+
+
+def test_stays_clear_of_the_player_when_it_moves(button, popup_twin):
+    from lyssna.ui.layout.button import OFFSET
+
+    popup_twin(popups=[(155, 100, 315, 335)])
+    player = (60.0, 200.0, 60.0, 80.0)  # where the left spot would go
+    button._present(150, 310, player, (100, 300, 200, 20))
+    pump(until=lambda: button.frame()[0] != 133.0)
+    assert button.frame() == (315 + OFFSET, 256.0, 34.0, 34.0)
+
+
+def test_no_checks_where_pop_ups_cannot_be_found(button, popup_twin):
+    twin = popup_twin(detects=False, popups=[(155, 100, 315, 335)])
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button._checks == []
+    pump(0.08)
+    assert twin.asked == [] and button.frame() == (133.0, 256.0, 34.0, 34.0)
+
+
+def test_checks_are_cancelled_on_hide_and_on_a_new_selection(button, popup_twin):
+    twin = popup_twin(popups=[(155, 100, 315, 335)])
+    button._present(150, 310, None, (100, 300, 200, 20))
+    first = list(button._checks)
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert all(t.finished.is_set() for t in first)  # cancelled
+    button.hide()
+    assert button._checks == []
+    pump(0.08)
+    assert twin.asked == []

@@ -92,6 +92,8 @@ SCRIPT = textwrap.dedent(
     assert public_functions(host.window) == public_functions(mac_window), (public_functions(host.window), public_functions(mac_window))
     assert host.window.POINTS_ARE_PHYSICAL is True and mac_window.POINTS_ARE_PHYSICAL is False, (
         host.window.POINTS_ARE_PHYSICAL, mac_window.POINTS_ARE_PHYSICAL)
+    assert host.window.DETECTS_POPUPS is True and mac_window.DETECTS_POPUPS is False, (
+        host.window.DETECTS_POPUPS, mac_window.DETECTS_POPUPS)
     from lyssna.mac import mic as mac_mic  # its AVFoundation loads only inside its functions
 
     def public_classes(module):

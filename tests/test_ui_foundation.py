@@ -100,6 +100,11 @@ def test_physical_to_logical_with_mixed_scales():
     assert coords.map_physical_to_logical(-1920, 1000, screens) == (-3840 + 960.0, 500.0)
     assert coords.map_physical_rect_to_logical((960, 540, 300, 60), [((0.0, 0.0, 1280.0, 720.0), 1.5)]) == \
         (640.0, 360.0, 200.0, 40.0)
+    assert coords.map_logical_rect_to_physical((640, 360, 200, 40), [((0.0, 0.0, 1280.0, 720.0), 1.5)]) == \
+        (960.0, 540.0, 300.0, 60.0)
+    lg = coords.map_physical_rect_to_logical((-1920, 1000, 400, 60), screens)
+    assert coords.map_logical_rect_to_physical(lg, screens) == pytest.approx((-1920, 1000, 400, 60))
+    assert coords.map_logical_rect_to_physical((1, 2, 3, 4), []) == (1.0, 2.0, 3.0, 4.0)
 
 
 def test_physical_is_logical_off_windows(qapp):
@@ -109,6 +114,7 @@ def test_physical_is_logical_off_windows(qapp):
         pytest.skip("Windows converts for real")
     assert coords.physical_to_logical(123, 456) == (123.0, 456.0)
     assert coords.physical_rect_to_logical((1, 2, 3, 4)) == (1.0, 2.0, 3.0, 4.0)
+    assert coords.logical_rect_to_physical((1, 2, 3, 4)) == (1.0, 2.0, 3.0, 4.0)
 
 
 def test_screen_readers_answer(qapp):
