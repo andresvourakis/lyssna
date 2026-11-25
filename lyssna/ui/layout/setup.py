@@ -28,6 +28,9 @@ FIELD_H = 26.0     # the key field's box, level with the Save pill beside it
 POLL = 0.3         # seconds between live status checks while the window is open
 GLOBE_POLL = 2.0   # seconds between reads of the Globe key setting (a `defaults` call)
 SCREEN_GAP = 48.0  # room kept free above and below the window on a short screen
+KEYS_GAP = 10.0    # Dictate's Try it: the body sentence to the block of key rows
+KEY_ROW_GAP = 8.0  # between two key rows in that block
+CAPS_GAP = 6.0     # a key row's label to its caps, and its caps to the words after them
 
 # The online dictation engines the dictation step takes keys for, with the job each does.
 DICTATION_KEYS = (("openai", "transcription"), ("haiku", "cleanup"))
@@ -69,6 +72,12 @@ def opening_tab(engine: str | None, dictation: str | None, listen_left: int, dic
     if not listen_left and dictate_left:
         return DICTATE
     return LISTEN
+
+
+def caps_column(label_widths) -> float:
+    """Where the key caps start in each of Try it's key rows, from the rows' left edge: the
+    widest label plus one gap, so the caps of every row line up in one column."""
+    return max(label_widths) + CAPS_GAP
 
 
 def _size_text(n_bytes: int) -> str:

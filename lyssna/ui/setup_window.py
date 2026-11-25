@@ -56,6 +56,7 @@ from ..menu import ONLINE_HEADER, privacy_symbol
 from ..providers import REGISTRY, allowed, get_provider, kokoro
 from . import icons, theme
 from .layout.setup import (
+    CAPS_GAP,
     CARD_PAD,
     CARD_R,
     CARD_X,
@@ -67,6 +68,8 @@ from .layout.setup import (
     GLOBE_POLL,
     ICON,
     INDENT,
+    KEY_ROW_GAP,
+    KEYS_GAP,
     LISTEN,
     MARGIN,
     MARK_H,
@@ -83,6 +86,7 @@ from .layout.setup import (
     TEXT_X,
     W,
     _size_text,
+    caps_column,
     footer_status,
     opening_tab,
     steps_left,
@@ -1544,26 +1548,27 @@ class SetupWindow(LyssnaWindow):
             self._place_card(self.card_dict_online, top, y, not local_chosen)
         y = self._sep(self.dsep2, y)
 
-        # 3 Try it: Hold [key] and speak.   Hands-free: [key] [Space]   (Or tap [key] twice.)
+        # 3 Try it: the body sentence, then the key rows as one block with their caps in one column:
+        #   Hold         [key] and speak.
+        #   Hands-free:  [key] [Space]
+        #   Or tap       [key] twice.      (where the double tap is on)
         y += self._step(self.dicon3, self.dhead3, y) + 8
-        y += self._caps_row((self.hold_text, self.hold_keys, self.hold_after), y) + 6
-        y += put(self.dictate_body, TEXT_X, y, TEXT_W) + 10
-        self.free_text.fit()
-        y += centre_row([(self.free_text, TEXT_X), (self.free_keys, TEXT_X + self.free_text.exact_width() + 6)], y)
+        y += put(self.dictate_body, TEXT_X, y, TEXT_W) + KEYS_GAP
+        rows = [(self.hold_text, self.hold_keys, self.hold_after), (self.free_text, self.free_keys, None)]
         if self._double_tap():
-            y += 6 + self._caps_row((self.tap_text, self.tap_keys, self.tap_after), y)
+            rows.append((self.tap_text, self.tap_keys, self.tap_after))
+        for text, _, after in rows:
+            text.fit()
+            if after is not None:
+                after.fit()
+        caps_x = TEXT_X + caps_column(text.exact_width() for text, _, _ in rows)  # the Mac's half-point frames
+        for i, (text, caps, after) in enumerate(rows):
+            row_x = [(text, TEXT_X), (caps, caps_x)]
+            if after is not None:
+                row_x.append((after, caps_x + caps.exact_width() + CAPS_GAP))
+            gap = KEY_ROW_GAP if i else 0.0
+            y += gap + self.centre_row(row_x, y + gap)
         return y
-
-    def _caps_row(self, views: tuple[Label, KeyCaps, Label], y: float) -> float:
-        """A sentence with key caps in it ("Hold [fn] and speak."), from TEXT_X; returns its height."""
-        row_x, x = [], TEXT_X
-        for view, gap in zip(views, (6, 6, 0), strict=True):
-            if isinstance(view, Label):
-                view.fit()
-            w = view.exact_width()  # the Mac's half-point frames, so each view starts where the Mac's does
-            row_x.append((view, x))
-            x += w + gap
-        return self.centre_row(row_x, y)
 
     # -- actions -----------------------------------------------------------------------------
 

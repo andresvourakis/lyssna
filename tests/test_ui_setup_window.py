@@ -6,6 +6,7 @@ paid service or a system prompt. The capabilities in lyssna.host are forced per 
 the Mac's and the PC's window are checked on any computer. Also the controller's dictation key
 path, ported from tests/legacy/test_setup_window.py, with httpx faked."""
 
+import itertools
 import logging
 import sys
 import threading
@@ -763,6 +764,46 @@ def test_where_the_double_tap_is_on_try_it_says_so(make, ctl):
     ctl.cfg = config.update(**{"dictation.double_tap": False})
     refresh(w)
     assert not shown(w.tap_text) and not shown(w.tap_keys)
+
+
+@pytest.mark.parametrize("system, settings", [
+    ("pc", {"dictation.hotkey": "ctrl+win", "dictation.double_tap": True}),  # two caps, three rows
+    ("mac", {"dictation.hotkey": "fn"}),  # one cap, two rows
+])
+def test_the_key_rows_are_one_block_with_the_caps_in_one_column(make, ctl, system, settings):
+    from lyssna.ui.layout.setup import CAPS_GAP, KEY_ROW_GAP, TEXT_X, caps_column
+    from lyssna.ui.setup_window import DICTATE
+
+    ctl.cfg = config.update(**settings)
+    w = make(system)
+    w._select_tab(DICTATE)
+    rows = [(w.hold_text, w.hold_keys, w.hold_after), (w.free_text, w.free_keys, None)]
+    if shown(w.tap_text):
+        rows.append((w.tap_text, w.tap_keys, w.tap_after))
+    assert len(rows) == (3 if system == "pc" else 2)
+
+    def left(view) -> float:  # where a view's frame really starts, with its fraction of a pixel
+        return view.x() + (view.offset if hasattr(view, "offset") else view.paint_offset.x())
+
+    def top(view) -> float:
+        return view.y() + (0.0 if hasattr(view, "offset") else view.paint_offset.y())
+
+    # The body sentence sits under the heading, above the whole block.
+    assert w.dhead3.y() < w.dictate_body.y() < w.hold_keys.y()
+    assert top(w.dictate_body) + w.dictate_body.height() <= w.hold_keys.y()
+    # One column for the caps: the widest label plus one gap, the same in every row.
+    caps_x = TEXT_X + caps_column(text.exact_width() for text, _, _ in rows)
+    for text, caps, after in rows:
+        assert left(text) == pytest.approx(TEXT_X)
+        assert left(caps) == pytest.approx(caps_x)
+        if after is not None:
+            assert left(after) == pytest.approx(caps_x + caps.exact_width() + CAPS_GAP)
+    # One equal gap between the rows (each row as tall as its caps).
+    for (_, upper, _), (_, lower, _) in itertools.pairwise(rows):
+        assert lower.y() - (upper.y() + upper.height()) == pytest.approx(KEY_ROW_GAP)
+    # The window ends below the last row.
+    last = rows[-1][1]
+    assert w.content.height() >= last.y() + last.height()
 
 
 def test_the_dictation_keys_follow_the_config(mac, ctl):
