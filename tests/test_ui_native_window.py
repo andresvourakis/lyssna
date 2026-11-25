@@ -194,8 +194,11 @@ def _public_functions(module) -> set[str]:
 def test_the_twins_offer_the_same_functions():
     assert _public_functions(mac_window) == _public_functions(win_window)
     assert {"make_floating", "set_click_through", "bring_to_top", "is_on_screen", "prepare_app", "hide_dock_icon",
-            "activate_app", "set_dark_title_bar", "left_button_down", "popups_over", "front_app"} == _public_functions(mac_window)
+            "activate_app", "set_dark_title_bar", "left_button_down", "popups_over", "front_app",
+            "watch_mouse_enter"} == _public_functions(mac_window)
     assert win_window.DETECTS_POPUPS is True and mac_window.DETECTS_POPUPS is False
+    assert win_window.WATCHES_MOUSE_ENTER is False and mac_window.WATCHES_MOUSE_ENTER is True
+    assert win_window.watch_mouse_enter(FakeWidget(), lambda: None) is False
     assert mac_window.popups_over((0, 0, 100, 100)) == []
     assert mac_window.front_app() is None
     assert host.MODULES["window"] == ("lyssna.mac.window", "lyssna.win.window")
@@ -488,6 +491,245 @@ def test_the_windows_twin_asks_the_system_for_the_mouse_button(monkeypatch):
     assert win_window.left_button_down() is True
     state["bits"] = 0x0001  # pressed since the last call, but not held now
     assert win_window.left_button_down() is False
+
+
+# -- hearing the cursor arrive while the app is in the background ----------------------------
+
+
+class FakeView:
+    """An NSView stand-in: holds tracking areas; `fail` makes adding one raise."""
+
+    def __init__(self, fail: bool = False):
+        self.areas: list = []
+        self.fail = fail
+
+    def trackingAreas(self):
+        return list(self.areas)
+
+    def addTrackingArea_(self, area):
+        if self.fail:
+            raise RuntimeError("no tracking here")
+        self.areas.append(area)
+
+    def removeTrackingArea_(self, area):
+        self.areas.remove(area)
+
+
+class FakeArea:
+    def __init__(self, options, owner):
+        self.options, self.owner = options, owner
+
+
+class FakeOwner:
+    """Passes the area's events on exactly as the real NSObject owner does."""
+
+    def __init__(self, watch):
+        self.watch = watch
+
+    def mouseEntered_(self, event):
+        mac_window._owner_event(self, "entered")
+
+    def mouseExited_(self, event):
+        mac_window._owner_event(self, "exited")
+
+
+@pytest.fixture
+def watched(qapp, monkeypatch):
+    """The Mac twin with AppKit faked: one FakeView per native window, a cursor the test moves,
+    and a shown (offscreen) window 200 x 100 at (300, 300) with a 40 x 40 widget at (20, 20)."""
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QWidget
+
+    views: dict = {}
+    monkeypatch.setattr(mac_window, "_native_view", lambda w: views.setdefault(int(w.window().winId()), FakeView()))
+    monkeypatch.setattr(mac_window, "_make_area", FakeArea)
+    monkeypatch.setattr(mac_window, "_make_owner", FakeOwner)
+    monkeypatch.setattr(mac_window, "_watches", {})
+    cursor = [QPoint(-1000, -1000)]
+    monkeypatch.setattr(mac_window, "_cursor_pos", lambda: cursor[0])
+    win = QWidget()
+    win.setGeometry(300, 300, 200, 100)
+    child = QWidget(win)
+    child.setGeometry(20, 20, 40, 40)
+    win.show()
+    s = SimpleNamespace(views=views, win=win, child=child, cursor=cursor, calls=[],
+                        view=lambda: views[int(win.winId())],
+                        move=lambda x, y: cursor.__setitem__(0, QPoint(x, y)))
+    yield s
+    for w in mac_window._watches.values():
+        w.stop()
+    win.hide()
+    win.deleteLater()
+    QCoreApplication.processEvents()
+
+
+def test_the_mac_watch_adds_one_area_active_always_and_never_a_second(watched):
+    assert mac_window.TRACKING_OPTIONS == 0x01 | 0x80 | 0x200  # entered and exited, active always, the visible rect
+    assert mac_window.watch_mouse_enter(watched.child, lambda: None) is True
+    view = watched.view()
+    assert len(view.areas) == 1 and view.areas[0].options == mac_window.TRACKING_OPTIONS
+    assert mac_window.watch_mouse_enter(watched.child, lambda: None) is True  # again, as after every show
+    assert len(view.areas) == 1
+    assert mac_window.watch_mouse_enter(watched.win, lambda: None) is True  # another widget in the same window
+    assert len(view.areas) == 2 and len(mac_window._watches) == 2
+
+
+def test_the_mac_watch_moves_to_a_rebuilt_view(watched):
+    mac_window.watch_mouse_enter(watched.child, lambda: None)
+    old = watched.view()
+    watched.views.clear()  # Qt made a new native view for the window
+    mac_window.watch_mouse_enter(watched.child, lambda: None)
+    assert old.areas == [] and len(watched.view().areas) == 1
+    assert old is not watched.view()
+
+
+def test_the_mac_watch_fires_once_per_arrival_on_the_widget(watched):
+    calls = []
+    mac_window.watch_mouse_enter(watched.child, lambda: calls.append(1))
+    owner = watched.view().areas[0].owner
+    w = mac_window._watches[id(watched.child)]
+    watched.move(305, 305)  # on the window, beside the widget (the shadow margin)
+    owner.mouseEntered_(None)
+    assert calls == [] and w.timer.isActive()  # the poll runs while the cursor is on the window
+    watched.move(340, 340)  # onto the widget
+    w.check()
+    assert calls == [1]
+    w.check()
+    watched.move(345, 345)
+    w.check()
+    assert calls == [1]  # still the same arrival
+    watched.move(310, 390)  # off the widget, still on the window
+    w.check()
+    watched.move(340, 340)
+    w.check()
+    assert calls == [1, 1]
+    watched.move(900, 900)  # off the window
+    owner.mouseExited_(None)
+    assert not w.timer.isActive() and w.seen is None
+    owner.mouseEntered_(None)  # an arrival straight onto the widget fires at once
+    assert calls == [1, 1]  # (the cursor is still away)
+    watched.move(340, 340)
+    owner.mouseEntered_(None)
+    assert calls == [1, 1, 1]
+    watched.child.hide()
+    w.check()
+    watched.child.show()
+    w.check()
+    assert calls == [1, 1, 1]  # shown again under the cursor is no arrival (the squiggle back after its menu)
+    watched.move(341, 341)
+    w.check()
+    assert calls == [1, 1, 1]  # nor is moving on it: the cursor never crossed onto it
+    watched.move(310, 390)
+    w.check()
+    watched.move(340, 340)
+    w.check()
+    assert calls == [1, 1, 1, 1]  # off it and back on: an arrival
+
+
+def test_the_mac_watch_never_raises(watched, caplog):
+    def boom():
+        raise ValueError("callback failed")
+
+    mac_window.watch_mouse_enter(watched.child, boom)
+    w = mac_window._watches[id(watched.child)]
+    watched.move(340, 340)
+    with caplog.at_level(logging.ERROR, logger="lyssna.mac.window"):
+        watched.view().areas[0].owner.mouseEntered_(None)  # the error is logged, not raised into AppKit
+    assert any(r.levelno == logging.ERROR and "callback failed" in r.getMessage() for r in caplog.records)
+    w.stop()
+    watched.views[int(watched.win.winId())] = FakeView(fail=True)
+    with caplog.at_level(logging.WARNING, logger="lyssna.mac.window"):
+        assert mac_window.watch_mouse_enter(watched.win, lambda: None) is False
+    assert any("could not watch" in r.getMessage() for r in caplog.records)
+
+
+def test_the_mac_watch_does_nothing_without_cocoa(qapp, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    monkeypatch.setattr(mac_window, "_watches", {})
+    assert qapp.platformName() != "cocoa"
+    assert mac_window.watch_mouse_enter(QWidget(), lambda: None) is False
+    assert mac_window._watches == {}
+
+
+def test_the_mac_watch_owner_is_a_real_nsobject_with_the_appkit_options():
+    """On a Mac: the AppKit numbers written out match AppKit's, and the real owner passes the
+    area's events on (no window needed)."""
+    AppKit = pytest.importorskip("AppKit")
+
+    assert mac_window.TRACKING_OPTIONS == (AppKit.NSTrackingMouseEnteredAndExited | AppKit.NSTrackingActiveAlways
+                                           | AppKit.NSTrackingInVisibleRect)
+    seen = []
+    watch = type("W", (), {"entered": lambda self: seen.append("in"), "exited": lambda self: seen.append("out")})()
+    owner = mac_window._make_owner(watch)
+    owner.mouseEntered_(None)
+    owner.mouseExited_(None)
+    assert seen == ["in", "out"]
+    area = mac_window._make_area(mac_window.TRACKING_OPTIONS, owner)
+    assert int(area.options()) == mac_window.TRACKING_OPTIONS and area.owner() == owner
+
+
+class FakeWatchingTwin(FakeTwin):
+    """A twin whose system sends no enter events to an app in the background (the Mac)."""
+
+    WATCHES_MOUSE_ENTER = True
+
+    def watch_mouse_enter(self, widget, callback):
+        self.calls.append(("watch_mouse_enter", widget, callback))
+        return True
+
+    def watched(self, widget):
+        return [c[2] for c in self.calls if c[0] == "watch_mouse_enter" and c[1] is widget]
+
+
+def test_the_panel_watches_its_window_only_where_the_twin_does(qapp, monkeypatch, twin):
+    fp = _panel()
+    assert "watch_mouse_enter" not in twin.names()
+    assert fp.watch_enter(fp.content, lambda: None) is False  # Qt's enter events do it here
+    watching = FakeWatchingTwin()
+    monkeypatch.setattr(host, "window", watching)
+    fp = _panel()
+    assert watching.watched(fp.panel) and watching.watched(fp.panel)[-1] == fp._hover_arrived
+    assert fp.watch_enter(fp.content, lambda: None) is True
+    watching.calls.clear()
+    fp.set_click_through(True)  # Qt may have rebuilt the native window: the watches go back on
+    assert watching.watched(fp.panel) and watching.watched(fp.content)
+    fp.set_click_through(False)
+
+
+def test_the_panel_sets_the_glows_from_the_cursor_while_it_is_on_the_window(qapp, monkeypatch):
+    from PySide6.QtCore import QPoint
+
+    from lyssna.ui import panel as panel_mod
+    from lyssna.ui import widgets
+    from lyssna.ui.widgets import HoverView, ScrubBar
+
+    watching = FakeWatchingTwin()
+    monkeypatch.setattr(host, "window", watching)
+    cursor = [QPoint(-1000, -1000)]
+    monkeypatch.setattr(panel_mod, "_cursor_pos", lambda: cursor[0])
+    monkeypatch.setattr(widgets, "QCursor", type("C", (), {"pos": staticmethod(lambda: cursor[0])}))
+    fp = type("HoverTestPanel", (panel_mod.FloatingPanel,), {"width": 200.0, "height": 60.0})()
+    glow = HoverView(fp.content, radius=None)
+    glow.setGeometry(10, 10, 30, 30)
+    bar = ScrubBar(fp.content)
+    bar.setGeometry(60, 20, 100, 16)
+    fp.show_at(400, 400)
+    try:
+        x, y, _, _ = fp.frame()  # the surface's top-left, global
+        cursor[0] = QPoint(round(x) + 20, round(y) + 20)
+        watching.watched(fp.panel)[-1]()  # the twin heard the cursor arrive on the window
+        assert glow.hovering() and not bar.hovering and fp._hover_sync.isActive()
+        cursor[0] = QPoint(round(x) + 100, round(y) + 28)
+        fp._sync_hovers()
+        assert not glow.hovering() and bar.hovering
+        cursor[0] = QPoint(10, 10)  # off the window
+        fp._sync_hovers()
+        assert not glow.hovering() and not bar.hovering and not fp._hover_sync.isActive()
+    finally:
+        fp.hide()
 
 
 # -- a real panel on a Mac -------------------------------------------------------------------

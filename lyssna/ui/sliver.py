@@ -154,7 +154,9 @@ class Sliver(QWidget):
     """The docked capsule (reading) or the idle squiggle (set_rest(True)). set_state() sets the
     progress, the paused look, the edge and whether it plays; pulse() blooms; wave() ripples the
     squiggle. `slide` pushes the squiggle out past its edge and fades it (auto-hide); the view
-    clips it, so it never shows past the screen edge. on_enter() hears the cursor arrive."""
+    clips it, so it never shows past the screen edge. on_enter() hears the cursor arrive, from
+    Qt's enter event (where that does not reach a window in the background, the player's panel
+    watches instead and leaves on_enter unset: FloatingPanel.watch_enter)."""
 
     def __init__(self, parent: QWidget | None = None, edge: str = "left", seed: int | None = None):
         super().__init__(parent)

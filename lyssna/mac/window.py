@@ -15,6 +15,16 @@ Qt resets the style mask and the level whenever it re-applies window flags (QWin
 the panel uses for click-through), so make_floating must run again after every such change.
 Hiding, showing, opacity, moving and resizing keep the settings.
 
+Qt's enter and leave events do not reach a floating panel while another app is in front, which
+for Lyssna is always: the cursor can come onto the docked sliver and nothing happens. Measured
+on Qt 6.12 the view's own tracking area is active always, so the window does hear the cursor
+come in, but Qt hands that to the widget under the cursor at that moment, which is the shadow
+margin around the sliver, and the moves that would carry it on to the sliver do not seem to
+arrive while the app is in the background (the same cause would leave every hover glow dark).
+The legacy views each had an NSTrackingArea active always. watch_mouse_enter does the same for
+the Qt window: its area hears the cursor come onto the window, and from then until it leaves a
+short poll of the cursor tells when it is on the watched widget (WATCHES_MOUSE_ENTER).
+
 Everything is reached through objc messages on the window Qt made, with the AppKit numbers
 written out below, so nothing here imports a Mac framework when the module loads (the
 pretend-Windows import test loads it) and the settings logic can be tested with a stand-in
@@ -25,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
+import weakref
 
 log = logging.getLogger("lyssna.mac.window")
 
@@ -47,7 +58,24 @@ PANEL_STYLE = STYLE_BORDERLESS | STYLE_NONACTIVATING_PANEL
 PANEL_SPACES = JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY | STATIONARY
 PREVENTS_ACTIVATION = "_setPreventsActivation:"  # undocumented; see make_floating
 
+# Qt's enter and leave events do not reach a floating panel here (see the module docstring), so
+# watch_mouse_enter hears the cursor arrive itself and the interface relies on it instead. The
+# interface asks this flag, never the OS.
+WATCHES_MOUSE_ENTER = True
+
+# NSTrackingArea's options (NSTrackingArea.h): enter and exit, whether or not the app is active,
+# over whatever part of the view is visible (AppKit keeps the area's rect up to date).
+TRACK_ENTERED_AND_EXITED = 0x01  # NSTrackingMouseEnteredAndExited
+TRACK_ACTIVE_ALWAYS = 0x80       # NSTrackingActiveAlways
+TRACK_IN_VISIBLE_RECT = 0x200    # NSTrackingInVisibleRect
+TRACKING_OPTIONS = TRACK_ENTERED_AND_EXITED | TRACK_ACTIVE_ALWAYS | TRACK_IN_VISIBLE_RECT
+ENTER_POLL_SECS = 0.03  # the cursor poll while it is on a watched window (HOVER_POLL in ui/layout/pill.py)
+OWNER_CLASS = "LyssnaMouseEnterWatcher"
+
 _warned_no_prevents_activation = False
+_watches: dict[int, _Watch] = {}  # id(widget) -> its watch; keeps the owners alive (a tracking area does not)
+_stuck_owners: list = []  # owners of areas that could not be removed
+_owner_cls = None
 
 
 def _native_window(widget):
@@ -115,6 +143,202 @@ def set_click_through(widget, on: bool) -> None:
         win.setIgnoresMouseEvents_(bool(on))
     except Exception:
         log.warning("could not set click-through", exc_info=True)
+
+
+def watch_mouse_enter(widget, callback) -> bool:
+    """Call `callback()` each time the cursor arrives on `widget`, also while another app is in
+    front (see the module docstring). An NSTrackingArea on the native view of the widget's
+    window hears the cursor come onto the window; from then until it leaves, a poll of the
+    cursor every ENTER_POLL_SECS fires the callback once per arrival on the widget itself, on
+    the main thread. Safe to call again, and called again whenever Qt may have rebuilt the
+    native view: the same view keeps its one area, a new one gets it and the old one loses it.
+    Returns whether the widget is watched (False off Cocoa); never raises."""
+    try:
+        _forget_dead()
+        view = _native_view(widget)
+        if view is None:
+            return False
+        win_id = int(widget.window().winId())
+        w = _watches.get(id(widget))
+        if w is not None and w.widget() is not widget:  # a dead widget's id, used again
+            w.stop()
+            w.remove_area()
+            w = None
+        if w is not None:
+            w.callback = callback
+            if w.win_id == win_id and w.area in list(view.trackingAreas()):
+                return True
+            w.remove_area()
+        else:
+            w = _Watch(widget, callback)
+        owner = _make_owner(w)
+        area = _make_area(TRACKING_OPTIONS, owner)
+        view.addTrackingArea_(area)
+        w.view, w.win_id, w.owner, w.area = view, win_id, owner, area
+        _watches[id(widget)] = w
+        return True
+    except Exception:
+        log.warning("could not watch the mouse on a window", exc_info=True)
+        return False
+
+
+class _Watch:
+    """One watched widget: its tracking area, the view it is on, the NSObject that owns it (kept
+    here: a tracking area does not keep its owner alive) and the poll while the cursor is on
+    the window."""
+
+    def __init__(self, widget, callback):
+        self.widget = weakref.ref(widget)
+        self.callback = callback
+        self.view = None
+        self.win_id = 0
+        self.owner = None
+        self.area = None
+        self.seen = None  # at the last look: "inside", "outside" or "hidden"; None before the first since entering
+        self.timer = None
+
+    def entered(self) -> None:
+        """The cursor came onto the window: look now, and keep looking until it leaves."""
+        if self.timer is None:
+            from PySide6.QtCore import QTimer
+
+            self.timer = QTimer()
+            self.timer.setInterval(round(ENTER_POLL_SECS * 1000))
+            self.timer.timeout.connect(self.check)
+        if not self.timer.isActive():
+            self.timer.start()
+        self.check()
+
+    def exited(self) -> None:
+        self.check()
+
+    def check(self) -> None:
+        """Fire the callback if the cursor has just come onto the widget; stop looking once it
+        is off the window. An arrival is a crossing: from beside the widget, or straight onto
+        it as the cursor comes onto the window. A widget shown under the cursor (the resting
+        squiggle back after its menu closed) has not been arrived on, as a tracking area added
+        under the cursor would not fire either; the cursor must leave it and come back."""
+        try:
+            widget = self.widget()
+            pos = _cursor_pos()
+            on_window = widget is not None and _over(widget.window(), pos)
+            shown = on_window and widget.isVisible()
+            seen = ("inside" if _over(widget, pos) else "outside") if shown else "hidden"
+        except Exception:  # the widget is gone
+            on_window, seen = False, "hidden"
+        arrived = seen == "inside" and self.seen in (None, "outside")
+        self.seen = seen
+        if not on_window:
+            self.stop()
+        if arrived:
+            try:
+                self.callback()
+            except Exception:
+                log.exception("the mouse enter callback failed")
+
+    def stop(self) -> None:
+        self.seen = None
+        if self.timer is not None:
+            self.timer.stop()
+
+    def remove_area(self) -> None:
+        """Take the area off its view and let the owner go (it is kept for good if the area could
+        not be removed, so AppKit never messages a freed object)."""
+        if self.view is not None and self.area is not None:
+            try:
+                self.view.removeTrackingArea_(self.area)
+            except Exception:
+                log.debug("could not remove a tracking area", exc_info=True)
+                _stuck_owners.append(self.owner)
+        if self.owner is not None:
+            self.owner.watch = None
+        self.view = self.owner = self.area = None
+        self.win_id = 0
+
+
+def _forget_dead() -> None:
+    """Drop the watches whose widget has been deleted, their areas first."""
+    for key, w in list(_watches.items()):
+        widget = w.widget()
+        alive = widget is not None
+        if alive:
+            try:
+                import shiboken6
+
+                alive = shiboken6.isValid(widget)
+            except Exception:
+                alive = False
+        if not alive:
+            w.stop()
+            w.remove_area()
+            del _watches[key]
+
+
+def _over(widget, pos) -> bool:
+    """Is the global Qt point `pos` on the shown widget?"""
+    return bool(widget.isVisible() and widget.rect().contains(widget.mapFromGlobal(pos)))
+
+
+def _cursor_pos():
+    from PySide6.QtGui import QCursor
+
+    return QCursor.pos()
+
+
+def _native_view(widget):
+    """The NSView of the widget's window, or None when Qt is not drawing with Cocoa. The window's
+    own view, so no child widget is made native."""
+    from PySide6.QtGui import QGuiApplication
+
+    if QGuiApplication.platformName() != "cocoa":
+        return None
+    import ctypes
+
+    import objc
+
+    return objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.window().winId())))
+
+
+def _make_area(options: int, owner):
+    """A new NSTrackingArea; the rect is AppKit's to keep with TRACK_IN_VISIBLE_RECT."""
+    from AppKit import NSTrackingArea
+
+    return NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(((0.0, 0.0), (0.0, 0.0)), options, owner, None)
+
+
+def _make_owner(watch: _Watch):
+    """The NSObject the tracking area sends mouseEntered: and mouseExited: to, passing them on to
+    `watch`. AppKit sends them on the main thread."""
+    global _owner_cls
+    if _owner_cls is None:
+        import objc
+
+        try:
+            _owner_cls = objc.lookUpClass(OWNER_CLASS)  # defined already (this module was loaded again)
+        except objc.nosuchclass_error:
+            from Foundation import NSObject
+
+            class LyssnaMouseEnterWatcher(NSObject):
+                def mouseEntered_(self, event):
+                    _owner_event(self, "entered")
+
+                def mouseExited_(self, event):
+                    _owner_event(self, "exited")
+
+            _owner_cls = LyssnaMouseEnterWatcher
+    owner = _owner_cls.alloc().init()
+    owner.watch = watch
+    return owner
+
+
+def _owner_event(owner, kind: str) -> None:
+    """Never let an error reach AppKit, which would end the app."""
+    try:
+        w = getattr(owner, "watch", None)
+        if w is not None:
+            w.entered() if kind == "entered" else w.exited()
+    except Exception:
+        log.exception("mouse %s handling failed", kind)
 
 
 def bring_to_top(widget) -> None:

@@ -583,6 +583,13 @@ class ScrubBar(QWidget):
         self.hovering = bool(on)
         self._layout(animate=True)
 
+    def sync(self) -> None:
+        """Set the hover from where the cursor really is (the panel polls this where Qt sends no
+        enter and leave events); nothing moves unless it changed."""
+        on = self.isVisible() and self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+        if on != self.hovering:
+            self.set_hover(on)
+
     def _fraction_at(self, x: float) -> float:
         w = float(self.width())
         return max(0.0, min(1.0, x / w)) if w > 0 else 0.0

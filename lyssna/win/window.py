@@ -28,6 +28,11 @@ POINTS_ARE_PHYSICAL = True
 # button asks for them. The interface asks this flag, never the OS.
 DETECTS_POPUPS = True
 
+# Qt's enter and leave events reach a floating panel here even while another app is in front,
+# so watch_mouse_enter has nothing to do and the interface listens to Qt's own. The interface
+# asks this flag, never the OS.
+WATCHES_MOUSE_ENTER = False
+
 # Window styles and the calls popups_over makes.
 GWL_STYLE = -16
 WS_POPUP = 0x80000000
@@ -91,6 +96,13 @@ def set_click_through(widget, on: bool) -> None:
         _set_ex_style(widget.winId(), WS_EX_TRANSPARENT)
     else:
         _set_ex_style(widget.winId(), 0, WS_EX_TRANSPARENT)
+
+
+def watch_mouse_enter(widget, callback) -> bool:
+    """Nothing to do on Windows: Qt delivers its enter events to the windows of an app in the
+    background, so the interface listens to those (WATCHES_MOUSE_ENTER is False). Returns False:
+    nothing is watched here."""
+    return False
 
 
 def bring_to_top(widget) -> None:

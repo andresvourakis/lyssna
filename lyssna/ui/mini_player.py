@@ -602,10 +602,13 @@ class MiniPlayer(FloatingPanel):
         self.pill_host = ScaleHost(self.panel, self.pill)
         self.pill_host.resize(self.pill.size())
         self.sliver = Sliver(self.panel, edge)
-        self.sliver.on_enter = self.mouse_entered
         self.rest = Sliver(self.panel, edge)
         self.rest.set_rest(True)
-        self.rest.on_enter = self.mouse_entered
+        for view in (self.sliver, self.rest):
+            # Where Qt's enter event does not reach a window in the background, the panel's
+            # watch hears the cursor arrive instead; never both, so each arrival counts once.
+            if not self.watch_enter(view, self.mouse_entered):
+                view.on_enter = self.mouse_entered
         self.menu = Shapes(self.panel)
         self.build_menu(self.menu, flat)
         self.menu_host = ScaleHost(self.panel, self.menu)

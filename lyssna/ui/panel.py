@@ -10,6 +10,13 @@ on a Mac a non-activating NSPanel on every Space and above full-screen apps, on 
 WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW). Qt resets some of those settings when a window flag
 changes, so every flag change goes through _set_window_flag, which re-applies them.
 
+Hover. Where Qt's enter and leave events do not reach a window of an app in the background
+(host.window.WATCHES_MOUSE_ENTER: the Mac), the platform twin watches for the cursor itself:
+watch_enter hears it arrive on one widget (the player's sliver and resting squiggle), and every
+panel watches its own window and, while the cursor is on it, sets each hover glow and scrub bar
+from where the cursor is (their sync()), as the legacy views did with their own tracking areas.
+Elsewhere Qt's events do all of this and nothing is watched.
+
 As on the Mac, FloatingPanel owns its window (`self.panel`, a PanelWindow) instead of being one,
 so subclasses keep plain attributes like `width` and read like their Mac twins. Subclasses lay
 out their content in build(content); `content` is a transparent widget covering the surface.
@@ -37,7 +44,7 @@ import weakref
 from collections.abc import Callable
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -50,6 +57,7 @@ from PySide6.QtWidgets import (
 from .. import host
 from . import coords, theme
 from .layout.panel import DRAG_SLOP
+from .layout.pill import HOVER_POLL
 from .sliver import EASE_DEFAULT
 
 log = logging.getLogger("lyssna.ui.panel")
@@ -208,6 +216,11 @@ def _color(c) -> QColor | None:
     return c() if callable(c) else c
 
 
+def _cursor_pos():
+    """The cursor, global Qt logical (replaced in the tests)."""
+    return QCursor.pos()
+
+
 # -- the panel ---------------------------------------------------------------------------------
 
 
@@ -235,6 +248,8 @@ class FloatingPanel:
         self.fill_color: QColor | Callable[[], QColor] | None = None    # overrides the surface fill
         self.border_color: QColor | Callable[[], QColor] | None = None  # overrides the border (no_border: none)
         self.no_border = False
+        self._enter_watches: list[tuple[QWidget, Callable[[], None]]] = []  # re-applied with the native styles
+        self._hover_sync: QTimer | None = None  # the hover poll while the cursor is on the window (see the docstring)
         self.panel = PanelWindow(self)
         self.content = QWidget(self.panel)
         self.content.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -242,6 +257,7 @@ class FloatingPanel:
         self.panel.resize(round(self.width + 2 * self.margin), round(self.height + 2 * self.margin))
         self._place_content()
         self.panel.winId()  # the native window exists from here on, so its styles can be set
+        self.watch_enter(self.panel, self._hover_arrived)
         self._apply_native_styles()
         ref = weakref.ref(self)
 
@@ -513,9 +529,54 @@ class FloatingPanel:
     def _apply_native_styles(self) -> None:
         """The platform's floating-panel settings and the click-through state, on the native
         window. Qt may rebuild the native window or its styles, so this runs again on show, on a
-        new winId and after every window flag change."""
+        new winId and after every window flag change. The mouse watches go back on too (the twin
+        leaves one it already has alone)."""
         host.window.make_floating(self.panel)
         host.window.set_click_through(self.panel, self._click_through)
+        for widget, callback in self._enter_watches:
+            host.window.watch_mouse_enter(widget, callback)
+
+    # -- hover where Qt sends no enter and leave events -------------------------------------------
+
+    def watch_enter(self, widget: QWidget, callback: Callable[[], None]) -> bool:
+        """Have `callback()` run each time the cursor arrives on `widget` (this window or one of
+        its widgets), while the app is in the background too. Where the twin watches for that
+        itself (WATCHES_MOUSE_ENTER) the watch is kept on the native window, put back with the
+        native styles, and this returns True. Elsewhere it returns False and the caller listens
+        to Qt's enter event, which arrives there: one or the other, never both."""
+        if not getattr(host.window, "WATCHES_MOUSE_ENTER", False):
+            return False
+        self._enter_watches.append((widget, callback))
+        host.window.watch_mouse_enter(widget, callback)
+        return True
+
+    def _hover_arrived(self) -> None:
+        """The cursor came onto the window: set the glows from where it is now, and every
+        HOVER_POLL until it leaves (see the module docstring)."""
+        if self._hover_sync is None:
+            timer = QTimer(self.panel)
+            timer.setInterval(round(HOVER_POLL * 1000))
+            timer.timeout.connect(self._sync_hovers)
+            self._hover_sync = timer
+        if not self._hover_sync.isActive():
+            self._hover_sync.start()
+        self._sync_hovers()
+
+    def _sync_hovers(self) -> None:
+        """Every widget in the window with a sync() (the hover glows, the scrub bars) takes its
+        hover from the cursor; once the cursor is off the window that turns them all off and
+        the poll stops."""
+        panel = self.panel
+        on = panel.isVisible() and panel.rect().contains(panel.mapFromGlobal(_cursor_pos()))
+        for w in panel.findChildren(QWidget):
+            sync = getattr(w, "sync", None)
+            if callable(sync):
+                try:
+                    sync()
+                except Exception:
+                    log.exception("hover sync failed")
+        if not on and self._hover_sync is not None:
+            self._hover_sync.stop()
 
     def _set_window_flag(self, flag: Qt.WindowType, on: bool) -> None:
         """The one place the panel changes a Qt window flag. Qt re-applies its own window styles

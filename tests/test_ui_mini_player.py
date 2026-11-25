@@ -470,6 +470,77 @@ def test_the_upright_pill_reads_top_to_bottom(pill):
     assert main.y() + main.height() == pill.pill.height()  # the capsule sits at the bottom, discs above
 
 
+@pytest.fixture
+def watching(monkeypatch):
+    """host.window as on a Mac: Qt's enter events do not reach a window in the background, so the
+    twin watches. Records {widget: callback}; list it before `pill` so the player is built after."""
+    from lyssna import host
+
+    watches: dict = {}
+
+    def watch(widget, callback):
+        watches[widget] = callback
+        return True
+    monkeypatch.setattr(host.window, "WATCHES_MOUSE_ENTER", True)
+    monkeypatch.setattr(host.window, "watch_mouse_enter", watch)
+    return watches
+
+
+def test_on_a_mac_the_watch_hears_the_cursor_arrive_on_the_sliver_and_the_squiggle(watching, pill):
+    p = pill
+    for kit in p._kits.values():
+        assert kit["sliver"] in watching and kit["rest"] in watching
+        assert kit["sliver"].on_enter is None and kit["rest"].on_enter is None  # Qt's enter event fires nothing too
+    p.layout = {"dock": "right", "x": 0.0, "y": 0.5}
+    p._update(playing())
+    assert p.form == "sliver"
+    p._moving = True
+    watching[p.sliver]()  # mid-drag: no pill
+    assert p.form == "sliver"
+    p._moving = False
+    watching[p.sliver]()
+    assert p.form == "pill"
+    p._cancel_anim()
+    p._update(Status())
+    p.show_idle(linger=False)
+    settle(p)
+    assert p.form == "rest"
+    watching[p.rest]()
+    assert p.form == "menu"
+
+
+def test_no_pill_from_the_watch_after_the_reading_ended(watching, pill):
+    pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    pill.idle_pill = False
+    pill.hide = lambda: pill.shown.clear()
+    pill._update(playing())
+    pill._update(Status())
+    pill.shown.append("sliver")  # a late arrival on a window still thought visible
+    watching[pill.sliver]()
+    assert pill.form == "sliver"
+
+
+@pytest.fixture
+def qt_enter(monkeypatch):
+    """host.window as on Windows: Qt's enter events arrive, nothing is watched."""
+    from lyssna import host
+
+    watched = []
+    monkeypatch.setattr(host.window, "WATCHES_MOUSE_ENTER", False)
+    monkeypatch.setattr(host.window, "watch_mouse_enter", lambda widget, callback: watched.append(widget) or False)
+    return watched
+
+
+def test_elsewhere_qt_enter_events_open_the_pill_and_nothing_is_watched(qt_enter, pill):
+    assert qt_enter == []
+    for kit in pill._kits.values():
+        assert kit["sliver"].on_enter == pill.mouse_entered and kit["rest"].on_enter == pill.mouse_entered
+    pill.layout = {"dock": "right", "x": 0.0, "y": 0.5}
+    pill._update(playing())
+    pill.sliver.on_enter()
+    assert pill.form == "pill"
+
+
 def test_no_pill_after_the_reading_ended(pill):
     pill.layout = {"dock": "left", "x": 0.0, "y": 0.5}
     pill.idle_pill = False
