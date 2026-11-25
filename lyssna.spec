@@ -1,4 +1,6 @@
-# PyInstaller spec for Lyssna.app. Build with ./scripts/build_app.sh.
+# PyInstaller spec for the earlier Lyssna.app, which has only the legacy AppKit interface.
+# scripts/build_app.sh builds lyssna-mac.spec now. This app has no Qt interface, which the Mac
+# runs by default, so it starts only with interface = "legacy" under [ui] in the config file.
 import os
 import sys
 import tomllib

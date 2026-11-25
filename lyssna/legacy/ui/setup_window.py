@@ -514,7 +514,7 @@ class SetupWindow(NSObject):
         self.head2 = add(_label("Voice", 14, AppKit.NSFontWeightSemibold))
         self.radio_local = add(_radio(LOCAL_HEADER, self, "chooseVoice:"))
         self.local_tag = add(self._tag("Free and private", privacy_symbol(True)))
-        self.local_note = add(_wrapping("Your text stays on this Mac. One download of about 140 MB."))
+        self.local_note = add(_wrapping(f"Your text stays on this Mac. One download of about {kokoro.DOWNLOAD_SIZE_TEXT}."))
         self.download = add(_button("Download", self, "download:"))
         self.progress = add(ProgressBar.alloc().initWithFrame_(NSMakeRect(0, 0, 200, BAR_H)))  # the player's bar, not the blue system one
         self.progress_text = add(_label("", 12, color=secondary))

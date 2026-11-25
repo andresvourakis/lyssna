@@ -343,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ns.args
 
     if not args or args == ["app"]:
-        run = host.app.run  # lyssna.app, or on a Mac lyssna.legacy.app unless host.interface() says "new"
+        run = host.app.run  # lyssna.app, or on a Mac lyssna.legacy.app when host.interface() says "legacy"
         run()
         return 0
 

@@ -1,6 +1,6 @@
 """Which interface runs (host.interface() and host.app): always the Qt one on Windows; on a Mac
-the legacy one unless LYSSNA_INTERFACE=new, or else interface = "new" under [ui] in the config
-file, asks for the new one. Nothing here loads an interface: the module host would import is
+the Qt one too unless LYSSNA_INTERFACE=legacy, or else interface = "legacy" under [ui] in the
+config file, asks for the original one. Nothing here loads an interface: the module host would import is
 recorded instead."""
 
 import tomllib
@@ -12,9 +12,8 @@ from lyssna import config, host
 
 @pytest.fixture
 def mac(monkeypatch):
-    """A Mac, whichever system runs the tests: the config's default is the Mac's too."""
+    """A Mac, whichever system runs the tests."""
     monkeypatch.setattr(host, "IS_WINDOWS", False)
-    monkeypatch.setitem(config.DEFAULTS["ui"], "interface", "legacy")
     monkeypatch.delenv(host.INTERFACE_ENV, raising=False)
 
 
@@ -40,20 +39,27 @@ def test_windows_always_runs_the_new_interface(monkeypatch):
     assert host.interface() == "new"
 
 
-def test_the_mac_runs_the_legacy_interface_by_default(mac):
-    assert host.interface() == "legacy"  # no config file yet: the template is written, and it picks nothing
+def test_the_mac_runs_the_new_interface_by_default(mac):
+    assert host.interface() == "new"  # no config file yet: the template is written, and it picks nothing
     assert "interface" not in tomllib.loads(config.CONFIG_PATH.read_text(encoding="utf-8")).get("ui", {})
-    assert host.interface() == "legacy"
-
-
-def test_the_config_file_opts_in(mac):
-    write_config('[ui]\ninterface = "new"\n')
     assert host.interface() == "new"
+
+
+def test_the_config_file_falls_back_to_the_legacy_interface(mac):
     write_config('[ui]\ninterface = "legacy"\n')
     assert host.interface() == "legacy"
-    write_config('[ui]\ninterface = "something else"\n')
+    write_config('[ui]\ninterface = " Legacy "\n')
     assert host.interface() == "legacy"
+    write_config('[ui]\ninterface = "new"\n')
+    assert host.interface() == "new"
+    write_config('[ui]\ninterface = "something else"\n')
+    assert host.interface() == "new"
     write_config("[ui\nnot toml")
+    assert host.interface() == "new"
+
+
+def test_the_template_hint_turns_on_the_legacy_interface(mac):
+    write_config(config.TEMPLATE.replace('# interface = "legacy"', 'interface = "legacy"'))
     assert host.interface() == "legacy"
 
 
@@ -68,9 +74,9 @@ def test_the_environment_wins_over_the_config_file(mac, monkeypatch):
     assert host.interface() == "new"
 
 
-def test_the_default_follows_the_system():
-    assert config.DEFAULTS["ui"]["interface"] == ("new" if host.IS_WINDOWS else "legacy")
-    assert ('# interface = "new"' in config.TEMPLATE) is not host.IS_WINDOWS  # the opt-in line is for the Mac only
+def test_the_default_is_the_new_interface():
+    assert config.DEFAULTS["ui"]["interface"] == "new"
+    assert ('# interface = "legacy"' in config.TEMPLATE) is not host.IS_WINDOWS  # the fallback line is for the Mac only
 
 
 @pytest.mark.parametrize(("windows", "choice", "expected"), [

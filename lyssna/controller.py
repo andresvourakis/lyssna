@@ -114,6 +114,7 @@ class Controller:
         keystore.subscribe(self._keys_read)
         keystore.load(key_sections(), first=self._move_keys_to_keychain)
         self._check_provider()  # at once when the answer is known already (no key needed, or cached)
+        kokoro.start_upgrade()  # an older install's int8 voice model: fetch the new one quietly
 
     # -- API keys at launch ------------------------------------------------------------
 
@@ -588,6 +589,7 @@ class Controller:
     def shutdown(self) -> None:
         self.reader.stop()
         kokoro.DOWNLOAD.cancel()  # the partial file stays; the next attempt resumes it
+        kokoro.UPGRADE.cancel()
         self.dictation.cancel(quiet=True)
         self.recorder.cancel()  # the session cancels on its worker; this releases the microphone now
         if self.dictation.watcher is not None:

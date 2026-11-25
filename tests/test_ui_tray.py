@@ -41,7 +41,7 @@ from lyssna.menu import (
 from lyssna.providers import kokoro
 from lyssna.win import statusbar as win_statusbar
 
-KOKORO_ROW = f"Kokoro · {kokoro.DOWNLOAD_SIZE_TEXT} download"  # 140 MB on the Mac, 200 MB on Windows
+KOKORO_ROW = f"Kokoro · {kokoro.DOWNLOAD_SIZE_TEXT} download"  # 210 MB on the Mac and on Windows
 HEADERS = {LISTEN_HEADER, DICTATE_HEADER, LOCAL_HEADER, ONLINE_HEADER}
 
 

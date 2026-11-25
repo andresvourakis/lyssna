@@ -41,7 +41,7 @@ DEFAULTS: dict = {
     "ui": {"selection_button": True, "mini_player": True, "button_timeout": 4.0,
            "player_dock": "", "player_x": -1.0, "player_y": -1.0,
            "idle_pill": True, "auto_hide": True, "wave": True, "dictation_dock": "", "dictation_y": -1.0,
-           "interface": "new" if host.IS_WINDOWS else "legacy"},  # which interface runs: host.interface()
+           "interface": "new"},  # which interface runs: host.interface()
     "inworld": {"api_key": "", "voice": "Sarah", "model": "inworld-tts-2"},
     "cartesia": {"api_key": "", "voice": "47c38ca4-5f35-497b-b1a3-415245fb35e1", "model": "sonic-3.6"},
     "elevenlabs": {"api_key": "", "voice": "JBFqnCBsd6RMkjVDRZzb", "model": "eleven_v3"},
@@ -62,7 +62,7 @@ TEMPLATE = """# Lyssna configuration. Restart the app after editing hotkeys; eve
 
 # Which voice provider to use: kokoro | inworld | inworld-flash | cartesia | elevenlabs | openai | say
 # kokoro is free and runs on this Mac: your text never leaves it. It downloads its voice once
-# (about 140 MB) the first time it reads. say is the macOS system voice, also on this Mac. The
+# (about 210 MB) the first time it reads. say is the macOS system voice, also on this Mac. The
 # others are online services that need an API key; add one from the menu bar (Setup… or
 # Settings > API Keys). If the chosen provider has no key, Lyssna switches to kokoro automatically.
 provider = "kokoro"
@@ -112,7 +112,7 @@ wave = true                # the resting wave ripples now and then; false = it s
 # centre of the screen. Managed by the app.
 dictation_dock = ""
 dictation_y = -1.0
-# interface = "new"        # temporary: try the new interface on this Mac ("legacy", the default, is the one you know)
+# interface = "legacy"     # temporary: go back to the original menu bar and windows on this Mac if the new ones misbehave
 
 [dictation]
 # Speech to text: parakeet runs on this Mac (your voice never leaves it; about 630 MB, downloaded
@@ -177,12 +177,12 @@ if host.IS_WINDOWS:  # the same file, with the Windows places and without the Ma
     for _mac, _windows in [
         ("""# Which voice provider to use: kokoro | inworld | inworld-flash | cartesia | elevenlabs | openai | say
 # kokoro is free and runs on this Mac: your text never leaves it. It downloads its voice once
-# (about 140 MB) the first time it reads. say is the macOS system voice, also on this Mac. The
+# (about 210 MB) the first time it reads. say is the macOS system voice, also on this Mac. The
 # others are online services that need an API key; add one from the menu bar (Setup… or
 # Settings > API Keys). If the chosen provider has no key, Lyssna switches to kokoro automatically.""",
          """# Which voice provider to use: kokoro | inworld | inworld-flash | cartesia | elevenlabs | openai
 # kokoro is free and runs on this PC: your text never leaves it. It downloads its voice once
-# (about 200 MB) the first time it reads. The others are online services that need an API key;
+# (about 210 MB) the first time it reads. The others are online services that need an API key;
 # add one from the Lyssna icon by the clock (Setup… or Settings > API Keys). If the chosen
 # provider has no key, Lyssna switches to kokoro automatically."""),
         ("Change it live from the menu bar or with", "Change it live from the Lyssna icon by the clock or with"),
@@ -196,7 +196,7 @@ if host.IS_WINDOWS:  # the same file, with the Windows places and without the Ma
          """# true = never use an online service: only Kokoro for reading, and only the engines on this PC
 # for dictation, so your text and voice stay on this PC.
 # The same as Settings > Keep Everything on This PC in the menu."""),
-        ('# interface = "new"        # temporary: try the new interface on this Mac ("legacy", the default, is the one you know)\n',
+        ('# interface = "legacy"     # temporary: go back to the original menu bar and windows on this Mac if the new ones misbehave\n',
          ""),
         ("parakeet runs on this Mac", "parakeet runs on this PC"),
         ("s1-mini runs on this Mac", "s1-mini runs on this PC"),

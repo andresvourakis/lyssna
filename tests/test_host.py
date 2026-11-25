@@ -31,7 +31,7 @@ def test_mac_gets_the_mac_modules():
             assert mac is not None and mac.startswith("lyssna.mac."), name  # every piece the Mac has lives in lyssna/mac/
     assert controller.MIC_SETTINGS_URL == "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
     assert controller.KEYBOARD_SETTINGS_URL == "x-apple.systempreferences:com.apple.Keyboard-Settings.extension"
-    assert host.NEEDS_ACCESSIBILITY and host.HAS_GLOBE_KEY and host.STATUS_TEXT_BESIDE_ICON and host.FAST_INT8
+    assert host.NEEDS_ACCESSIBILITY and host.HAS_GLOBE_KEY and host.STATUS_TEXT_BESIDE_ICON
     assert host.SYSTEM_VOICE == "say" and host.library_file("espeak-ng") == "libespeak-ng.dylib"
 
 

@@ -103,7 +103,7 @@ macOS also uses fn as the Globe key. Set **System Settings > Keyboard > Press Gl
 
 ## Voices
 
-The default voice is **Kokoro**, a free model that runs on your Mac. It needs no account and no key, it downloads once (about 140 MB), and after that it works offline. Pick between eight English voices (US and UK) under **Voice**.
+The default voice is **Kokoro**, a free model that runs on your Mac. It needs no account and no key, it downloads once (about 210 MB), and after that it works offline. Pick between eight English voices (US and UK) under **Voice**.
 
 If you want a cloud voice, bring your own API key and pay the provider directly. Choose it under **Voice Provider** and paste the key.
 

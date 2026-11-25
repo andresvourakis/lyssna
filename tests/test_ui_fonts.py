@@ -151,7 +151,7 @@ def test_a_style_missing_from_the_table_takes_the_nearest_size():
 
 # -- the Mac's fonts match AppKit --------------------------------------------------------------
 
-REFERENCE_TEXT = [mac_appearance.REFERENCE, "Your text stays on this Mac. One download of about 140 MB.",
+REFERENCE_TEXT = [mac_appearance.REFERENCE, "Your text stays on this Mac. One download of about 210 MB.",
                   "Select text in any app and press"]
 REFERENCE_SERIF = ["Welcome to Lyssna", "What's new in Lyssna 0.3.1"]
 

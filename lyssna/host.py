@@ -7,8 +7,8 @@ names and the same public functions, and the engine reaches them only through he
 made in exactly one place. Where the two systems differ in a way the engine or the interface
 must know about, that difference is a named capability below, never a test of the system.
 
-It also picks the interface (`host.app`): the Qt one in lyssna/app.py, or on a Mac, until that
-one matches it, the AppKit one in lyssna/legacy/ (see interface()).
+It also picks the interface (`host.app`): the Qt one in lyssna/app.py, or on a Mac, when the
+config file asks for it, the original AppKit one in lyssna/legacy/ (see interface()).
 
 This module imports nothing from the package when it loads. The platform modules load the
 first time they are asked for, so importing host never pulls in a Mac or Windows framework
@@ -45,7 +45,6 @@ STATUS_TEXT_BESIDE_ICON = not IS_WINDOWS  # the menu bar can show text (the read
 # The menu's shortcut column can show free text such as "Hold Ctrl+Win". Qt draws the tray menu on
 # Windows; the Mac's native menu shows only real key equivalents there.
 MENU_SHORTCUT_FREE_TEXT = IS_WINDOWS
-FAST_INT8 = not IS_WINDOWS  # 8-bit model maths is fast here (Apple silicon); x86 PCs run the half-precision model faster
 SYSTEM_VOICE: str | None = "sapi" if IS_WINDOWS else "say" if IS_MAC else None  # the built-in voice's provider name
 DICTATION_KEY_DEFAULT = "ctrl+win" if IS_WINDOWS else "fn"  # [dictation] hotkey: the key held to dictate
 DICTATION_DOUBLE_TAP_DEFAULT = IS_WINDOWS  # [dictation] double_tap: two quick taps of that key start hands-free
@@ -136,9 +135,9 @@ INTERFACE_ENV = "LYSSNA_INTERFACE"
 
 def interface() -> str:
     """Which interface runs: "new" (the Qt one, lyssna/app.py) or "legacy" (the Mac's AppKit
-    one, lyssna/legacy/app.py). Windows always runs the new one. On a Mac the legacy one runs
-    unless the environment variable LYSSNA_INTERFACE=new, or else interface = "new" under [ui]
-    in the config file, asks for the new one. Temporary: it goes when lyssna/legacy/ does."""
+    one, lyssna/legacy/app.py). Windows always runs the new one. On a Mac the new one runs
+    unless the environment variable LYSSNA_INTERFACE=legacy, or else interface = "legacy" under
+    [ui] in the config file, asks for the original one. Temporary: it goes when lyssna/legacy/ does."""
     if IS_WINDOWS:
         return "new"
     choice = os.environ.get(INTERFACE_ENV, "").strip().lower()
@@ -146,7 +145,7 @@ def interface() -> str:
         from . import config  # here, not at the top: host imports nothing from the package when it loads
 
         choice = str(config.load().get("ui", {}).get("interface", "")).strip().lower()
-    return "new" if choice == "new" else "legacy"
+    return "legacy" if choice == "legacy" else "new"
 
 
 def require(name: str) -> ModuleType:

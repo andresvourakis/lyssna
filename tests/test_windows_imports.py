@@ -160,11 +160,11 @@ SCRIPT = textwrap.dedent(
     assert "Library/Caches" not in config.TEMPLATE and "Keychain" not in config.TEMPLATE, config.TEMPLATE
     assert "[say]" not in config.TEMPLATE and tomllib.loads(config.TEMPLATE)["provider"] == "kokoro", config.TEMPLATE
     from lyssna.providers import kokoro
-    assert kokoro.MODEL_FILE == "kokoro-v1.0.fp16.onnx" and kokoro.FILES[0] == kokoro.WINDOWS_MODEL, (
-        kokoro.MODEL_FILE, kokoro.FILES[0], kokoro.WINDOWS_MODEL)
-    assert kokoro.DOWNLOAD_SIZE_TEXT == "200 MB" and kokoro.KokoroProvider.setup_hint == "200 MB download", (
+    assert kokoro.MODEL_FILE == "kokoro-v1.0.fp16.onnx", kokoro.MODEL_FILE
+    assert not kokoro.start_upgrade(), "an upgrade started on Windows, which never had the int8 model"
+    assert kokoro.DOWNLOAD_SIZE_TEXT == "210 MB" and kokoro.KokoroProvider.setup_hint == "210 MB download", (
         kokoro.DOWNLOAD_SIZE_TEXT, kokoro.KokoroProvider.setup_hint)
-    assert "about 200 MB" in config.TEMPLATE and "140 MB" not in config.TEMPLATE, config.TEMPLATE
+    assert "about 210 MB" in config.TEMPLATE and "140 MB" not in config.TEMPLATE, config.TEMPLATE
     for text in (menu.local_only_title(True), menu.LOCAL_HEADER, *menu.KEY_NAMES.values(), providers.REGISTRY["kokoro"].label,
                  session.COPIED, session.NO_MIC, policy.refusal("X"), config.TEMPLATE):
         assert "Mac" not in text and "⌘" not in text, text

@@ -28,7 +28,7 @@ license file unless noted.
 
 The Kokoro-82M model weights (hexgrad/Kokoro-82M) are licensed Apache-2.0.
 They are not bundled: Lyssna downloads the ONNX export of them
-(`kokoro-v1.0.int8.onnx` and `voices-v1.0.bin` from the kokoro-onnx releases)
+(`kokoro-v1.0.fp16.onnx` and `voices-v1.0.bin` from the kokoro-onnx releases)
 the first time the voice is used.
 
 ## Dictation on this Mac

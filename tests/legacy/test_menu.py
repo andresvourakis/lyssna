@@ -196,7 +196,7 @@ def test_privacy_lines_show_where_things_go(menubar, fake_keychain):
 
 def test_provider_menu_groups_local_and_online(menubar):
     assert visible_rows(menubar.provider_menu._menu) == [
-        "On this Mac", "Kokoro · 140 MB download", "System Voice",
+        "On this Mac", "Kokoro · 210 MB download", "System Voice",
         "Online, with your API key", "Inworld TTS-2 · no API key", "Inworld TTS-2 Flash · no API key",
         "Cartesia Sonic · no API key", "ElevenLabs · no API key", "OpenAI TTS · no API key",
     ]
@@ -250,7 +250,7 @@ def test_local_only_hides_api_keys_and_online_providers(menubar):
     menubar.ctl.set_local_only(True)
     menubar._refresh_checks()
     assert "API Keys" not in visible_rows(menubar.settings_menu._menu)
-    assert visible_rows(menubar.provider_menu._menu) == ["On this Mac", "Kokoro · 140 MB download", "System Voice"]
+    assert visible_rows(menubar.provider_menu._menu) == ["On this Mac", "Kokoro · 210 MB download", "System Voice"]
     menubar.ctl.set_local_only(False)
     menubar._refresh_checks()
     assert "Online, with your API key" in visible_rows(menubar.provider_menu._menu)

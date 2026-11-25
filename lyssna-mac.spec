@@ -1,14 +1,10 @@
-# PyInstaller spec for Lyssna.app with the Qt interface (lyssna/app.py, lyssna/ui/) as its only
-# interface. It replaces lyssna.spec when the Mac switches over; until then scripts/build_app.sh
-# still builds lyssna.spec. Build from the repository root:
-#   uv run python scripts/make_icon.py scripts/Lyssna.icns
-#   uv run --group build pyinstaller lyssna-mac.spec --noconfirm --clean
-# then sign and zip as scripts/build_app.sh does (codesign --force --deep, ditto -c -k --keepParent).
+# PyInstaller spec for Lyssna.app with the Qt interface (lyssna/app.py, lyssna/ui/), the Mac's
+# default. Build with ./scripts/build_app.sh, which signs, zips and installs it.
 #
 # What differs from lyssna.spec:
-#   * The legacy AppKit interface (lyssna/legacy/) and rumps are left out, and a run-time hook sets
-#     LYSSNA_INTERFACE=new before the app starts, so lyssna.host always picks lyssna/app.py
-#     whatever the config file says.
+#   * The Qt interface is in, and the legacy AppKit interface (lyssna/legacy/) and rumps stay in
+#     with it, so interface = "legacy" under [ui] in the config file still brings the original
+#     back. lyssna.host picks between them when the app starts (host.interface()).
 #   * PySide6 is in, trimmed to what the interface uses (see TRIM below). QtQuick, QtQml and the
 #     other modules PyInstaller's Qt hooks drag in are dropped from the bundle, because nothing
 #     in Lyssna links or imports them.
@@ -50,12 +46,12 @@ def llama_libs():
 
 def host_modules() -> list[str]:
     """Every module lyssna.host loads by name on a Mac, read from host.MODULES itself so a new one
-    is never left out. The interface is lyssna.app, not the legacy one in the Mac column. host
-    imports nothing from the package when it loads, so this pulls in nothing else."""
+    is never left out. Both interfaces are in: lyssna.app (the Qt one) and the legacy one in the
+    Mac column. host imports nothing from the package when it loads, so this pulls in nothing else."""
     sys.path.insert(0, ROOT)
     from lyssna import host
 
-    names = {mac for name, (mac, _windows) in host.MODULES.items() if mac and name != "app"}
+    names = {mac for mac, _windows in host.MODULES.values() if mac}  # the Mac modules and lyssna.legacy.app
     names.add(host.MODULES["app"][1])  # lyssna.app, the Qt interface
     print(f"lyssna-mac.spec: modules host loads by name: {', '.join(sorted(names))}")
     return sorted(names)
@@ -75,17 +71,6 @@ def interface_modules() -> list[str]:
                 names.add(f"lyssna.{node.module}")
     print(f"lyssna-mac.spec: interface modules lyssna/app.py imports: {', '.join(sorted(names))}")
     return sorted(names)
-
-
-def interface_hook() -> str:
-    """A run-time hook that makes the frozen app run the Qt interface. lyssna.host picks the legacy
-    interface on a Mac unless LYSSNA_INTERFACE=new; this bundle has no legacy interface, so the
-    variable is set, not defaulted. Written into PyInstaller's work folder."""
-    path = os.path.join(workpath, "lyssna_interface_hook.py")  # noqa: F821  (PyInstaller defines workpath)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as out:
-        out.write('import os\n\nos.environ["LYSSNA_INTERFACE"] = "new"  # this bundle has only the Qt interface\n')
-    return path
 
 
 LYSSNA_MAC = host_modules()
@@ -180,13 +165,11 @@ a = Analysis(
         ("LICENSE", "."),
         ("THIRD_PARTY_NOTICES.md", "."),
     ],
-    # The Keychain module imports Security lazily, lyssna.host loads the app and the Mac modules by
-    # name, and lyssna/app.py imports the interface inside functions, so the analysis cannot see
-    # these by itself.
+    # The Keychain module imports Security lazily, lyssna.host loads both interfaces and the Mac
+    # modules by name, and lyssna/app.py imports the interface inside functions, so the analysis
+    # cannot see these by itself.
     hiddenimports=["Security", *LYSSNA_MAC, *LYSSNA_QT, *(["PySide6.QtMultimedia"] if QT_MULTIMEDIA else [])],
-    excludes=["lyssna.legacy", "rumps", "tkinter", "PySide6.QtMultimediaWidgets", *QT_UNUSED,
-              *([] if QT_MULTIMEDIA else ["PySide6.QtMultimedia"])],
-    runtime_hooks=[interface_hook()],
+    excludes=["tkinter", "PySide6.QtMultimediaWidgets", *QT_UNUSED, *([] if QT_MULTIMEDIA else ["PySide6.QtMultimedia"])],
     noarchive=False,
 )
 a.binaries = qt_trim(a.binaries, QT_DROP)
@@ -195,7 +178,7 @@ pyz = PYZ(a.pure)
 
 app_script = [s for s in a.scripts if s[0] == "pyi_entry"]
 check_script = [s for s in a.scripts if CHECK_ENTRY and s[0] == os.path.splitext(os.path.basename(CHECK_ENTRY))[0]]
-runtime = [s for s in a.scripts if s not in app_script and s not in check_script]  # the run-time hooks
+runtime = [s for s in a.scripts if s not in app_script and s not in check_script]  # PyInstaller's run-time hooks
 programs = [EXE(pyz, runtime + app_script, [], exclude_binaries=True, name="Lyssna", console=False, upx=False,
                 target_arch=ARCH)]
 if CHECK_ENTRY:

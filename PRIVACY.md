@@ -51,7 +51,7 @@ Lyssna is a menu bar app that reads selected text aloud and types what you dicta
 
 ## What leaves the Mac
 
-**Local voice (Kokoro) or macOS system voice:** nothing. The one exception is the one-time download of the Kokoro model files (about 140 MB) from the kokoro-onnx project's releases on GitHub (github.com). Lyssna sends nothing in that request beyond a normal HTTPS download, and checks each file against a fixed SHA-256 hash.
+**Local voice (Kokoro) or macOS system voice:** nothing. The one exception is the one-time download of the Kokoro model files (about 210 MB) from the kokoro-onnx project's releases on GitHub (github.com). Lyssna sends nothing in that request beyond a normal HTTPS download, and checks each file against a fixed SHA-256 hash. On a Mac that has the voice model from Lyssna 0.3.2 or earlier, Lyssna downloads the newer model file once in the background, the same way, and then deletes the old one.
 
 **Cloud voice (Inworld, Cartesia, ElevenLabs, OpenAI):** the text of each sentence, the voice and model name, and the user's key go over HTTPS to that provider:
 

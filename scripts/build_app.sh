@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Build a self-contained Lyssna.app with PyInstaller, sign it, and write a zip (plus its
-# SHA-256) to share.
+# SHA-256) to share. The app is built from lyssna-mac.spec: the Qt interface, with the original
+# AppKit one inside as the fallback (interface = "legacy" under [ui] in the config file).
 #   ./scripts/build_app.sh [--release] [--no-install] [arm64|x86_64]
 #   arm64 (default)  dist/Lyssna-<version>-arm64.zip; in developer mode the app is also
 #                    installed at /Applications/Lyssna.app
@@ -38,7 +39,7 @@ echo "Building Lyssna $VERSION ($ARCH, $MODE mode)…"
 uv run python scripts/make_icon.py scripts/Lyssna.icns
 
 if [[ "$ARCH" == arm64 ]]; then
-    uv run --group build pyinstaller lyssna.spec --noconfirm --clean
+    uv run --group build pyinstaller lyssna-mac.spec --noconfirm --clean
     APP=dist/Lyssna.app
     STAGE=build/share/Lyssna  # not dist/Lyssna: PyInstaller COLLECT owns that folder
 else
@@ -48,7 +49,7 @@ else
     export UV_PROJECT_ENVIRONMENT=.venv-x86_64
     uv python install "$X86_PYTHON"
     uv sync --python "$X86_PYTHON" --group build
-    LYSSNA_ARCH=x86_64 arch -x86_64 .venv-x86_64/bin/python -m PyInstaller lyssna.spec \
+    LYSSNA_ARCH=x86_64 arch -x86_64 .venv-x86_64/bin/python -m PyInstaller lyssna-mac.spec \
         --noconfirm --clean --distpath dist/x86_64 --workpath build/x86_64
     APP=dist/x86_64/Lyssna.app
     STAGE=build/x86_64/share/Lyssna

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The voice on this Mac sounds cleaner. If you already use it, Lyssna
+  downloads the new voice file once, in the background, and keeps reading
+  with the old one until it is ready.
+
 ## 0.3.2
 
 - Retry a failed dictation. When a dictation fails, for example because an

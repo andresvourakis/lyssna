@@ -30,10 +30,11 @@ def model_file(name: str, data: bytes) -> kokoro.ModelFile:
 
 @pytest.fixture
 def small_files(monkeypatch):
-    """Swap the real 140 MB files for tiny ones with the same names."""
+    """Swap the real model files for tiny ones with the same names."""
     files = [model_file(kokoro.MODEL_FILE, MODEL_BYTES), model_file(kokoro.VOICES_FILE, VOICES_BYTES)]
     monkeypatch.setattr(kokoro, "FILES", files)
     monkeypatch.setattr(kokoro, "DOWNLOAD", kokoro.VoiceDownload())
+    monkeypatch.setattr(kokoro, "UPGRADE", kokoro.VoiceDownload())
     return {f.url: data for f, data in zip(files, (MODEL_BYTES, VOICES_BYTES), strict=True)}
 
 
@@ -255,18 +256,165 @@ def test_model_errors_become_provider_errors(small_files, server, monkeypatch):
 
 def test_old_mlx_model_setting_is_ignored():
     p = get_provider("kokoro", {"kokoro": {"voice": "af_heart", "model": "mlx-community/Kokoro-82M-bf16"}})
-    assert p.model == "kokoro-v1.0-int8"
+    assert p.model == "kokoro-v1.0-fp16"
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="the Mac model file")
-def test_mac_keeps_the_int8_model():
-    assert kokoro.FILES[0] == kokoro.ModelFile(
-        "kokoro-v1.0.int8.onnx",
-        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.int8.onnx",
-        "ae315a79b623f244700e4afb9246c46a26066782e049ba174bf3ba433970ee9c", 114_119_327)
-    assert kokoro.MODEL_FILE == "kokoro-v1.0.int8.onnx"
-    assert kokoro.DOWNLOAD_SIZE_TEXT == "140 MB" and kokoro.KokoroProvider.setup_hint == "140 MB download"
-    assert "(about 140 MB)" in config.TEMPLATE
+# -- moving from the int8 model of 0.3.2 and earlier -----------------------------------------
+
+OLD_BYTES = b"old-int8-model-" * 200
+
+
+def fake_engines(monkeypatch) -> list:
+    made = []
+    monkeypatch.setattr(kokoro, "_make_engine", lambda *a: made.append(FakeKokoro(*a)) or made[-1])
+    monkeypatch.setattr(kokoro, "espeak_paths", lambda: ("/lib/libespeak-ng.dylib", "/data/espeak-ng-data"))
+    return made
+
+
+def old_install() -> None:
+    """The data folder of an earlier version: the int8 model and the voices, no fp16 model."""
+    kokoro.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (kokoro.DATA_DIR / kokoro.OLD_MODEL_FILE).write_bytes(OLD_BYTES)
+    (kokoro.DATA_DIR / kokoro.VOICES_FILE).write_bytes(VOICES_BYTES)
+
+
+def test_the_model_is_the_fp16_file_of_the_v1_0_release():
+    model = kokoro.FILES[0]
+    assert model.name == kokoro.MODEL_FILE == "kokoro-v1.0.fp16.onnx"
+    assert model.url == "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16.onnx"
+    assert model.sha256 == "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204"
+    assert model.size == 177_464_787
+    assert kokoro.OLD_MODEL_FILE not in [f.name for f in kokoro.FILES]
+    assert kokoro.KokoroProvider.setup_hint == f"{kokoro.DOWNLOAD_SIZE_TEXT} download" == "210 MB download"
+
+
+@pytest.mark.parametrize("path", ["README.md", "PRIVACY.md", "docs/VOICES.md"])
+def test_documents_state_the_pinned_download_size(path):
+    root = kokoro.Path(__file__).resolve().parent.parent
+    assert f"about {kokoro.DOWNLOAD_SIZE_TEXT}" in (root / path).read_text(encoding="utf-8")
+
+
+def test_config_template_states_the_pinned_download_size():
+    assert f"about {kokoro.DOWNLOAD_SIZE_TEXT}" in config.TEMPLATE
+
+
+def test_fresh_install_downloads_only_the_new_model(small_files, server):
+    server.bodies.update(small_files)
+    assert not get_provider("kokoro", {}).configured()
+    assert not kokoro.start_upgrade()  # nothing old to move from
+    kokoro.DOWNLOAD.start()
+    assert kokoro.DOWNLOAD.wait() == ""
+    assert sorted(p.name for p in kokoro.DATA_DIR.iterdir()) == sorted([kokoro.MODEL_FILE, kokoro.VOICES_FILE])
+    assert all(kokoro.OLD_MODEL_FILE not in url for url, _ in server.requests)
+
+
+def test_old_model_counts_as_set_up_and_reads(small_files, monkeypatch):
+    old_install()
+    made = fake_engines(monkeypatch)
+    p = get_provider("kokoro", {})
+    assert p.configured() and kokoro.ready()
+    monkeypatch.setattr(kokoro.KokoroProvider, "can_run", classmethod(lambda cls: True))
+    p.prepare()
+    assert not kokoro.DOWNLOAD.active()  # no first-run download (make_client would refuse anyway)
+    assert p.synthesize("Hello.").ext == "wav"
+    assert made[0].args[0].endswith(kokoro.OLD_MODEL_FILE)
+
+
+def test_background_upgrade_is_quiet_then_swaps_and_deletes(small_files, server, monkeypatch):
+    old_install()
+    made = fake_engines(monkeypatch)
+    p = get_provider("kokoro", {})
+    p.synthesize("Before.")
+    assert made[0].args[0].endswith(kokoro.OLD_MODEL_FILE)
+
+    gate = threading.Event()
+    real = server.handle
+
+    def slow(request):
+        gate.wait(5)
+        return real(request)
+
+    server.handle = slow
+    server.bodies.update(small_files)
+    assert kokoro.start_upgrade()
+    assert kokoro.UPGRADE.active()
+    assert kokoro.DOWNLOAD.progress() is None  # nothing for the setup window or the menu bar to show
+    assert p.configured()
+    p.synthesize("During.")  # still the old model, no wait
+    assert len(made) == 1
+    gate.set()
+    assert kokoro.UPGRADE.wait() == ""
+
+    assert (kokoro.DATA_DIR / kokoro.MODEL_FILE).read_bytes() == MODEL_BYTES
+    assert not (kokoro.DATA_DIR / kokoro.OLD_MODEL_FILE).exists()
+    assert [url for url, _ in server.requests] == [kokoro.FILES[0].url]  # the voices were already here
+    p.synthesize("After.")
+    assert len(made) == 2 and made[1].args[0].endswith(kokoro.MODEL_FILE)
+    p.synthesize("Again.")
+    assert len(made) == 2  # loaded once
+
+
+def test_failed_upgrade_keeps_the_old_model_and_tries_again_next_launch(small_files, server, monkeypatch):
+    old_install()
+    made = fake_engines(monkeypatch)
+    f = kokoro.FILES[0]
+    server.bodies[f.url] = MODEL_BYTES
+    server.cut[f.url] = 1000  # the connection drops part way
+    assert kokoro.start_upgrade()
+    assert "internet connection" in kokoro.UPGRADE.wait()
+    assert (kokoro.DATA_DIR / kokoro.OLD_MODEL_FILE).read_bytes() == OLD_BYTES
+    assert not (kokoro.DATA_DIR / kokoro.MODEL_FILE).exists()
+    assert get_provider("kokoro", {}).configured()
+    get_provider("kokoro", {}).synthesize("Still reads.")
+    assert made[-1].args[0].endswith(kokoro.OLD_MODEL_FILE)
+
+    assert kokoro.start_upgrade()  # the next launch resumes the partial file
+    assert kokoro.UPGRADE.wait() == ""
+    assert server.requests[-1] == (f.url, "bytes=1000-")
+    assert not (kokoro.DATA_DIR / kokoro.OLD_MODEL_FILE).exists()
+
+
+def test_damaged_upgrade_keeps_the_old_model(small_files, server):
+    old_install()
+    f = kokoro.FILES[0]
+    server.bodies[f.url] = MODEL_BYTES[:-1] + b"X"
+    assert kokoro.start_upgrade()
+    assert "damaged" in kokoro.UPGRADE.wait()
+    assert (kokoro.DATA_DIR / kokoro.OLD_MODEL_FILE).is_file()
+    assert not (kokoro.DATA_DIR / kokoro.MODEL_FILE).exists()
+    assert kokoro.ready()
+
+
+def test_left_over_old_model_is_deleted_at_launch(small_files):
+    old_install()
+    (kokoro.DATA_DIR / kokoro.MODEL_FILE).write_bytes(MODEL_BYTES)
+    assert not kokoro.start_upgrade()  # make_client would refuse if it tried to download
+    assert not (kokoro.DATA_DIR / kokoro.OLD_MODEL_FILE).exists()
+    assert kokoro.files_present()
+
+
+def test_launch_starts_the_upgrade_without_showing_a_download(ctl, small_files, server):
+    old_install()
+    server.bodies.update(small_files)
+    c = Controller()
+    assert kokoro.UPGRADE.wait() == ""
+    assert c.status_dict()["voice_download"] is None
+    assert c.provider_configured("kokoro")
+    assert kokoro.files_present() and not (kokoro.DATA_DIR / kokoro.OLD_MODEL_FILE).exists()
+
+
+def test_old_model_name_in_the_config_file_does_not_matter(ctl, small_files, monkeypatch):
+    kokoro.DATA_DIR.mkdir(parents=True)
+    for f, data in zip(kokoro.FILES, (MODEL_BYTES, VOICES_BYTES), strict=True):
+        (kokoro.DATA_DIR / f.name).write_bytes(data)
+    config.CONFIG_PATH.write_text(config.TEMPLATE.replace('[kokoro]\n', '[kokoro]\nmodel = "kokoro-v1.0-int8"\n'), encoding="utf-8")
+    c = Controller()
+    assert c.cfg["kokoro"]["model"] == "kokoro-v1.0-int8"
+    p = get_provider("kokoro", c.cfg)
+    assert p.model == "kokoro-v1.0-fp16" and p.configured()
+    made = fake_engines(monkeypatch)
+    p.synthesize("Hello.")
+    assert made[0].args[0].endswith(kokoro.MODEL_FILE)
 
 
 # -- espeak path guard ---------------------------------------------------------------------

@@ -39,24 +39,24 @@ class ModelFile(NamedTuple):
 
 _RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
 _RELEASE_V10 = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-MAC_MODEL = ModelFile("kokoro-v1.0.int8.onnx", f"{_RELEASE}/kokoro-v1.0.int8.onnx",
-                      "ae315a79b623f244700e4afb9246c46a26066782e049ba174bf3ba433970ee9c", 114_119_327)
-# Windows uses the half-precision model instead. On an x86 PC (AMD EPYC, 2 cores, onnxruntime CPU)
-# the int8 model took 3.05 seconds of work per second of speech, the full-precision model 0.262 and
-# the half-precision model 0.245. On an Apple silicon Mac the int8 model takes about 0.09, so the Mac
-# keeps it. This is the file from the v1.0 release, the one that was measured; the v1.1 release has a
-# different fp16 file of another size.
-WINDOWS_MODEL = ModelFile("kokoro-v1.0.fp16.onnx", f"{_RELEASE_V10}/kokoro-v1.0.fp16.onnx",
-                          "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204", 177_464_787)
+# The half-precision model from the v1.0 release (the v1.1 release has a different fp16 file of
+# another size), on the Mac and on Windows. Work per second of speech on an Apple M3 Pro: int8
+# 0.09 s, fp16 0.157 s, full precision 0.19 s; the Mac uses fp16 for its sound, since int8 is
+# muddy with a hiss. On an x86 PC (AMD EPYC, 2 cores, onnxruntime CPU): int8 3.05 s, full
+# precision 0.262 s, fp16 0.245 s.
 FILES: list[ModelFile] = [
-    MAC_MODEL if host.FAST_INT8 else WINDOWS_MODEL,
+    ModelFile("kokoro-v1.0.fp16.onnx", f"{_RELEASE_V10}/kokoro-v1.0.fp16.onnx",
+              "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204", 177_464_787),
     ModelFile("voices-v1.0.bin", f"{_RELEASE}/voices-v1.0.bin",
               "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d", 28_214_398),
 ]
 MODEL_FILE, VOICES_FILE = (f.name for f in FILES)
-# The download size as the app says it: the pinned sizes in MiB, rounded to 10 ("140 MB" on the
-# Mac, "200 MB" on Windows).
-DOWNLOAD_SIZE_TEXT = f"{round(sum(f.size for f in FILES) / 2**20, -1):.0f} MB"
+# The int8 model Lyssna 0.3.2 and earlier downloaded on the Mac (Windows never had it). Where it
+# is still here, it keeps reading until the new model has arrived in the background (see
+# start_upgrade), then it is deleted.
+OLD_MODEL_FILE = "kokoro-v1.0.int8.onnx"
+# The download size as the app says it: the pinned sizes in MB, rounded to 10 ("210 MB").
+DOWNLOAD_SIZE_TEXT = f"{round(sum(f.size for f in FILES) / 1_000_000, -1):.0f} MB"
 
 DATA_DIR = config.STATE_DIR / "kokoro"  # tests point this into a temp dir
 
@@ -69,6 +69,26 @@ def files_present() -> bool:
     """True when every model file is in place. Files only reach their final name after their
     hash was checked, so existence is enough."""
     return all((DATA_DIR / f.name).is_file() for f in FILES)
+
+
+def _old_model_usable() -> bool:
+    """True when an earlier version's int8 model and the voices file are here, so Kokoro can
+    read while the new model is still missing."""
+    return (DATA_DIR / OLD_MODEL_FILE).is_file() and (DATA_DIR / VOICES_FILE).is_file()
+
+
+def ready() -> bool:
+    """True when Kokoro can read now: with the current model, or with the old one until the
+    new one has arrived."""
+    return files_present() or _old_model_usable()
+
+
+def model_path() -> Path:
+    """The model file to load: the current one when it is here, else the old one."""
+    current = DATA_DIR / MODEL_FILE
+    if not current.is_file() and (DATA_DIR / OLD_MODEL_FILE).is_file():
+        return DATA_DIR / OLD_MODEL_FILE
+    return current
 
 
 @lru_cache(maxsize=1)
@@ -208,15 +228,54 @@ class VoiceDownload:
 
 
 DOWNLOAD = VoiceDownload()
+# The quiet move from the old int8 model to the current one. A separate download, so the
+# setup window and the menu bar, which show DOWNLOAD's progress, show nothing for it.
+UPGRADE = VoiceDownload()
+
+
+def start_upgrade() -> bool:
+    """Once per launch: if this computer reads with the old int8 model, download the current
+    model in the background. Readings keep using the old model meanwhile. When the new file has
+    arrived and passed its hash check, the next reading loads it and the old file is deleted.
+    A failed or interrupted download changes nothing; the next launch tries again (and
+    resumes the partial file). Where the old model was never downloaded (a new install, or
+    Windows) it does nothing. Returns True when a download was started."""
+    if files_present():
+        _remove_old_model()  # left over, e.g. when a deletion failed last time
+        return False
+    if not _old_model_usable() or DOWNLOAD.active() or UPGRADE.active():
+        return False
+    log.info("downloading the new Kokoro model in the background; the old one reads meanwhile")
+    UPGRADE.start(on_done=_upgrade_done)
+    return True
+
+
+def _upgrade_done(error: str) -> None:
+    if not error and files_present():
+        log.info("the new Kokoro model is ready; the next reading uses it")
+        _remove_old_model()
+
+
+def _remove_old_model() -> None:
+    """Delete the old int8 model once the current one is here. Under the load lock, so no
+    reading is loading it at that moment; a model already loaded lives in memory and is not
+    affected."""
+    old = DATA_DIR / OLD_MODEL_FILE
+    with _load_lock:
+        try:
+            old.unlink(missing_ok=True)
+        except OSError as e:
+            log.warning("could not delete the old Kokoro model: %s", e)
 
 
 def ensure_downloaded() -> None:
-    """Make sure the model files are here, downloading them if needed (blocking)."""
-    if files_present():
+    """Make sure the model files are here, downloading them if needed (blocking). The old
+    int8 model counts while the new one is still downloading in the background."""
+    if ready():
         return
     DOWNLOAD.start()
     error = DOWNLOAD.wait()
-    if not files_present():
+    if not ready():
         raise ProviderError(error or "The Kokoro voice is not downloaded yet. Try again.")
 
 
@@ -231,6 +290,7 @@ def _make_engine(model_path: str, voices_path: str, lib_path: str, data_path: st
 
 
 _engine = None
+_engine_model: Path | None = None  # the model file _engine was loaded from
 _load_lock = threading.Lock()
 # One reading at a time: the player runs two fetch workers, and two simultaneous inferences
 # only fight over the same CPU cores (espeak itself is also process-global).
@@ -238,17 +298,22 @@ _synth_lock = threading.Lock()
 
 
 def _get_engine():
-    global _engine
+    """The loaded model, loading it on first use. When the new model has arrived since the old
+    one was loaded, the new one is loaded here. A reading in progress keeps the engine it
+    already holds until its sentence is done."""
+    global _engine, _engine_model
     ensure_downloaded()
     with _load_lock:
-        if _engine is None:
+        path = model_path()
+        if _engine is None or _engine_model != path:
             lib, data = espeak_paths()
             try:
-                _engine = _make_engine(str(DATA_DIR / MODEL_FILE), str(DATA_DIR / VOICES_FILE), lib, data)
+                engine = _make_engine(str(path), str(DATA_DIR / VOICES_FILE), lib, data)
             except ProviderError:
                 raise
             except Exception as e:
                 raise ProviderError(f"Kokoro could not start: {e}") from e
+            _engine, _engine_model = engine, path
         return _engine
 
 
@@ -266,7 +331,7 @@ def _wav(pcm, sample_rate: int) -> bytes:
 
 
 class KokoroProvider(Provider):
-    """Kokoro-82M on this Mac. About one second of work per twelve seconds of speech on an
+    """Kokoro-82M on this Mac. About one second of work per six seconds of speech on an
     M-series CPU; the model is loaded once and shared."""
 
     name = "kokoro"
@@ -277,7 +342,7 @@ class KokoroProvider(Provider):
     max_chars = 1500
     price_per_million = 0.0
     default_voice = "af_heart"
-    default_model = "kokoro-v1.0-int8"
+    default_model = "kokoro-v1.0-fp16"
     voices: ClassVar[list[tuple[str, str]]] = [
         ("af_heart", "Heart · US"), ("af_bella", "Bella · US"), ("af_nicole", "Nicole · US"),
         ("am_michael", "Michael · US"), ("am_fenrir", "Fenrir · US"),
@@ -293,10 +358,10 @@ class KokoroProvider(Provider):
         return self.default_model  # older configs name an MLX model here; there is only one now
 
     def configured(self, wait: bool = True) -> bool:
-        return files_present()
+        return ready()
 
     def prepare(self, on_error: Callable[[str], None] | None = None) -> None:
-        if not files_present() and self.can_run():
+        if not ready() and self.can_run():
             DOWNLOAD.start(on_done=lambda err: err and on_error and on_error(err))
 
     def synthesize(self, text: str) -> Audio:

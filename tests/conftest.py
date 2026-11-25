@@ -169,7 +169,9 @@ def offline_kokoro(isolated_paths, monkeypatch):
 
     monkeypatch.setattr(kokoro, "DATA_DIR", isolated_paths / "state" / "kokoro")
     monkeypatch.setattr(kokoro, "DOWNLOAD", kokoro.VoiceDownload())
+    monkeypatch.setattr(kokoro, "UPGRADE", kokoro.VoiceDownload())
     monkeypatch.setattr(kokoro, "_engine", None)
+    monkeypatch.setattr(kokoro, "_engine_model", None)
     monkeypatch.setattr(kokoro, "_make_engine", no_model)
     monkeypatch.setattr(download, "make_client", no_network)
     return isolated_paths / "state" / "kokoro"

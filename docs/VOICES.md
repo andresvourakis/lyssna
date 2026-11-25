@@ -49,6 +49,6 @@ If the provider in your config file has no key when Lyssna starts, it switches t
 
 ## The voices on your Mac
 
-**Kokoro** is the default. It runs the open Kokoro-82M model (Apache-2.0) on the CPU. The first time it reads, it downloads its model files once, about 140 MB, from the kokoro-onnx project on GitHub, and checks each file against a fixed SHA-256 hash. After that it works offline. Voices: Heart, Bella, Nicole, Michael and Fenrir (US English), Emma, Isabella and George (UK English). It has been tested on Apple silicon; the Intel build includes it but has not been tested on Intel hardware yet.
+**Kokoro** is the default. It runs the open Kokoro-82M model (Apache-2.0) on the CPU. The first time it reads, it downloads its model files once, about 210 MB, from the kokoro-onnx project on GitHub, and checks each file against a fixed SHA-256 hash. After that it works offline. Voices: Heart, Bella, Nicole, Michael and Fenrir (US English), Emma, Isabella and George (UK English). It has been tested on Apple silicon; the Intel build includes it but has not been tested on Intel hardware yet.
 
 **The macOS system voice**, shown as **On this Mac (System Voice)** in the menu, uses the system speech voice. For a much better result, download a Premium voice in System Settings > Accessibility > Spoken Content > System Voice > Manage Voices. Lyssna picks the best installed voice by itself, or set `voice` under `[say]`.
