@@ -201,8 +201,8 @@ app = BUNDLE(
         "CFBundleVersion": VERSION,
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
-        # onnxruntime's Apple silicon wheel needs macOS 14; the Intel build pins an older one.
-        "LSMinimumSystemVersion": "13.0" if ARCH == "x86_64" else "14.0",
+        # The interface's Qt library (PySide6 6.12) needs macOS 14 on both chips.
+        "LSMinimumSystemVersion": "14.0",
         "LSApplicationCategoryType": "public.app-category.utilities",
         "NSMicrophoneUsageDescription":
             "Lyssna listens to the microphone only while you dictate, to turn your speech into text.",

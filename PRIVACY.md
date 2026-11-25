@@ -1,16 +1,16 @@
 # Privacy
 
-Lyssna is a menu bar app that reads selected text aloud and types what you dictate. This page lists everything it touches, where it keeps it, and what leaves the Mac. It describes the code in this repository.
+Lyssna is an app for the Mac and for Windows that reads selected text aloud and types what you dictate. This page lists everything it touches, where it keeps it, and what leaves the computer. It describes the code in this repository. The sections below describe the Mac app; [On Windows](#on-windows) lists where the Windows app keeps its data and what it does differently.
 
 ## In short
 
-- With the local voice (Kokoro, the default) or the macOS voice, text never leaves the Mac.
+- With the local voice (Kokoro, the default) or the system voice of macOS or Windows, text never leaves the computer.
 - With a cloud voice, each sentence goes to that provider over HTTPS, with the user's own key.
-- Dictation runs on the Mac by default: the recording and the text never leave it. With an online engine, the recording or the text goes to that provider, with the user's own key.
+- Dictation runs on the computer by default: the recording and the text never leave it. With an online engine, the recording or the text goes to that provider, with the user's own key.
 - The microphone is on only while you dictate. Recordings stay in memory and are never saved or logged.
 - No analytics, no telemetry, no crash reporting, no update checks. Lyssna makes no network requests other than the ones listed below.
 - The Support Lyssna links open the Lyssna website in your browser, and only when you click one. The link carries nothing about you or your usage, and the app itself sends nothing.
-- An administrator can force local-only mode on managed Macs. It covers reading and dictation.
+- An administrator can force local-only mode on managed Macs and PCs. It covers reading and dictation.
 
 ## What Lyssna touches, and where it is kept
 
@@ -105,3 +105,42 @@ Local-only mode does not change the audio cache or the dictation history. To kee
 ## Removing everything
 
 The uninstall script with `--purge` deletes the app and its four folders (`~/.config/lyssna`, `~/Library/Application Support/Lyssna` with the dictation history, dictionary and models, `~/Library/Caches/Lyssna` and `~/Library/Logs/Lyssna`); see [docs/INSTALL.md](docs/INSTALL.md). API keys stay in the Keychain until removed in **Settings > API Keys** before uninstalling, or deleted in Keychain Access (items named "Lyssna API key").
+
+## On Windows
+
+The Windows app reads, dictates and connects the same way as the Mac app, and makes the same network requests (see [What leaves the Mac](#what-leaves-the-mac)). These are the differences.
+
+**Where it keeps its data.** Settings are in `%APPDATA%\Lyssna`, everything else in `%LOCALAPPDATA%\Lyssna`. Both folders are in your Windows user profile. How long each item is kept is the same as on the Mac.
+
+| Data | Where on Windows |
+| ---- | ---------------- |
+| Settings | `%APPDATA%\Lyssna\config.toml` |
+| Dictation history | `%LOCALAPPDATA%\Lyssna\dictation\history.json` |
+| Failed dictation recordings | `%LOCALAPPDATA%\Lyssna\dictation\failed\` |
+| Dictionary | `%LOCALAPPDATA%\Lyssna\dictation\vocabulary.json` |
+| Dictation models | `%LOCALAPPDATA%\Lyssna\dictation\models\` |
+| Local voice model | `%LOCALAPPDATA%\Lyssna\kokoro\` |
+| Usage counter | `%LOCALAPPDATA%\Lyssna\usage.json` |
+| Audio cache | `%LOCALAPPDATA%\Lyssna\Cache\` |
+| Logs | `%LOCALAPPDATA%\Lyssna\Logs\lyssna.log` |
+| API keys | Windows Credential Manager, one generic credential per provider, named `io.github.andresvourakis.lyssna/` followed by the provider (`inworld`, `cartesia`, `elevenlabs`, `openai`, `anthropic`). Windows encrypts it for your account and keeps it on this PC. |
+
+**Downloads.** The Windows app downloads the same files as an Apple silicon Mac, from the same places, and checks each one against a fixed SHA-256 hash: the Kokoro voice (about 210 MB) from the kokoro-onnx project's releases on GitHub, and the Parakeet speech model and the S1-mini cleanup model (about 1.1 GB) from huggingface.co and its download network (hosts under `cdn.hf.co`). Each is downloaded once, the first time it is needed. The Windows system voice is built into Windows, and Lyssna downloads nothing for it.
+
+**Selected text.** Lyssna asks the front app for the selection through Windows UI Automation. If the app does not offer it, Lyssna saves the clipboard, sends Ctrl+C, reads the copied text, and about half a second later puts the saved clipboard back, unless something else changed it in the meantime. It never sends Ctrl+C to a console or terminal window, where Ctrl+C can stop the running program. If nothing is selected, Lyssna reads whatever text is on the clipboard.
+
+**Pasting dictated text.** As on the Mac, Lyssna puts the text on the clipboard, presses Ctrl+V and puts the previous clipboard back afterwards. The dictated text carries the clipboard formats that keep it out of the Windows clipboard history (Win+V), out of cloud clipboard sync, and away from clipboard tools that follow that convention. When no text field is in front, the text is left on the clipboard as a normal entry for you to paste.
+
+**Learning corrections.** Right after a paste, Lyssna reads the text field it pasted into through UI Automation, with the same limits as on the Mac. It never reads console or terminal windows.
+
+**Keys and mouse.** Windows needs no Accessibility permission. Lyssna watches the keyboard and the mouse with standard Windows hooks. The keyboard hook takes Lyssna's hotkeys and the dictation keys for itself and passes every other key through unchanged. The mouse hook only notices drags and double-clicks and never blocks anything. Keys and mouse movements are not stored or logged.
+
+**Microphone.** Windows does not ask each desktop app for the microphone. Lyssna can use it when microphone access, and microphone access for desktop apps, are on in **Settings > Privacy & security > Microphone**. The microphone is on only while you dictate, and the Windows microphone indicator shows only then.
+
+**Start at login.** Only if you turn on **Settings > Start at Login**. Lyssna then adds a value named `Lyssna`, with the path of `Lyssna.exe`, under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
+
+**The command line.** `lyssna-cli.exe` talks to the app through a named pipe. The app writes a random key to `%LOCALAPPDATA%\Lyssna\lyssna.pipe`, and both sides must prove they know it before any request, so only your own account can control the app.
+
+**Enforcing local-only.** Per user, turn on **Settings > Keep Everything on This PC**, or set `local_only = true` at the top of `%APPDATA%\Lyssna\config.toml`. Per organization, set the DWORD value `LocalOnly` to 1 under `Software\Policies\Lyssna`, for example with Group Policy. The value in `HKEY_LOCAL_MACHINE` wins over the one in `HKEY_CURRENT_USER`. Users cannot turn it off.
+
+**Removing everything.** The Windows uninstall script with `LYSSNA_PURGE=1` deletes the app, both folders and the API keys Lyssna saved in Credential Manager; see [docs/INSTALL.md](docs/INSTALL.md). Without it, the folders and keys stay. You can also delete the two folders by hand, and the keys in Control Panel > Credential Manager > Windows Credentials.

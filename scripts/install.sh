@@ -29,12 +29,12 @@ main() {
         arch=x86_64
     fi
 
-    # The minimums match LSMinimumSystemVersion in lyssna.spec: the Apple silicon build
-    # needs macOS 14, the Intel build macOS 13.
+    # The minimum matches LSMinimumSystemVersion in lyssna-mac.spec: macOS 14 on both chips
+    # (the interface's Qt library needs it).
     if [ "$arch" = arm64 ]; then
         need=14; need_name="macOS 14 (Sonoma)"; chip="Apple silicon"
     else
-        need=13; need_name="macOS 13 (Ventura)"; chip="Intel"
+        need=14; need_name="macOS 14 (Sonoma)"; chip="Intel"
     fi
     macos=$(sw_vers -productVersion)
     major=${macos%%.*}
