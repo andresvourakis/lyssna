@@ -42,6 +42,9 @@ MIC_SETTINGS_PLACE = (  # where the user allows the microphone, as the system's 
 NEEDS_ACCESSIBILITY = not IS_WINDOWS  # reading the selection and the global keys need the Accessibility permission
 HAS_GLOBE_KEY = not IS_WINDOWS  # the fn key doubles as the Globe key, and a system setting decides what it does
 STATUS_TEXT_BESIDE_ICON = not IS_WINDOWS  # the menu bar can show text (the reading progress) next to the icon
+# The menu's shortcut column can show free text such as "Hold Ctrl+Win". Qt draws the tray menu on
+# Windows; the Mac's native menu shows only real key equivalents there.
+MENU_SHORTCUT_FREE_TEXT = IS_WINDOWS
 FAST_INT8 = not IS_WINDOWS  # 8-bit model maths is fast here (Apple silicon); x86 PCs run the half-precision model faster
 SYSTEM_VOICE: str | None = "sapi" if IS_WINDOWS else "say" if IS_MAC else None  # the built-in voice's provider name
 DICTATION_KEY_DEFAULT = "ctrl+win" if IS_WINDOWS else "fn"  # [dictation] hotkey: the key held to dictate

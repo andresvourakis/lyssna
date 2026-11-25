@@ -90,6 +90,7 @@ def make_tray(qapp, monkeypatch):
         mac = system == "mac"
         monkeypatch.setattr(host, "statusbar", FakeMacStatusbar() if mac else win_statusbar, raising=False)
         monkeypatch.setattr(host, "STATUS_TEXT_BESIDE_ICON", mac)
+        monkeypatch.setattr(host, "MENU_SHORTCUT_FREE_TEXT", not mac)
         monkeypatch.setattr(host, "NEEDS_ACCESSIBILITY", mac)
         tray = Tray(Controller())
         tray.timer.stop()  # the tests tick by hand
@@ -143,7 +144,7 @@ def test_top_level_menu_when_idle(tray):
     assert rows(tray.menu) == [
         LISTEN_HEADER, "Read Selection", "Read Clipboard",
         "Speed: 1.2×", "Voice: Heart", kokoro_provider_title(tray), f"Text stays on this {d}", "---",
-        DICTATE_HEADER, f"Start Dictation · hold {key_name(host.DICTATION_KEY_DEFAULT)}",
+        DICTATE_HEADER, "Start Dictation",  # a tray built the Windows way: the key is in the shortcut column
         "Paste Last Dictation", "History…",
         f"Transcription: On this {d} (Parakeet)",
         cleanup, f"Speech stays on this {d}", "---",
@@ -152,16 +153,26 @@ def test_top_level_menu_when_idle(tray):
     ]
 
 
-def test_the_dictate_row_names_the_key_and_finishes_while_recording(tray, monkeypatch):
-    from lyssna.menu import key_name
+@pytest.mark.parametrize("system", ["windows", "mac"])
+def test_the_dictate_row_names_the_key_and_finishes_while_recording(make_tray, monkeypatch, system):
+    from lyssna.ui.tray import label_of
 
+    tray = make_tray(system)
     cfg = tray.ctl.cfg.setdefault("dictation", {})
     cfg["hotkey"] = "right_option"
     tray._tick()
-    assert tray.item_dictate.text() == f"Start Dictation · hold {key_name('right_option')}"
+    if host.MENU_SHORTCUT_FREE_TEXT:  # the key in the shortcut column, like the other rows' shortcuts
+        assert tray.item_dictate.text() == f"Start Dictation\tHold {key_name('right_option')}"
+        assert label_of(tray.item_dictate) == "Start Dictation"
+    else:  # the Mac's native column takes only real key equivalents: the key stays in the title
+        assert tray.item_dictate.text() == f"Start Dictation · hold {key_name('right_option')}"
     monkeypatch.setattr(type(tray.ctl.dictation), "state", property(lambda self: "recording"))
     tray._tick()
     assert tray.item_dictate.text() == "Finish Dictation"
+
+
+def test_the_dictate_row_shows_the_default_key_in_the_shortcut_column(tray):
+    assert tray.item_dictate.text() == f"Start Dictation\tHold {key_name(host.DICTATION_KEY_DEFAULT)}"
 
 
 def test_sections_are_dim_header_lines(tray):

@@ -124,6 +124,7 @@ SCRIPT = textwrap.dedent(
             raise AssertionError(name + " should not exist on Windows yet")
     assert not host.NEEDS_ACCESSIBILITY and not host.HAS_GLOBE_KEY and not host.STATUS_TEXT_BESIDE_ICON, (
         host.NEEDS_ACCESSIBILITY, host.HAS_GLOBE_KEY, host.STATUS_TEXT_BESIDE_ICON)
+    assert host.MENU_SHORTCUT_FREE_TEXT, host.MENU_SHORTCUT_FREE_TEXT  # the tray menu's shortcut column says "Hold Ctrl+Win"
     assert host.KEYBOARD_SETTINGS_URL is None and host.ACCESSIBILITY_SETTINGS_URL is None, (
         host.KEYBOARD_SETTINGS_URL, host.ACCESSIBILITY_SETTINGS_URL)
     assert host.SYSTEM_VOICE == "sapi" and host.library_file("espeak-ng") == "espeak-ng.dll", (

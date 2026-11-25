@@ -11,6 +11,9 @@ What differs between the systems comes from host, never from a test of the syste
 - host.STATUS_TEXT_BESIDE_ICON: the Mac shows the legacy title beside the icon ("2/5",
   "⏸ 2/5", "…", a download line, a short message, ⚠︎). Windows cannot, so its tooltip says it
   in words ("Lyssna: Reading 2 of 5").
+- host.MENU_SHORTCUT_FREE_TEXT: Windows shows the dictation key in the shortcut column ("Start
+  Dictation", "Hold Ctrl+Win"); the Mac's native column takes only real key equivalents, so
+  the key stays in the title there ("Start Dictation · hold fn").
 - host.NEEDS_ACCESSIBILITY: the warning row asks for the Accessibility permission (the legacy
   "Allow Accessibility Access…"), or says the keyboard shortcuts could not start.
 - host.statusbar (lyssna/mac/statusbar.py, lyssna/win/statusbar.py) shows the title, sets the
@@ -46,6 +49,7 @@ from ..menu import (
     dictation_title,
     download_line,
     engine_row_label,
+    key_name,
     local_only_title,
     menubar_text_allowed,
     now_playing,
@@ -249,6 +253,7 @@ class Tray:
     # attributes so a preview can show the other system's way.
     key_text: Callable[[str], str] = staticmethod(lambda spec: host.statusbar.shortcut_text(spec))
     style_header: Callable[[QAction, QMenu], None] = staticmethod(lambda a, menu: host.statusbar.style_header(a, menu))
+    shortcut_free_text: Callable[[], bool] = staticmethod(lambda: bool(host.MENU_SHORTCUT_FREE_TEXT))
 
     def __init__(self, ctl):
         self.ctl = ctl
@@ -718,8 +723,14 @@ class Tray:
         return cleanup_title(cls.label if cls else "")
 
     def _dictate_title(self) -> str:
-        return dictation_title(str(self.ctl.cfg.get("dictation", {}).get("hotkey", host.DICTATION_KEY_DEFAULT)),
-                               recording=self.ctl.dictation.state in ("recording", "locked"))
+        """The dictation row's full text. Where the shortcut column takes free text the key goes
+        there like the other rows' shortcuts ("Start Dictation", then "Hold Ctrl+Win"); elsewhere
+        it stays in the title ("Start Dictation · hold fn"). Finish Dictation names no key."""
+        hotkey = str(self.ctl.cfg.get("dictation", {}).get("hotkey", host.DICTATION_KEY_DEFAULT))
+        recording = self.ctl.dictation.state in ("recording", "locked")
+        if self.shortcut_free_text() and not recording:
+            return f"Start Dictation\tHold {key_name(hotkey)}"
+        return dictation_title(hotkey, recording=recording)
 
     def _refresh_voices(self) -> None:
         self.voice_menu.setTitle(self._voice_title())
@@ -982,6 +993,7 @@ def _preview_tray(open_menu: str = "", warning: bool = False, style: str = "", *
     class PreviewTray(Tray):
         key_text = staticmethod(_preview_keys(style))
         style_header = staticmethod(win_statusbar.style_header)  # the native Mac header is a dim bold row too
+        shortcut_free_text = staticmethod(lambda: style == "windows")
 
     tray = PreviewTray(_PreviewController(**state))
     tray.timer.stop()
