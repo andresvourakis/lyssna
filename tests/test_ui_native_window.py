@@ -194,9 +194,10 @@ def _public_functions(module) -> set[str]:
 def test_the_twins_offer_the_same_functions():
     assert _public_functions(mac_window) == _public_functions(win_window)
     assert {"make_floating", "set_click_through", "bring_to_top", "is_on_screen", "prepare_app", "hide_dock_icon",
-            "activate_app", "set_dark_title_bar", "left_button_down", "popups_over"} == _public_functions(mac_window)
+            "activate_app", "set_dark_title_bar", "left_button_down", "popups_over", "front_app"} == _public_functions(mac_window)
     assert win_window.DETECTS_POPUPS is True and mac_window.DETECTS_POPUPS is False
     assert mac_window.popups_over((0, 0, 100, 100)) == []
+    assert mac_window.front_app() is None
     assert host.MODULES["window"] == ("lyssna.mac.window", "lyssna.win.window")
 
 
@@ -318,6 +319,81 @@ def test_popups_over_never_raises(monkeypatch):
         raise OSError("no user32 here")
     monkeypatch.setattr(win_window, "_popup_api", boom)
     assert win_window.popups_over((0, 0, 10, 10)) == []
+
+
+class FakeProcessUser32:
+    def __init__(self, hwnd: int, pid: int):
+        self.hwnd, self.pid = hwnd, pid
+
+    def GetForegroundWindow(self):
+        return self.hwnd
+
+    def GetWindowThreadProcessId(self, hwnd, ref):
+        assert hwnd == self.hwnd
+        ref._obj.value = self.pid
+        return 1
+
+
+class FakeKernel32:
+    """One process, `path` its executable; records the handles opened and closed."""
+
+    def __init__(self, path: str | None, opens: bool = True):
+        self.path, self.opens = path, opens
+        self.opened: list = []
+        self.closed: list = []
+
+    def OpenProcess(self, access, inherit, pid):
+        assert access == win_window.PROCESS_QUERY_LIMITED_INFORMATION and not inherit
+        if not self.opens:
+            return 0
+        self.opened.append(pid)
+        return 77
+
+    def QueryFullProcessImageNameW(self, handle, flags, buf, size_ref):
+        assert handle == 77 and flags == 0
+        if self.path is None:
+            return 0
+        buf.value = self.path
+        size_ref._obj.value = len(self.path)
+        return 1
+
+    def CloseHandle(self, handle):
+        self.closed.append(handle)
+        return 1
+
+
+def _process_twin(monkeypatch, user32, kernel32):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(win_window, "_process_api", lambda: SimpleNamespace(user32=user32, kernel32=kernel32))
+
+
+def test_front_app_is_the_foreground_windows_executable_name(monkeypatch):
+    k = FakeKernel32(r"C:\Program Files (x86)\Microsoft\Edge\Application\MSEdge.exe")
+    _process_twin(monkeypatch, FakeProcessUser32(hwnd=5, pid=4321), k)
+    assert win_window.front_app() == "msedge.exe"
+    assert k.opened == [4321] and k.closed == [77]  # the handle is closed again
+
+
+def test_front_app_is_none_when_it_cannot_be_found(monkeypatch):
+    k = FakeKernel32(r"C:\Windows\notepad.exe")
+    _process_twin(monkeypatch, FakeProcessUser32(hwnd=0, pid=4321), k)
+    assert win_window.front_app() is None  # no foreground window
+    _process_twin(monkeypatch, FakeProcessUser32(hwnd=5, pid=0), k)
+    assert win_window.front_app() is None  # no process
+    k = FakeKernel32(r"C:\Windows\notepad.exe", opens=False)
+    _process_twin(monkeypatch, FakeProcessUser32(hwnd=5, pid=4321), k)
+    assert win_window.front_app() is None and k.closed == []  # not allowed to open it
+    k = FakeKernel32(None)
+    _process_twin(monkeypatch, FakeProcessUser32(hwnd=5, pid=4321), k)
+    assert win_window.front_app() is None and k.closed == [77]  # no path, handle still closed
+
+
+def test_front_app_never_raises(monkeypatch):
+    def boom():
+        raise OSError("no user32 here")
+    monkeypatch.setattr(win_window, "_process_api", boom)
+    assert win_window.front_app() is None
 
 
 class FakeNSWindow:

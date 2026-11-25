@@ -4,6 +4,7 @@ offscreen platform with a fixed fake screen, so it needs no display."""
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt
@@ -309,3 +310,278 @@ def test_checks_are_cancelled_on_hide_and_on_a_new_selection(button, popup_twin)
     assert button._checks == []
     pump(0.08)
     assert twin.asked == []
+
+
+# -- waiting for the pop-up in an app that has one (layout/popup_wait) ------------------------
+
+
+def test_an_app_is_learned_the_first_time_a_pop_up_covers_the_button():
+    from lyssna.ui.layout.popup_wait import FIRST_WAIT, PopupMemory
+
+    m = PopupMemory()
+    assert not m.knows("msedge.exe") and not m.knows(None)
+    assert m.covered("msedge.exe", 0.12) is True  # learned; the checks' arrival is not kept
+    assert m.knows("msedge.exe") and not m.knows("notepad.exe")
+    assert m.deadline("msedge.exe") == FIRST_WAIT
+    assert m.covered("msedge.exe", None) is False
+
+
+def test_the_deadline_follows_the_slowest_arrival_and_is_capped():
+    from lyssna.ui.layout.popup_wait import MARGIN, MAX_WAIT, PopupMemory
+
+    m = PopupMemory()
+    m.covered("msedge.exe")
+    m.covered("msedge.exe", 0.1)
+    assert m.deadline("msedge.exe") == pytest.approx(0.1 + MARGIN)
+    m.covered("msedge.exe", 0.05)  # a faster one does not lower it
+    assert m.deadline("msedge.exe") == pytest.approx(0.1 + MARGIN)
+    m.covered("msedge.exe", 0.3)
+    assert m.deadline("msedge.exe") == pytest.approx(0.3 + MARGIN)
+    m.covered("msedge.exe", 0.9)  # a late one from the checks after showing
+    assert m.deadline("msedge.exe") == MAX_WAIT
+
+
+def test_an_app_is_forgotten_after_three_presentations_without_a_pop_up():
+    from lyssna.ui.layout.popup_wait import FIRST_WAIT, FORGET_AFTER, PopupMemory
+
+    assert FORGET_AFTER == 3
+    m = PopupMemory()
+    m.covered("msedge.exe")
+    m.covered("msedge.exe", 0.1)
+    assert m.missed("msedge.exe") is False and m.missed("msedge.exe") is False
+    m.covered("msedge.exe", 0.1)  # a hit starts the run again
+    assert m.missed("msedge.exe") is False and m.missed("msedge.exe") is False and m.knows("msedge.exe")
+    assert m.missed("msedge.exe") is True and not m.knows("msedge.exe")
+    assert m.missed("msedge.exe") is False  # nothing to forget
+    m.covered("msedge.exe", 0.2)  # learned afresh: back to the first deadline
+    assert m.deadline("msedge.exe") == FIRST_WAIT
+
+
+class FakeTimers:
+    """later() and the clock for the button: nothing runs until advance() moves the clock."""
+
+    def __init__(self):
+        self.now = 100.0
+        self.timers: list = []
+
+    def later(self, delay, fn, *args):
+        t = SimpleNamespace(due=self.now + delay, delay=delay, fn=fn, args=args, cancelled=False)
+        t.cancel = lambda: setattr(t, "cancelled", True)
+        self.timers.append(t)
+        return t
+
+    def monotonic(self):
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        end = self.now + seconds
+        while True:
+            due = [t for t in self.timers if not t.cancelled and t.due <= end + 1e-9]
+            if not due:
+                break
+            t = min(due, key=lambda t: t.due)
+            self.timers.remove(t)
+            self.now = max(self.now, t.due)
+            t.fn(*t.args)
+        self.now = end
+
+
+class AppTwin(PopupTwin):
+    """PopupTwin that also names the app in front, and can fail on purpose."""
+
+    def __init__(self, app="msedge.exe", **kw):
+        super().__init__(**kw)
+        self.app = app
+        self.fail = False
+
+    def front_app(self):
+        return self.app
+
+    def popups_over(self, rect):
+        if self.fail:
+            raise RuntimeError("no windows here")
+        return super().popups_over(rect)
+
+
+TOOLBAR_PX = (155, 100, 315, 335)  # to the right of the cursor, from above the selection to just under it
+
+
+@pytest.fixture
+def waits(monkeypatch):
+    """A twin with an app in front, fake timers and a fake clock for the button."""
+    from lyssna import host
+    from lyssna.ui import selection_button
+
+    clock = FakeTimers()
+    monkeypatch.setattr(selection_button, "later", clock.later)
+    monkeypatch.setattr(selection_button, "time", SimpleNamespace(monotonic=clock.monotonic))
+
+    def make(**kw):
+        twin = AppTwin(**kw)
+        monkeypatch.setattr(host, "window", twin)
+        return twin, clock
+    return make
+
+
+def _learn(button, twin, clock):
+    """One presentation in Edge with its toolbar over the button: it shows, then jumps once."""
+    twin.popups = [TOOLBAR_PX]
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.visible() and button.frame()[0] == 133.0
+    clock.advance(0.2)
+    assert button.frame()[0] != 133.0  # moved off it
+    assert button._memory.knows("msedge.exe")
+    button.hide()
+
+
+def test_an_unlearned_app_shows_at_once_as_before(button, waits):
+    twin, clock = waits(popups=[(600, 100, 700, 200)])
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.visible() and button.frame() == (133.0, 256.0, 34.0, 34.0)
+    assert [t.delay for t in clock.timers] == [button.timeout, 0.12, 0.35, 0.7]
+    clock.advance(1.0)
+    assert button.frame() == (133.0, 256.0, 34.0, 34.0) and not button._memory.knows("msedge.exe")
+    assert len(twin.asked) == 3  # only the checks after showing looked
+
+
+def test_a_learned_app_shows_once_at_the_clear_spot_when_the_pop_up_comes(button, waits):
+    from lyssna.ui.layout.button import OFFSET
+
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = []
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert not button.visible()  # waiting for the toolbar
+    assert not button.contains_screen_point(150, 270)
+    clock.advance(0.05)
+    assert not button.visible()
+    twin.popups = [TOOLBAR_PX]
+    clock.advance(0.025)
+    assert button.visible() and button.frame() == (155 - OFFSET - 34.0, 256.0, 34.0, 34.0)
+    assert twin.asked[-1] == (133.0, 256.0, 167.0, 290.0)  # it looked over its would-be spot
+    # The auto-hide counts from the moment it showed, and the later checks leave it where it is.
+    hide = [t for t in clock.timers if t.fn == button.hide and not t.cancelled]
+    assert len(hide) == 1 and hide[0].due == pytest.approx(clock.now + button.timeout)
+    clock.advance(1.0)
+    assert button.frame() == (155 - OFFSET - 34.0, 256.0, 34.0, 34.0)
+    # The arrival (about 75 ms) became the deadline, plus the margin.
+    from lyssna.ui.layout.popup_wait import MARGIN
+    assert button._memory.deadline("msedge.exe") == pytest.approx(0.075 + MARGIN)
+
+
+def test_a_learned_app_without_a_pop_up_shows_at_the_default_at_the_deadline(button, waits, caplog):
+    import logging
+
+    from lyssna.ui.layout.popup_wait import FIRST_WAIT
+
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = [(600, 100, 700, 200)]  # elsewhere
+    with caplog.at_level(logging.INFO, logger="lyssna.ui.selection_button"):
+        button._present(150, 310, None, (100, 300, 200, 20))
+        clock.advance(FIRST_WAIT - 0.01)
+        assert not button.visible()
+        clock.advance(0.01)
+    assert button.visible() and button.frame() == (133.0, 256.0, 34.0, 34.0)
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == ["play button in msedge.exe: pop-up none, waited up to 250 ms"]
+
+
+def test_a_learned_app_is_forgotten_after_three_waits_with_nothing(button, waits):
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = []
+    for _ in range(3):
+        assert button._memory.knows("msedge.exe")
+        button._present(150, 310, None, (100, 300, 200, 20))
+        clock.advance(1.0)
+        assert button.visible()
+        button.hide()
+    assert not button._memory.knows("msedge.exe")
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.visible()  # at once again
+
+
+def test_dismiss_during_the_wait_leaves_nothing_showing(button, waits):
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = []
+    button._present(150, 310, None, (100, 300, 200, 20))
+    clock.advance(0.05)
+    button.dismiss()
+    twin.popups = [TOOLBAR_PX]
+    clock.advance(1.0)
+    assert not button.visible() and button._wait is None
+    # A wait cut short says nothing about the app: it is still learned.
+    assert button._memory.knows("msedge.exe")
+
+
+def test_a_new_selection_during_the_wait_replaces_it(button, waits):
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = []
+    button._present(150, 310, None, (100, 300, 200, 20))
+    first = button._wait
+    clock.advance(0.05)
+    button._present(450, 310, None, (400, 300, 200, 20))
+    assert button._wait is not first
+    clock.advance(1.0)
+    assert button.visible() and button.frame()[0] == 433.0
+
+
+def test_an_error_in_the_wait_shows_the_default_at_once(button, waits):
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = []
+    twin.fail = True
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.visible() and button.frame() == (133.0, 256.0, 34.0, 34.0)
+    assert button._wait is None
+
+
+def test_an_error_later_in_the_wait_shows_the_default_at_once(button, waits):
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = []
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert not button.visible()
+    twin.fail = True
+    clock.advance(0.025)
+    assert button.visible() and button.frame() == (133.0, 256.0, 34.0, 34.0)
+
+
+def test_an_error_naming_the_front_app_shows_at_once(button, waits):
+    twin, clock = waits()
+    _learn(button, twin, clock)
+
+    def boom():
+        raise OSError("no foreground window")
+    twin.front_app = boom
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.visible() and button.frame()[0] == 133.0
+
+
+def test_no_waiting_where_pop_ups_cannot_be_found(button, waits):
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.DETECTS_POPUPS = False
+    twin.asked.clear()
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.visible() and [t.delay for t in clock.timers if not t.cancelled] == [button.timeout]
+    clock.advance(1.0)
+    assert twin.asked == []
+
+
+def test_a_late_pop_up_raises_the_deadline(button, waits):
+    from lyssna.ui.layout.popup_wait import FIRST_WAIT, MAX_WAIT
+
+    twin, clock = waits()
+    _learn(button, twin, clock)
+    twin.popups = []
+    button._present(150, 310, None, (100, 300, 200, 20))
+    clock.advance(FIRST_WAIT)
+    assert button.visible() and button.frame()[0] == 133.0
+    twin.popups = [TOOLBAR_PX]
+    clock.advance(0.12)  # the first check after showing finds it: one jump, as before
+    assert button.frame()[0] != 133.0
+    assert button._memory.deadline("msedge.exe") == MAX_WAIT  # 0.37 s plus the margin, capped

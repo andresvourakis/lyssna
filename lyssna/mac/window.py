@@ -198,6 +198,12 @@ def popups_over(rect) -> list[tuple]:
     return []
 
 
+def front_app() -> str | None:
+    """None on the Mac: the play button only learns other apps' pop-ups where it can find them
+    (DETECTS_POPUPS), and the Windows twin answers the front app's executable name."""
+    return None
+
+
 def left_button_down() -> bool:
     """Is the left mouse button held right now? Asked of the window server, so a release Qt
     never saw (a drag that ended outside every Qt window) still counts. Off Cocoa (the

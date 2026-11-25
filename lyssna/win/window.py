@@ -14,6 +14,7 @@ any window exists."""
 from __future__ import annotations
 
 import logging
+import ntpath
 import os
 from types import SimpleNamespace
 
@@ -32,6 +33,10 @@ GWL_STYLE = -16
 WS_POPUP = 0x80000000
 GW_OWNER = 4
 DWMWA_CLOAKED = 14
+
+# What front_app asks: the least access that still answers a process's executable path.
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+MAX_PATH_CHARS = 32768  # the longest path QueryFullProcessImageNameW can answer
 
 # Extended window styles.
 GWL_EXSTYLE = -20
@@ -203,6 +208,61 @@ def popups_over(rect) -> list[tuple]:
     except Exception:
         log.debug("could not look for pop-up windows", exc_info=True)
         return []
+
+
+def _process_api():
+    """user32 and kernel32 with the argument types front_app needs. Its own function so the tests
+    can hand in stand-ins."""
+    import ctypes
+    from ctypes import wintypes
+
+    u = _user32()
+    u.GetForegroundWindow.argtypes = []
+    u.GetForegroundWindow.restype = wintypes.HWND
+    u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    u.GetWindowThreadProcessId.restype = wintypes.DWORD
+    k = ctypes.windll.kernel32
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    k.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.CloseHandle.restype = wintypes.BOOL
+    return SimpleNamespace(user32=u, kernel32=k)
+
+
+def front_app() -> str | None:
+    """The app in front: the foreground window's executable name, lower case ("msedge.exe"). The
+    play button keeps what it learns about other apps' pop-ups under this name. None when it
+    cannot be found; never raises."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        api = _process_api()
+        u, k = api.user32, api.kernel32
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return None
+        pid = wintypes.DWORD(0)
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return None
+        handle = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not handle:
+            return None
+        try:
+            size = wintypes.DWORD(MAX_PATH_CHARS)
+            path = ctypes.create_unicode_buffer(MAX_PATH_CHARS)
+            if not k.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
+                return None
+            name = ntpath.basename(path.value).lower()
+        finally:
+            k.CloseHandle(handle)
+        return name or None
+    except Exception:
+        log.debug("could not find the app in front", exc_info=True)
+        return None
 
 
 def left_button_down() -> bool:
