@@ -7,9 +7,9 @@ window. All three open the website's pay card in its give-only mode.
 
 Every support link or button carries the heart (SYMBOL), in the app as on the website.
 
-SITE_URL is empty until the website has an address. While it is empty every support link is
-hidden, so a build made before then asks for nothing and links nowhere. To preview the links
-before then, start the app with LYSSNA_SITE_URL set to a copy of the site, for example
+SITE_URL is the website's address. If it is ever empty every support link is hidden, so such a
+build asks for nothing and links nowhere. To preview the links against a local copy of the
+site, start the app with LYSSNA_SITE_URL set to it, for example
 `open --env LYSSNA_SITE_URL=http://localhost:8787 /Applications/Lyssna.app`. Kept free of AppKit
 so the rules can be tested."""
 
@@ -22,7 +22,7 @@ from . import host
 
 log = logging.getLogger("lyssna.support")
 
-SITE_URL = ""  # the website, without a trailing slash, for example "https://lyssna.app"
+SITE_URL = "https://lyssnaapp.com"  # the website, without a trailing slash
 SITE_ENV = "LYSSNA_SITE_URL"  # overrides SITE_URL, to preview the links against a local copy of the site
 SYMBOL = "heart.fill"  # the SF Symbol in front of every support link or button
 MENU_TITLE = "Support Lyssna"
