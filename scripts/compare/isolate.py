@@ -38,10 +38,16 @@ def _refuse(what: str):
     return refuse
 
 
-def isolate(root: str | os.PathLike | None = None) -> Path:
+def isolate(root: str | os.PathLike | None = None, *, home: str | os.PathLike | None = None,
+            socket_path: str | os.PathLike | None = None) -> Path:
     """Point every on-disk location at a fresh folder under `root` (a new temp folder by
     default) and switch off the network, the models, the browser and the real Keychain.
-    Returns the fake home folder."""
+    Returns the fake home folder.
+
+    The live behaviour run (scripts/behave) starts the real app on a profile it prepared
+    beforehand, so it passes that folder as `home` (used as it is, not a new one), and a short
+    `socket_path`: a Unix socket path may be at most 104 bytes on the Mac, which a socket deep in
+    the scratch folder would pass."""
     import httpx
 
     from lyssna import cache, config, download, keystore, policy, support, usage
@@ -52,14 +58,18 @@ def isolate(root: str | os.PathLike | None = None) -> Path:
     from lyssna.mac import launch_agent, speechy
     from lyssna.providers import kokoro
 
-    home = Path(tempfile.mkdtemp(prefix="lyssna-compare-", dir=root))
+    if home is None:
+        home = Path(tempfile.mkdtemp(prefix="lyssna-compare-", dir=root))
+    else:
+        home = Path(home)
+        home.mkdir(parents=True, exist_ok=True)
     paths = {
         "CONFIG_DIR": home / "config",
         "CONFIG_PATH": home / "config" / "config.toml",
         "STATE_DIR": home / "state",
         "CACHE_DIR": home / "cache",
         "LOG_DIR": home / "logs",
-        "SOCKET_PATH": home / "state" / "lyssna.sock",
+        "SOCKET_PATH": Path(socket_path) if socket_path else home / "state" / "lyssna.sock",
     }
     for name, path in paths.items():
         setattr(config, name, path)
