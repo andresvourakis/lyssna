@@ -235,6 +235,48 @@ def test_the_speed_menu_checks_the_current_speed_and_sets_one(pill):
     assert pill.fired[-1] == ("set_speed", 2.0)
 
 
+def test_the_speed_menu_opens_below_the_speed_pill(pill, monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QPoint
+
+    from lyssna import host
+    from lyssna.ui import mini_player as mp
+
+    at = []
+    monkeypatch.setattr(host, "window", SimpleNamespace(NATIVE_MENUS=True, pop_up_menu=lambda rows, x, y, picked: at.append((x, y))))
+    pill._update(playing())
+    pill.speed_btn.perform_click()
+    corner = pill.speed_btn.mapToGlobal(QPoint(0, pill.speed_btn.height() + mp.MENU_DROP))
+    assert at == [(corner.x(), corner.y())]  # its top-left corner just under the pill's bottom-left, as on the Mac
+    pill._popup.close()  # the stand-in showed nothing, so Qt's menu opened at the same corner
+
+
+def test_the_speed_menu_is_the_systems_own_where_the_twin_has_one(pill, monkeypatch):
+    from types import SimpleNamespace
+
+    from lyssna import host
+    from lyssna.player import SPEEDS
+
+    shown = []
+
+    def pop_up_menu(rows, x, y, picked):
+        shown.append((rows, x, y))
+        picked(len(rows) - 1)
+        return True
+
+    monkeypatch.setattr(host, "window", SimpleNamespace(NATIVE_MENUS=True, pop_up_menu=pop_up_menu))
+    pill._update(playing())
+    pill._speed_menu()
+    rows, _x, _y = shown[0]
+    assert [t for t, _ in rows] == [f"{s:g}×" for s in SPEEDS] and [t for t, c in rows if c] == ["1.2×"]
+    assert pill._popup is None and pill.fired[-1] == ("set_speed", 2.0)
+    monkeypatch.setattr(host, "window", SimpleNamespace(NATIVE_MENUS=True, pop_up_menu=lambda *a: False))
+    pill._speed_menu()  # no native menu after all (off Cocoa): Qt's
+    assert pill._popup is not None
+    pill._popup.close()
+
+
 def test_every_button_fires_its_action(pill):
     pill.layout = {"dock": "right", "x": 0.0, "y": 0.5}
     pill._update(playing())
@@ -386,7 +428,10 @@ def test_hovering_the_sliver_opens_the_pill_and_leaving_closes_it_after_the_dela
     p.cursor = (x + w + 6, y + h / 2)  # within the 6 point margin beside the window
     p._hover_tick()
     assert p._outside_since is None
-    p.cursor = (1438.0, y + h / 2)  # pushed against the screen edge: outside, as the Mac's frame-only rule has it
+    p.cursor = (1439.0, y + h / 2)  # pushed against the screen edge: still on the pill (it owns the strip to its edge)
+    p._hover_tick()
+    assert p._outside_since is None
+    p.cursor = (1439.0, y + h + 7)  # against the edge but past the pill's end: outside
     p._hover_tick()
     assert p._outside_since == 100.0
     p.cursor = (720.0, 460.0)
@@ -402,12 +447,11 @@ def test_hovering_the_sliver_opens_the_pill_and_leaving_closes_it_after_the_dela
 
 
 @pytest.mark.parametrize("auto_hide", [False, True])
-def test_a_cursor_pressed_against_the_edge_beside_the_menu_closes_it_once(clocked, auto_hide):
-    """The legacy rule, in the legacy geometry: the open menu sits DOCK_GAP in from the edge and
-    the cursor counts as inside within 6 points of its window, so the last 4 points against the
-    edge (where the resting squiggle's window still reaches) are outside and the menu closes
-    after the delay. Back on the squiggle, nothing the player polls opens it again: only a new
-    enter event would, and that comes from the system's tracking, the same on both interfaces."""
+def test_a_cursor_pressed_against_the_edge_beside_the_menu_keeps_it_open(clocked, auto_hide):
+    """The open menu sits DOCK_GAP in from the edge; the strip between it and the edge counts as
+    on it (layout.pill.hover_inside), so a cursor held against the edge, still or jittering a
+    point or two, never closes it. The legacy frame-only rule closed it there, and the squiggle
+    coming back under the cursor opened it again, a few times a second."""
     p = clocked
     p.auto_hide = auto_hide
     p.show_idle(linger=False)
@@ -419,22 +463,75 @@ def test_a_cursor_pressed_against_the_edge_beside_the_menu_closes_it_once(clocke
     assert p.form == "menu" and len(p.menu_hovers) == 3
     mx, _my, mw, _mh = frame(p)
     assert mx + mw == 1440 - DOCK_GAP
-    p.cursor = (1440 - DOCK_GAP + 6, y + h / 2)  # the edge of the margin: still inside
+    for i in range(1, 40):  # four seconds against the edge at the squiggle's height, jittering
+        p.clock[0] = 100.0 + i * 0.1
+        p.cursor = (1439.0 - i % 3, y + h / 2 + (i % 5) - 2)
+        p._hover_tick()
+        p._auto_tick()
+        QCoreApplication.processEvents()
+    assert p.form == "menu" and p._outside_since is None and p._pending_done is None
+    p.cursor = (1440 - DOCK_GAP - MENU_W - 30, y + h / 2)  # away from the edge, off the menu
     p._hover_tick()
-    assert p._outside_since is None
-    p.cursor = (1439.0, y + h / 2)  # pressed against the edge, at the squiggle's height
-    p._hover_tick()
-    p.clock[0] = 100.0 + HOVER_OUT_DELAY + 1e-6
+    p.clock[0] += HOVER_OUT_DELAY + 1e-6
     p._hover_tick()
     settle(p)
     assert p.form == "rest" and p._watch is None
-    opened = []
-    p._open_menu = lambda: opened.append(p.clock[0])
-    for i in range(1, 40):  # four seconds of polling with the cursor held there
+
+
+@pytest.mark.parametrize("edge", ["left", "right", "bottom"])
+def test_a_cursor_pressed_against_the_edge_keeps_the_pill_open_on_every_dock(clocked, edge):
+    p = clocked
+    p.layout = {"dock": edge, "x": 0.0, "y": 0.5}
+    p._update(playing())
+    p.mouse_entered()
+    settle(p)
+    x, y, w, h = frame(p)
+    cx, cy = x + w / 2, y + h / 2
+    against = {"left": (0.0, cy), "right": (1439.0, cy), "bottom": (cx, 25.0)}[edge]
+    for i in range(1, 30):
         p.clock[0] = 100.0 + i * 0.1
-        p._auto_tick()
-        QCoreApplication.processEvents()
-    assert opened == [] and p.form == "rest"
+        p.cursor = against
+        p._hover_tick()
+    assert p.form == "pill" and p._outside_since is None
+    beyond = {"left": (0.0, y + h + 7), "right": (1439.0, y - 7), "bottom": (x + w + 7, 25.0)}[edge]
+    p.cursor = beyond  # still against the edge, but past the pill's end
+    p._hover_tick()
+    p.clock[0] += HOVER_OUT_DELAY + 1e-6
+    p._hover_tick()
+    settle(p)
+    assert p.form == "sliver"
+
+
+@pytest.mark.parametrize("edge", ["left", "right", "bottom"])
+def test_dropping_the_sliver_on_an_edge_with_the_cursor_on_it_opens_the_pill(clocked, edge):
+    """As on the Mac, where the dropped sliver's tracking area heard the cursor on it."""
+    p = clocked
+    p.layout = {"dock": "right" if edge != "right" else "left", "x": 0.0, "y": 0.5}
+    p._update(playing())
+    drop = {"left": (12.0, 450.0), "right": (1428.0, 450.0), "bottom": (700.0, 37.0)}[edge]
+    p.drag_began()
+    move(p, drop[0] - SLIVER_W / 2, drop[1] - SLIVER_H / 2) if edge != "bottom" else move(p, drop[0] - SLIVER_H / 2, 26.0)
+    p.cursor = drop
+    p.drag_ended_mac(*drop)
+    assert p.dock == edge and p.form == "pill" and p._watch is not None
+    settle(p)
+    p.cursor = (720.0, 460.0)
+    p._hover_tick()
+    p.clock[0] += HOVER_OUT_DELAY + 1e-6
+    p._hover_tick()
+    settle(p)
+    assert p.form == "sliver"
+
+
+def test_dropping_the_sliver_on_an_edge_away_from_the_cursor_leaves_it_closed(clocked):
+    p = clocked
+    p.layout = {"dock": "left", "x": 0.0, "y": 0.5}
+    p._update(playing())
+    p.drag_began()
+    move(p, 1420, 300)
+    p.cursor = (720.0, 460.0)  # the release was reported, but the cursor is elsewhere by now
+    p.drag_ended_mac(1430, 320)
+    assert p.dock == "right" and p.form == "sliver"
 
 
 def test_the_pill_stands_upright_on_the_sides_and_lies_flat_on_the_bottom(pill):

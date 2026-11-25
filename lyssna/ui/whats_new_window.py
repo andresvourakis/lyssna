@@ -38,6 +38,7 @@ from .layout.whats_new import (
     TOP,
     W,
 )
+from .layout.window import UPPER
 from .window import Hairline, Header, Label, LyssnaWindow, TextButton, ink_left, place
 
 CHANGES_URL = f"{REPO_URL}/blob/main/CHANGELOG.md"
@@ -53,7 +54,7 @@ class WhatsNewWindow(LyssnaWindow):
 
     def show(self) -> None:
         self.prepare()
-        self.show_centered()
+        self.show_centered(UPPER)  # a little above the middle, by the Mac window's own rule
 
     def prepare(self) -> None:
         """Build the window if needed, without putting it on screen."""

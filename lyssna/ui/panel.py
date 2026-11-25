@@ -58,6 +58,7 @@ from .. import host
 from . import coords, theme
 from .layout.panel import DRAG_SLOP
 from .layout.pill import HOVER_POLL
+from .motion import PacedAnimation
 from .sliver import EASE_DEFAULT
 
 log = logging.getLogger("lyssna.ui.panel")
@@ -357,7 +358,7 @@ class FloatingPanel:
             if done is not None:
                 done()
             return
-        anim = QVariantAnimation()
+        anim = PacedAnimation()
         anim.setStartValue(coords.as_qrectf(self.frame()))
         anim.setEndValue(coords.as_qrectf(target))
         anim.setDuration(round(duration * 1000))
@@ -507,7 +508,7 @@ class FloatingPanel:
             if done is not None:
                 done()
             return
-        anim = QVariantAnimation()
+        anim = PacedAnimation()
         anim.setStartValue(float(self._alpha))
         anim.setEndValue(float(alpha))
         anim.setDuration(round(seconds * 1000))

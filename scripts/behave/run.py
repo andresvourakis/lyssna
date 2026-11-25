@@ -36,16 +36,20 @@ def _hover(app: LiveApp, out: Path, trials: int) -> dict:
     return {"glide": glide["summary"], "jump": jump["summary"], "trials": {"glide": glide["trials"], "jump": jump["trials"]}}
 
 
-def _edge(app: LiveApp, out: Path, trials: int) -> dict:
-    if not hover.start_reading(app, pause=False):
-        return {"error": "the reading did not start"}
-    return {"middle": edge.measure(app, out, at="middle"), "end": edge.measure(app, out, at="end")}
+def _edge(dock: str):
+    def run(app: LiveApp, out: Path, trials: int) -> dict:
+        if not hover.start_reading(app, pause=False):
+            return {"error": "the reading did not start"}
+        return {"middle": edge.measure(app, out, at="middle", dock=dock), "end": edge.measure(app, out, at="end", dock=dock)}
+    return run
 
 
 # name -> (LiveApp settings, function(app, out, trials))
 SCENARIOS: dict[str, tuple[dict, object]] = {
     "hover": ({"dock": "right"}, _hover),
-    "edge": ({"dock": "right"}, _edge),
+    "edge": ({"dock": "right"}, _edge("right")),
+    "edge_left": ({"dock": "left"}, _edge("left")),
+    "edge_bottom": ({"dock": "bottom"}, _edge("bottom")),
     "rest": ({"dock": "", "rest_dock": "right"}, lambda app, out, n: scenarios.rest_menu(app, out)),
     "history_item": ({"dock": "", "rest_dock": "right"}, lambda app, out, n: scenarios.history_from_menu(app, out)),
     "pill": ({"dock": "right"}, lambda app, out, n: scenarios.pill_buttons(app, out)),

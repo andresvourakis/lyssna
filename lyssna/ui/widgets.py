@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QPushButton, QWidget
 from . import icons, theme
 from .layout.setup import PILL_H, PILL_PAD
 from .layout.wave import BAR_H, KNOB
+from .motion import PacedAnimation
 from .sliver import EASE_DEFAULT
 
 Color = QColor | Callable[[], QColor] | None
@@ -157,7 +158,7 @@ class HoverView(QWidget):
         if not animate or theme.reduce_motion() or not self.isVisible():
             self._set_level(target)
         else:
-            anim = QVariantAnimation(self)
+            anim = PacedAnimation(self)
             anim.setStartValue(float(self._level))
             anim.setEndValue(target)
             anim.setDuration(round((GLOW_IN if on else GLOW_OUT) * 1000))
@@ -374,7 +375,7 @@ class _Glide:
         self._from = None
         if animate and not theme.reduce_motion() and tuple(shown) != to:
             self._from, self._to, self._e = tuple(shown), to, 0.0
-            anim = QVariantAnimation(self.owner)
+            anim = PacedAnimation(self.owner)
             anim.setStartValue(0.0)
             anim.setEndValue(1.0)
             anim.setDuration(round(GLIDE_SECS * 1000))

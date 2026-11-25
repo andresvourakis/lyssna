@@ -22,8 +22,11 @@ come in, but Qt hands that to the widget under the cursor at that moment, which 
 margin around the sliver, and the moves that would carry it on to the sliver do not seem to
 arrive while the app is in the background (the same cause would leave every hover glow dark).
 The legacy views each had an NSTrackingArea active always. watch_mouse_enter does the same for
-the Qt window: its area hears the cursor come onto the window, and from then until it leaves a
-short poll of the cursor tells when it is on the watched widget (WATCHES_MOUSE_ENTER).
+the Qt window: its area hears the cursor come onto the window and every move on it (AppKit sends
+those to the area's owner while the app is in the background too), so the cursor crossing onto
+the watched widget is noticed with the move that carries it there, as the legacy view's own area
+noticed it. A short poll of the cursor runs as well until it leaves, for an arrival no move
+announces (WATCHES_MOUSE_ENTER).
 
 Everything is reached through objc messages on the window Qt made, with the AppKit numbers
 written out below, so nothing here imports a Mac framework when the module loads (the
@@ -63,14 +66,20 @@ PREVENTS_ACTIVATION = "_setPreventsActivation:"  # undocumented; see make_floati
 # interface asks this flag, never the OS.
 WATCHES_MOUSE_ENTER = True
 
-# NSTrackingArea's options (NSTrackingArea.h): enter and exit, whether or not the app is active,
-# over whatever part of the view is visible (AppKit keeps the area's rect up to date).
+# NSTrackingArea's options (NSTrackingArea.h): enter and exit and every move, whether or not the
+# app is active, over whatever part of the view is visible (AppKit keeps the area's rect up to date).
 TRACK_ENTERED_AND_EXITED = 0x01  # NSTrackingMouseEnteredAndExited
+TRACK_MOUSE_MOVED = 0x02         # NSTrackingMouseMoved
 TRACK_ACTIVE_ALWAYS = 0x80       # NSTrackingActiveAlways
 TRACK_IN_VISIBLE_RECT = 0x200    # NSTrackingInVisibleRect
-TRACKING_OPTIONS = TRACK_ENTERED_AND_EXITED | TRACK_ACTIVE_ALWAYS | TRACK_IN_VISIBLE_RECT
+TRACKING_OPTIONS = TRACK_ENTERED_AND_EXITED | TRACK_MOUSE_MOVED | TRACK_ACTIVE_ALWAYS | TRACK_IN_VISIBLE_RECT
 ENTER_POLL_SECS = 0.03  # the cursor poll while it is on a watched window (HOVER_POLL in ui/layout/pill.py)
 OWNER_CLASS = "LyssnaMouseEnterWatcher"
+MENU_TARGET_CLASS = "LyssnaMenuTarget"
+
+# The player's speed and voice menus are the system's own here (pop_up_menu), as the legacy
+# player's were; the interface asks this flag, never the OS.
+NATIVE_MENUS = True
 
 _warned_no_prevents_activation = False
 _watches: dict[int, _Watch] = {}  # id(widget) -> its watch; keeps the owners alive (a tracking area does not)
@@ -148,9 +157,9 @@ def set_click_through(widget, on: bool) -> None:
 def watch_mouse_enter(widget, callback) -> bool:
     """Call `callback()` each time the cursor arrives on `widget`, also while another app is in
     front (see the module docstring). An NSTrackingArea on the native view of the widget's
-    window hears the cursor come onto the window; from then until it leaves, a poll of the
-    cursor every ENTER_POLL_SECS fires the callback once per arrival on the widget itself, on
-    the main thread. Safe to call again, and called again whenever Qt may have rebuilt the
+    window hears the cursor come onto the window and move on it; each move, and a poll of the
+    cursor every ENTER_POLL_SECS until it leaves, fires the callback once per arrival on the
+    widget itself, on the main thread. Safe to call again, and called again whenever Qt may have rebuilt the
     native view: the same view keeps its one area, a new one gets it and the old one loses it.
     Returns whether the widget is watched (False off Cocoa); never raises."""
     try:
@@ -210,6 +219,11 @@ class _Watch:
         self.check()
 
     def exited(self) -> None:
+        self.check()
+
+    def moved(self) -> None:
+        """The cursor moved on the window: look now, so an arrival is noticed with the move that
+        made it rather than at the next poll."""
         self.check()
 
     def check(self) -> None:
@@ -307,8 +321,8 @@ def _make_area(options: int, owner):
 
 
 def _make_owner(watch: _Watch):
-    """The NSObject the tracking area sends mouseEntered: and mouseExited: to, passing them on to
-    `watch`. AppKit sends them on the main thread."""
+    """The NSObject the tracking area sends mouseEntered:, mouseExited: and mouseMoved: to,
+    passing them on to `watch`. AppKit sends them on the main thread."""
     global _owner_cls
     if _owner_cls is None:
         import objc
@@ -325,6 +339,9 @@ def _make_owner(watch: _Watch):
                 def mouseExited_(self, event):
                     _owner_event(self, "exited")
 
+                def mouseMoved_(self, event):
+                    _owner_event(self, "moved")
+
             _owner_cls = LyssnaMouseEnterWatcher
     owner = _owner_cls.alloc().init()
     owner.watch = watch
@@ -336,9 +353,70 @@ def _owner_event(owner, kind: str) -> None:
     try:
         w = getattr(owner, "watch", None)
         if w is not None:
-            w.entered() if kind == "entered" else w.exited()
+            {"entered": w.entered, "exited": w.exited, "moved": w.moved}[kind]()
     except Exception:
         log.exception("mouse %s handling failed", kind)
+
+
+def pop_up_menu(rows, x: float, y: float, picked) -> bool:
+    """Open a native menu of `rows` ((title, checked) each) with its top-left corner at the
+    global Qt point (x, y), as the legacy player opened its speed and voice menus: an NSMenu,
+    so it has the system's own size, rows and look. It returns once the menu has closed, then
+    calls `picked(index)` if a row was chosen. Returns True when the menu was shown, False when
+    there is no native menu to show (off Cocoa: the caller draws its own); never raises."""
+    from PySide6.QtGui import QGuiApplication
+
+    if QGuiApplication.platformName() != "cocoa":
+        return False
+    try:
+        from AppKit import NSMenu, NSMenuItem
+
+        primary = QGuiApplication.primaryScreen()
+        height = primary.geometry().height() if primary is not None else 0
+        target = _menu_target()
+        menu = NSMenu.alloc().initWithTitle_("")
+        for index, (title, checked) in enumerate(rows):
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(str(title), "pick:", "")
+            item.setTarget_(target)
+            item.setTag_(index)
+            item.setState_(1 if checked else 0)
+            menu.addItem_(item)
+        target.chosen = None
+        menu.popUpMenuPositioningItem_atLocation_inView_(None, (float(x), float(height - y)), None)
+        chosen, target.chosen = target.chosen, None
+    except Exception:
+        log.warning("could not open a native menu", exc_info=True)
+        return False
+    if chosen is not None:
+        try:
+            picked(int(chosen))
+        except Exception:
+            log.exception("the menu's choice failed")
+    return True
+
+
+_menu_target_obj = None
+
+
+def _menu_target():
+    """The one NSObject every native menu's rows send their action to; it notes the row's tag."""
+    global _menu_target_obj
+    if _menu_target_obj is None:
+        import objc
+
+        try:
+            cls = objc.lookUpClass(MENU_TARGET_CLASS)
+        except objc.nosuchclass_error:
+            from Foundation import NSObject
+
+            class LyssnaMenuTarget(NSObject):
+                def pick_(self, sender):
+                    self.chosen = int(sender.tag())
+
+            cls = LyssnaMenuTarget
+        _menu_target_obj = cls.alloc().init()
+        _menu_target_obj.chosen = None
+    return _menu_target_obj
 
 
 def bring_to_top(widget) -> None:

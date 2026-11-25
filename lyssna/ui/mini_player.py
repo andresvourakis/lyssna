@@ -105,6 +105,7 @@ from .layout.pill import (
     docked_frame,
     edge_coord,
     edge_frame,
+    hover_inside,
     is_flat,
     lay,
     may_wave,
@@ -119,6 +120,7 @@ from .layout.pill import (
 )
 from .layout.wave import BAR_H, CAPSULE_H, CAPSULE_INSET, CAPSULE_W, SLIVER_H, SLIVER_W, WAVE_H, WAVE_W
 from .mainthread import is_main_thread, on_main
+from .motion import PacedAnimation
 from .panel import FloatingPanel
 from .sliver import EASE_IN, EASE_OUT, Sliver
 from .wave import WaveView
@@ -130,6 +132,7 @@ log = logging.getLogger("lyssna.ui.player")
 CHEVRONS = {"left": "chevron.right", "right": "chevron.left", "bottom": "chevron.up"}
 ARROWS = {"left": "left", "right": "right", "bottom": "down"}  # arrow.<x>.to.line.compact
 MENU_ITEMS = (("dictate", MENU_MIC_H, MENU_MIC_W), ("read", MENU_DISC, MENU_DISC), ("history", MENU_DISC, MENU_DISC))
+MENU_DROP = 4  # the speed and voice menus open this far below their button (the Mac's popUpMenu origin)
 
 
 # -- screens and the mouse (replaced in the tests) -------------------------------------------------
@@ -880,30 +883,33 @@ class MiniPlayer(FloatingPanel):
         self._popup = menu  # kept, or Python would collect it while it is open
         return menu
 
-    def _pop(self, menu: QMenu, anchor: QWidget) -> None:
-        """Open the menu with its top-left corner 4 px above the button's, as the Mac does."""
-        menu.popup(anchor.mapToGlobal(QPoint(0, -4)))
+    def _pop(self, rows: list[tuple[str, bool, Callable[[], None]]], anchor: QWidget) -> None:
+        """Open a menu of `rows` (title, checked, what picking it does) with its top-left corner
+        MENU_DROP below the button's bottom-left, as the Mac does. Where the system has menus of
+        its own (host.window.NATIVE_MENUS) it is one of those, with the system's size and rows,
+        else a QMenu."""
+        corner = anchor.mapToGlobal(QPoint(0, anchor.height() + MENU_DROP))
+        native = getattr(host.window, "pop_up_menu", None)
+        if getattr(host.window, "NATIVE_MENUS", False) and native is not None:
+            if native([(title, checked) for title, checked, _ in rows], corner.x(), corner.y(), lambda i: rows[i][2]()):
+                return
+        menu = self._new_menu()
+        for title, checked, pick in rows:
+            act = menu.addAction(title)
+            act.setCheckable(True)
+            act.setChecked(checked)
+            act.triggered.connect(lambda _checked=False, pick=pick: pick())
+        menu.popup(corner)
 
     def _speed_menu(self) -> None:
-        menu = self._new_menu()
-        for s in SPEEDS:
-            act = menu.addAction(f"{s:g}×")
-            act.setCheckable(True)
-            act.setChecked(abs(s - self._speed) < 0.01)
-            act.triggered.connect(lambda _checked=False, v=s: self._fire("set_speed", float(v)))
-        self._pop(menu, self.speed_btn)
+        self._pop([(f"{s:g}×", abs(s - self._speed) < 0.01, lambda v=s: self._fire("set_speed", float(v))) for s in SPEEDS],
+                  self.speed_btn)
 
     def _voice_menu(self) -> None:
         voices, current = self._voices()
         if not voices:
             return
-        menu = self._new_menu()
-        for vid, text in voices:
-            act = menu.addAction(text)
-            act.setCheckable(True)
-            act.setChecked(vid == current)
-            act.triggered.connect(lambda _checked=False, v=vid: self._fire("set_voice", str(v)))
-        self._pop(menu, self.badge)
+        self._pop([(text, vid == current, lambda v=vid: self._fire("set_voice", str(v))) for vid, text in voices], self.badge)
 
     def _voices(self) -> tuple[list, str]:
         if self.voices_fn is None:
@@ -935,12 +941,19 @@ class MiniPlayer(FloatingPanel):
             self._open_menu()
 
     def _mouse_inside(self, margin: float = 6.0) -> bool:
-        """Is the cursor on the open form's window, or within `margin` of it? The legacy rule
-        exactly: the window's frame only. The open form sits DOCK_GAP in from the edge, so a
-        cursor pressed against the edge itself is outside and the form closes, as on the Mac."""
+        """Is the cursor on the open form's window, or within `margin` of it, or between it and
+        the screen edge it is docked on (layout.pill.hover_inside)? The legacy rule was the
+        window's frame only, so a cursor pressed against the edge closed the pill, the sliver
+        came back under it and opened it again, a few times a second."""
+        edge = self.form_edge()
+        coord = (self._rest_anchor if self.form in ("rest", "menu") else self._anchor)[0]
+        return hover_inside(*self._cursor(), self.frame_mac(), margin, edge, coord)
+
+    def _cursor_on_form(self) -> bool:
+        """Is the cursor on the form's window itself (no margin)?"""
         px, py = self._cursor()
         x, y, w, h = self.frame_mac()
-        return x - margin <= px <= x + w + margin and y - margin <= py <= y + h + margin
+        return x <= px <= x + w and y <= py <= y + h
 
     def _watch_hover(self) -> None:
         """While the pill or the menu is open, poll the cursor; shrink back once it has been outside
@@ -1123,7 +1136,7 @@ class MiniPlayer(FloatingPanel):
         self._scale_host = host
         log.debug("set_scale %.2f animate=%s", s, animate)
         if animate and not theme.reduce_motion() and abs(current - s) > 1e-6:
-            anim = QVariantAnimation(self.panel)
+            anim = PacedAnimation(self.panel)
             anim.setStartValue(float(current))
             anim.setEndValue(float(s))
             anim.setDuration(round(HOVER_SECS * 1000))
@@ -1221,6 +1234,12 @@ class MiniPlayer(FloatingPanel):
         edge, screen = self._edge_near(mx, my)
         if edge and self.dock:  # a docked player moves between edges; the card never docks by dragging
             self._collapse(edge, screen, self._centre_along(edge))
+            # Dropped with the cursor on the sliver: it opens there, as the Mac's tracking area
+            # did for a view that came up under the cursor. The watch on the sliver does not
+            # count a form shown under the cursor as an arrival (it would pump at the edge), so
+            # the drop says so itself.
+            if self._cursor_on_form():
+                self.mouse_entered()
         elif self.dock:
             self._expand_at(mx, my)
         else:
@@ -1574,7 +1593,7 @@ class MiniPlayer(FloatingPanel):
             return
         token = object()
         self._slide_token = token
-        anim = QVariantAnimation(self.panel)
+        anim = PacedAnimation(self.panel)
         anim.setStartValue(float(rest.slide))
         anim.setEndValue(float(target))
         anim.setDuration(round(SLIDE_SECS * 1000))
@@ -1764,7 +1783,7 @@ class MiniPlayer(FloatingPanel):
             settled()
             return
         from_len, from_alpha = kit["dictate_capsule"].length, buttons[0].alpha
-        anim = QVariantAnimation(self.panel)
+        anim = PacedAnimation(self.panel)
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
         anim.setDuration(round(GROW_SECS * 1000))

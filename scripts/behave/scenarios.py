@@ -145,6 +145,7 @@ def history_from_menu(app: LiveApp, out: Path) -> dict:
     res = {"window": got[0] if got else None, "open_ms": round((time.time() - t) * 1000) if got else None}
     if got:
         time.sleep(0.6)
+        res["window"] = _settled(app, got[0])
         shoot_window(got[0]["id"], out / "history.png")
         res["ax"] = _window_ax(app, got[0]["title"])
         (out / "history-ax.json").write_text(json.dumps(res["ax"], indent=1))
@@ -348,6 +349,9 @@ def auto_hide(app: LiveApp, out: Path) -> dict:
     if before and shown and reach and left:
         res["reveal"] = frames.motion(r.frames, reach, before[-1].pixels, shown[-1].pixels, until=out_trail[0][0])
         res["hide"] = frames.motion(r.frames, left, shown[-1].pixels, r.frames[-1].pixels)
+        slide = [ts for ts, _l, name, m in app.log_lines(trail[0][0]) if name == "behave.probe" and m.startswith("probe slide_step")]
+        res["steps_reveal"] = hover._cadence(slide, reach, reach + 0.5)  # the new side's probes only: its step cadence
+        res["steps_hide"] = hover._cadence(slide, left, left + 1.2)
         frames.filmstrip(r.frames, reach, reach + 0.5, out / "autohide-reveal.png")
         frames.filmstrip(r.frames, left, left + 1.0, out / "autohide-hide.png")
     res["capture_rate"] = round(r.rate(), 1)
@@ -402,6 +406,12 @@ def menubar(app: LiveApp, out: Path) -> dict:
     return {"rows": rows, "opened_by_press": pressed}
 
 
+def _settled(app: LiveApp, first: dict) -> dict:
+    """The window as listed once its opening animation is over: the first sight of a new window
+    is mid-animation (macOS grows it into place), so its bounds are a few points off."""
+    return next((w for w in windows_of(app.pid) if w["id"] == first["id"]), first)
+
+
 def _window_ax(app: LiveApp, title: str) -> list[dict]:
     for w in ax.windows(app.pid):
         if not title or str(ax.attr(w, "AXTitle") or "") == title:
@@ -440,6 +450,7 @@ def windows(app: LiveApp, out: Path) -> dict:
         entry: dict = {"open_ms": round((time.time() - t) * 1000) if got else None, "window": got[0] if got else None}
         if got:
             time.sleep(0.8)
+            entry["window"] = _settled(app, got[0])
             shoot_window(got[0]["id"], out / f"{label}.png")
             entry["ax"] = _window_ax(app, got[0]["title"])
             (out / f"{label}-ax.json").write_text(json.dumps(entry["ax"], indent=1))
@@ -608,9 +619,14 @@ def selection(app: LiveApp, out: Path, register_cleanup: Callable[[Callable[[], 
         if not word or not ours_in_front():
             return {**res, "error": f"the test document is not in front ({front_app()[1]})"}
         wx, wy = word[0] + word[2] / 2, word[1] + word[3] / 2
+        before_windows = windows_of(app.pid)
+        app.ui()  # the first `ui` request of a run is slow on the new side (it loads the cleanup model's library): not in the timing
         t = drive.click(wx, wy, clicks=2)
+        res["button_on_screen_ms"] = _button_on_screen_ms(app, before_windows, t)
         got = app.wait_for(lambda: app.ui().get("selection_button"), 4.0, every=0.03)
         res["button_ms"] = round((time.time() - t) * 1000) if got else None
+        time.sleep(0.2)
+        res["button_timeline_ms"] = _selection_timeline(app, t)
         res["button_frame"] = got
         res["button_offset_from_word"] = ([round(got["x"] - word[0]), round(drive.to_top_left(got)[1] - word[1])] if got else None)
         shoot_rect((word[0] - 80, word[1] - 80, 360, 200), out / "selection-button.png")
@@ -654,6 +670,43 @@ def selection(app: LiveApp, out: Path, register_cleanup: Callable[[Callable[[], 
     finally:
         close_textedit()
     return res
+
+
+def _button_on_screen_ms(app: LiveApp, before: list[dict], t: float, timeout: float = 2.0) -> float | None:
+    """Milliseconds from the first press of the double click until the window server lists a new
+    small floating window of the app (the play button), asked as often as it answers (a few ms)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        now = time.time()
+        if [w for w in new_windows(before, windows_of(app.pid)) if w["layer"] > 0 and w["bounds"][2] <= 80]:
+            return round((now - t) * 1000, 1)
+    return None
+
+
+SELECTION_MARKS = (  # (name in the timeline, logger, message start); the probes are launch.py's
+    ("second_up", "behave.probe", "probe sel_up"),
+    ("gesture", "behave.probe", "probe sel_gesture"),
+    ("decided", "lyssna.selection", "selection check"),
+    ("present", "behave.probe", "probe button_present"),
+    ("show_start", "behave.probe", "probe button_show_start"),
+    ("show_end", "behave.probe", "probe button_show_end"),
+)
+
+
+def _selection_timeline(app: LiveApp, t: float) -> dict:
+    """When each step from the mouse-up to the button's show happened, in ms from the first press
+    (log lines have ms resolution, the probes better), and how long each Accessibility read took."""
+    lines = app.log_lines(t - 0.01)
+    out: dict = {}
+    for key, logger, start in SELECTION_MARKS:
+        hits = [ts for ts, _l, name, msg in lines if name == logger and msg.startswith(start)]
+        if key == "second_up":
+            hits = hits[1:2]  # the double click's second release
+        if hits:
+            out[key] = round((hits[0] - t) * 1000, 1)
+    out["ax_reads_ms"] = [m.split("took=")[1] for _ts, _l, name, m in lines
+                          if name == "behave.probe" and m.startswith("probe sel_ax_end") and "took=" in m][:6]
+    return out
 
 
 def _descendants(el, depth: int = 0) -> list:

@@ -31,7 +31,15 @@ def _probe(name: str, extra: str = "") -> None:
     log.debug("probe %s t=%.4f %s", name, time.time(), extra)
 
 
-def _wrap(owner, attr: str, name: str, describe=None) -> None:
+def _set(owner, attr: str, wrapper, pyobjc: bool) -> None:
+    if pyobjc:  # a Python-only method on an Objective-C class must stay one
+        import objc
+
+        wrapper = objc.python_method(wrapper)
+    setattr(owner, attr, wrapper)
+
+
+def _wrap(owner, attr: str, name: str, describe=None, pyobjc: bool = False) -> None:
     original = getattr(owner, attr)
 
     @functools.wraps(original)
@@ -42,12 +50,56 @@ def _wrap(owner, attr: str, name: str, describe=None) -> None:
             pass
         return original(*args, **kwargs)
 
-    setattr(owner, attr, wrapper)
+    _set(owner, attr, wrapper, pyobjc)
+
+
+def _wrap_timed(owner, attr: str, name: str, pyobjc: bool = False) -> None:
+    """A probe at the start and one at the end of the call, with its length."""
+    original = getattr(owner, attr)
+
+    @functools.wraps(original)
+    def wrapper(*args, **kwargs):
+        t0 = time.time()
+        _probe(f"{name}_start")
+        try:
+            return original(*args, **kwargs)
+        finally:
+            _probe(f"{name}_end", f"took={(time.time() - t0) * 1000:.1f}ms")
+
+    _set(owner, attr, wrapper, pyobjc)
+
+
+def install_selection_probes() -> None:
+    """Both sides: the path from the mouse-up of a selection to the play button on screen (the
+    gesture, the Accessibility reads, the decision, the button's show)."""
+    from lyssna import gestures, selection
+    from lyssna.mac import capture
+
+    _wrap(gestures.SelectionGestureDetector, "mouse_down", "sel_down")
+    _wrap(gestures.SelectionGestureDetector, "mouse_up", "sel_up")
+    _wrap(selection.SelectionWatcher, "gesture", "sel_gesture")
+    _wrap_timed(capture, "ax_selection", "sel_ax")
+    if os.environ.get("LYSSNA_INTERFACE", "") == "legacy":
+        from lyssna.legacy.ui import panel as legacy_panel
+        from lyssna.legacy.ui import selection_button as legacy_button
+
+        _wrap(legacy_button.SelectionButton, "_present", "button_present", pyobjc=True)
+        _wrap_timed(legacy_panel.FloatingPanel, "show_at", "button_show", pyobjc=True)
+        return
+    from lyssna.ui import panel, selection_button
+
+    _wrap(selection_button.SelectionButton, "_present", "button_present")
+    _wrap_timed(selection_button.SelectionButton, "_show", "button_show")
+    _wrap_timed(panel.FloatingPanel, "order_front", "panel_order_front")
 
 
 def install_probes() -> None:
     """The Qt side's probes. The legacy side animates on the render server with no per-frame Python,
     so its own debug lines (mouseEntered, set_scale, scale animation finished) are all there is."""
+    try:
+        install_selection_probes()
+    except Exception:
+        log.exception("could not install the selection probes")
     if os.environ.get("LYSSNA_INTERFACE", "") == "legacy":
         return
     from lyssna.mac import window
@@ -58,6 +110,9 @@ def install_probes() -> None:
     _wrap(mini_player.MiniPlayer, "mouse_entered", "mouse_entered", lambda self: f"form={self.form}")
     _wrap(mini_player.ScaleHost, "set_scale", "scale_step", lambda self, s: f"s={float(s):.3f}")
     _wrap(mini_player.ScaleHost, "paintEvent", "scale_paint", lambda self, ev: f"s={self.scale:.3f}")
+    from lyssna.ui import sliver
+
+    _wrap(sliver.Sliver, "set_slide", "slide_step", lambda self, points: f"p={float(points):.2f}")
 
 
 def hold_activity() -> None:

@@ -56,7 +56,7 @@ from ..dictation import history as history_mod
 from ..dictation import vocabulary as vocabulary_mod
 from ..dictation.learn import find_corrections
 from ..menu import key_name
-from . import coords, theme
+from . import theme
 from .icons import draw_icon, icon_rect
 from .layout import mark as mark_layout
 from .layout.history import (
@@ -149,6 +149,7 @@ from .layout.history import (
     learned_text,
     retention_text,
 )
+from .layout.window import CENTRED
 from .mainthread import on_main
 from .mark import draw_mark
 from .widgets import IconButton, PillButton, rounded
@@ -955,9 +956,7 @@ class HistoryWindow(LyssnaWindow):
         """Bring the window up (building it the first time), fresh from the store."""
         self.prepare()
         if not self.isVisible():
-            x, y, w, h = coords.visible_frame(coords.screen_under_mouse())
-            if w and h:  # centred on the screen under the mouse, as the Mac window opens
-                self.move(round(x + (w - self.width()) / 2), round(max(y, y + (h - self.height()) / 2)))
+            self.place_on_screen(CENTRED)  # centred on the screen under the mouse, as the Mac window opens
         self.setVisible(True)
         self.raise_()
         self.activateWindow()

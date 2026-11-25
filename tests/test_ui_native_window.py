@@ -195,8 +195,10 @@ def test_the_twins_offer_the_same_functions():
     assert _public_functions(mac_window) == _public_functions(win_window)
     assert {"make_floating", "set_click_through", "bring_to_top", "is_on_screen", "prepare_app", "hide_dock_icon",
             "activate_app", "set_dark_title_bar", "left_button_down", "popups_over", "front_app",
-            "watch_mouse_enter"} == _public_functions(mac_window)
+            "watch_mouse_enter", "pop_up_menu"} == _public_functions(mac_window)
     assert win_window.DETECTS_POPUPS is True and mac_window.DETECTS_POPUPS is False
+    assert win_window.NATIVE_MENUS is False and mac_window.NATIVE_MENUS is True
+    assert win_window.pop_up_menu([("1×", True)], 0, 0, lambda i: None) is False
     assert win_window.WATCHES_MOUSE_ENTER is False and mac_window.WATCHES_MOUSE_ENTER is True
     assert win_window.watch_mouse_enter(FakeWidget(), lambda: None) is False
     assert mac_window.popups_over((0, 0, 100, 100)) == []
@@ -532,6 +534,9 @@ class FakeOwner:
     def mouseExited_(self, event):
         mac_window._owner_event(self, "exited")
 
+    def mouseMoved_(self, event):
+        mac_window._owner_event(self, "moved")
+
 
 @pytest.fixture
 def watched(qapp, monkeypatch):
@@ -566,7 +571,7 @@ def watched(qapp, monkeypatch):
 
 
 def test_the_mac_watch_adds_one_area_active_always_and_never_a_second(watched):
-    assert mac_window.TRACKING_OPTIONS == 0x01 | 0x80 | 0x200  # entered and exited, active always, the visible rect
+    assert mac_window.TRACKING_OPTIONS == 0x01 | 0x02 | 0x80 | 0x200  # entered and exited, moves, active always, the visible rect
     assert mac_window.watch_mouse_enter(watched.child, lambda: None) is True
     view = watched.view()
     assert len(view.areas) == 1 and view.areas[0].options == mac_window.TRACKING_OPTIONS
@@ -628,6 +633,28 @@ def test_the_mac_watch_fires_once_per_arrival_on_the_widget(watched):
     assert calls == [1, 1, 1, 1]  # off it and back on: an arrival
 
 
+def test_the_mac_watch_notices_an_arrival_with_the_move_that_makes_it(watched):
+    """The area's move events check at once, so an arrival does not wait for the next poll."""
+    calls = []
+    mac_window.watch_mouse_enter(watched.child, lambda: calls.append(1))
+    owner = watched.view().areas[0].owner
+    w = mac_window._watches[id(watched.child)]
+    watched.move(305, 305)  # onto the window's shadow margin
+    owner.mouseEntered_(None)
+    watched.move(315, 305)
+    owner.mouseMoved_(None)
+    assert calls == []
+    watched.move(325, 330)  # the move that crosses onto the widget
+    owner.mouseMoved_(None)
+    assert calls == [1]
+    watched.move(330, 330)
+    owner.mouseMoved_(None)
+    assert calls == [1]  # the same arrival
+    watched.move(900, 900)
+    owner.mouseMoved_(None)  # a last move reported as the cursor leaves: the watch stops
+    assert not w.timer.isActive() and w.seen is None
+
+
 def test_the_mac_watch_never_raises(watched, caplog):
     def boom():
         raise ValueError("callback failed")
@@ -652,6 +679,7 @@ def test_the_mac_watch_does_nothing_without_cocoa(qapp, monkeypatch):
     assert qapp.platformName() != "cocoa"
     assert mac_window.watch_mouse_enter(QWidget(), lambda: None) is False
     assert mac_window._watches == {}
+    assert mac_window.pop_up_menu([("1×", True)], 0, 0, lambda i: None) is False  # the caller draws its own menu
 
 
 def test_the_mac_watch_owner_is_a_real_nsobject_with_the_appkit_options():
@@ -659,14 +687,16 @@ def test_the_mac_watch_owner_is_a_real_nsobject_with_the_appkit_options():
     area's events on (no window needed)."""
     AppKit = pytest.importorskip("AppKit")
 
-    assert mac_window.TRACKING_OPTIONS == (AppKit.NSTrackingMouseEnteredAndExited | AppKit.NSTrackingActiveAlways
-                                           | AppKit.NSTrackingInVisibleRect)
+    assert mac_window.TRACKING_OPTIONS == (AppKit.NSTrackingMouseEnteredAndExited | AppKit.NSTrackingMouseMoved
+                                           | AppKit.NSTrackingActiveAlways | AppKit.NSTrackingInVisibleRect)
     seen = []
-    watch = type("W", (), {"entered": lambda self: seen.append("in"), "exited": lambda self: seen.append("out")})()
+    watch = type("W", (), {"entered": lambda self: seen.append("in"), "exited": lambda self: seen.append("out"),
+                           "moved": lambda self: seen.append("move")})()
     owner = mac_window._make_owner(watch)
     owner.mouseEntered_(None)
+    owner.mouseMoved_(None)
     owner.mouseExited_(None)
-    assert seen == ["in", "out"]
+    assert seen == ["in", "move", "out"]
     area = mac_window._make_area(mac_window.TRACKING_OPTIONS, owner)
     assert int(area.options()) == mac_window.TRACKING_OPTIONS and area.owner() == owner
 

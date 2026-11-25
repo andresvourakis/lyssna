@@ -33,6 +33,10 @@ DETECTS_POPUPS = True
 # asks this flag, never the OS.
 WATCHES_MOUSE_ENTER = False
 
+# The player's speed and voice menus are Qt's here (pop_up_menu shows nothing natively). The
+# interface asks this flag, never the OS.
+NATIVE_MENUS = False
+
 # Window styles and the calls popups_over makes.
 GWL_STYLE = -16
 WS_POPUP = 0x80000000
@@ -102,6 +106,12 @@ def watch_mouse_enter(widget, callback) -> bool:
     """Nothing to do on Windows: Qt delivers its enter events to the windows of an app in the
     background, so the interface listens to those (WATCHES_MOUSE_ENTER is False). Returns False:
     nothing is watched here."""
+    return False
+
+
+def pop_up_menu(rows, x: float, y: float, picked) -> bool:
+    """Nothing to show natively on Windows (NATIVE_MENUS is False): the interface draws its own
+    menu with Qt. Returns False."""
     return False
 
 

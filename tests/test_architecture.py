@@ -142,9 +142,11 @@ def test_only_host_picks_the_legacy_interface():
     outside = [p for p in PACKAGE.rglob("*.py") if not p.is_relative_to(PACKAGE / "legacy")]
     assert sorted(p.relative_to(REPO).as_posix() for p in outside if _reaches_legacy(p, names=True)) == ["lyssna/host.py"]
     assert host.MODULES["app"][0] == "lyssna.legacy.app"
-    # scripts/compare draws the legacy interface next to the new one, and preview_retry.py takes
-    # screenshots of the legacy interface, so both must import it.
-    allowed = (TESTS / "legacy", REPO / "scripts" / "compare", REPO / "scripts" / "preview_retry.py")
+    # scripts/compare draws the legacy interface next to the new one, preview_retry.py takes
+    # screenshots of the legacy interface, and the behaviour harness's launcher times the legacy
+    # play button with probes on its own classes, so they must import it.
+    allowed = (TESTS / "legacy", REPO / "scripts" / "compare", REPO / "scripts" / "preview_retry.py",
+               REPO / "scripts" / "behave" / "launch.py")
     others = [p for p in [*TESTS.rglob("*.py"), *(REPO / "scripts").rglob("*.py")] if not any(p.is_relative_to(a) for a in allowed)]
     assert not [str(p.relative_to(REPO)) for p in others if _reaches_legacy(p)]
 

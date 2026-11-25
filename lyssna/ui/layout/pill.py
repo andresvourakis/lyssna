@@ -105,6 +105,23 @@ def near_frame(px: float, py: float, frame, reach: float = REVEAL_REACH) -> bool
     return x - reach <= px <= x + w + reach and y - reach <= py <= y + h + reach
 
 
+def hover_inside(px: float, py: float, frame, margin: float = 6.0, edge: str = "", coord: float = 0.0) -> bool:
+    """Does the point (px, py) count as on the open form with frame (x, y, w, h)? It must be on
+    the frame or within `margin` of it. A form docked on `edge` (whose edge itself is at
+    `coord`) also owns the strip between it and that edge: the open form sits DOCK_GAP in from
+    the edge, so without the strip a cursor pressed against the edge would close it, the closed
+    sliver would come back under the cursor and open it again, over and over."""
+    x, y, w, h = frame
+    left, right, bottom, top = x - margin, x + w + margin, y - margin, y + h + margin
+    if edge == "left":
+        left = min(left, coord - margin)
+    elif edge == "right":
+        right = max(right, coord + margin)
+    elif edge == "bottom":
+        bottom = min(bottom, coord - margin)
+    return left <= px <= right and bottom <= py <= top
+
+
 def tuck_due(near: bool, now: float, away_since: float | None, linger_until: float,
              delay: float = HIDE_DELAY) -> tuple[bool, float | None]:
     """One step of the auto-hide rule for a shown resting sliver: (slide out now, when the

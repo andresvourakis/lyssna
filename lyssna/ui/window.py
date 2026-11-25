@@ -27,13 +27,13 @@ from .. import host
 from . import coords, icons, theme
 from .layout.setup import SCREEN_GAP
 from .layout.tokens import CREAM, INK
+from .layout.window import LIFTED, open_at
 from .mark import MarkView, draw_mark
 from .widgets import Color, resolve
 
 log = logging.getLogger("lyssna.ui.window")
 
 MIN_H = 320.0       # the smallest a window gets on a short screen (the Mac setup window's floor)
-LIFT = 0.08         # how far above the middle a window opens, as a share of the screen's height
 SYMBOL_SMALLER = 2.0  # a symbol in front of a text button is this much smaller than the text (as on the Mac)
 # An AppKit label's cell draws its text this far in from each side of its frame, so a label sized
 # to its text is the text's advance plus twice this, and a wrapping label breaks its lines this far
@@ -457,16 +457,25 @@ class LyssnaWindow(QWidget):
         self.setFixedSize(round(width), h)
         return h
 
-    def show_centered(self) -> None:
-        """Bring the window up: centred on the screen under the mouse a little above the middle
-        the first time it opens, then raised and given the keyboard, with the app brought to
-        the front (on a Mac an app with no Dock icon does not come forward by itself)."""
+    def place_on_screen(self, rule: tuple[float, float] = LIFTED) -> None:
+        """Put the window where it opens on the screen under the mouse, by `rule` (layout.window):
+        its whole frame, title bar included, as the Mac places a window. The native window is
+        made first, so the frame around the content is known; without one (the offscreen
+        tests) the frame is the content."""
+        vf = coords.visible_frame(coords.screen_under_mouse())
+        if not (vf[2] and vf[3]):
+            return
+        self.winId()
+        frame = self.frameGeometry()
+        self.move(*open_at(vf, (frame.width(), frame.height()), rule))
+
+    def show_centered(self, rule: tuple[float, float] = LIFTED) -> None:
+        """Bring the window up: on the screen under the mouse a little above the middle (or by
+        `rule`) the first time it opens, then raised and given the keyboard, with the app
+        brought to the front (on a Mac an app with no Dock icon does not come forward by
+        itself)."""
         if not self.isVisible():
-            x, y, w, h = coords.visible_frame(coords.screen_under_mouse())
-            if w and h:
-                left = x + (w - self.width()) / 2
-                top = max(y, y + (h - self.height()) / 2 - h * LIFT)
-                self.move(round(left), round(top))
+            self.place_on_screen(rule)
         self.setVisible(True)
         self.raise_()
         self.activateWindow()
