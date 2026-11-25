@@ -13,6 +13,10 @@ from lyssna import config
 from lyssna.dictation import failed as F
 from lyssna.dictation.failed import FailedRecordings
 
+# Windows has no POSIX modes (chmod only sets read-only); there the folder sits in the user's own
+# %LOCALAPPDATA%, which Windows already limits to that user, so the mode checks run on POSIX only.
+POSIX_MODES = os.name == "posix"
+
 TONE = (0.25 * np.sin(np.arange(16000) / 7)).astype(np.float32)
 
 
@@ -56,16 +60,18 @@ def test_saves_16_khz_mono_wav_and_reads_it_back(store):
 def test_folder_and_files_are_owner_only_and_written_atomically(store):
     store.save("abc123", TONE)
     folder = store.directory
-    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
-    assert stat.S_IMODE((folder / "abc123.wav").stat().st_mode) == 0o600
+    if POSIX_MODES:
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+        assert stat.S_IMODE((folder / "abc123.wav").stat().st_mode) == 0o600
     assert [p.name for p in folder.iterdir()] == ["abc123.wav"]  # no temp file left behind
 
 
 def test_an_existing_folder_is_made_owner_only(store):
     store.directory.mkdir(parents=True, mode=0o755)
     store.directory.chmod(0o755)
-    store.save("abc123", TONE)
-    assert stat.S_IMODE(store.directory.stat().st_mode) == 0o700
+    assert store.save("abc123", TONE) is True
+    if POSIX_MODES:
+        assert stat.S_IMODE(store.directory.stat().st_mode) == 0o700
 
 
 def test_missing_and_bad_ids(store):

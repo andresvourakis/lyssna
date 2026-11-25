@@ -700,7 +700,7 @@ def test_paste_last_says_copied_when_no_field_is_in_front(ctl):
     ctl.dictation.inserter = lambda text: "copied"
     ctl._paste_last()
     settle(ctl)
-    assert ctl.toasts[-1] == Notice("Copied. Press ⌘V to paste")
+    assert ctl.toasts[-1] == Notice(f"Copied. Press {host.PASTE_SHORTCUT} to paste")
 
 
 def test_paste_last_while_dictating(ctl):

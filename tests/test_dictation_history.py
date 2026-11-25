@@ -342,7 +342,7 @@ def test_a_failed_dictation_is_saved_with_its_recording(store):
     assert store.recordings.load(e.id) is not None
     [kept] = store.entries()
     assert kept.id == e.id and kept.failed
-    data = json.loads(H.default_path().read_text())
+    data = json.loads(H.default_path().read_text(encoding="utf-8"))
     assert data["entries"][0]["status"] == "failed"
 
 
