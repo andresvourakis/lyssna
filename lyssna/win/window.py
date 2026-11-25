@@ -115,6 +115,11 @@ def pop_up_menu(rows, x: float, y: float, picked) -> bool:
     return False
 
 
+def confirm_sheet(widget, message: str, info: str, ok: str, then) -> bool:
+    """Nothing native to show on Windows: the interface asks with its own dialog. Returns False."""
+    return False
+
+
 def bring_to_top(widget) -> None:
     """Topmost and shown, without activating."""
     try:

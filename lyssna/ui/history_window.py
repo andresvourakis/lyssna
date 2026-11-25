@@ -1306,23 +1306,31 @@ class HistoryWindow(LyssnaWindow):
         entry = self._store().get(entry_id)
         if entry is None:
             return
+        corner = button.mapToGlobal(QPoint(0, button.height() + 4))
+        rows = self._more_rows(entry)
+        if getattr(host.window, "NATIVE_MENUS", False):  # the system's own menu, as the legacy window opened it
+            native = [(title, False, enabled) for title, _action, enabled in rows]
+            if host.window.pop_up_menu(native, corner.x(), corner.y(), lambda i: rows[i][1](entry.id)):
+                return
         self._menu = self._more_menu(entry)
-        self._menu.popup(button.mapToGlobal(QPoint(0, button.height() + 4)))
+        self._menu.popup(corner)
+
+    def _more_rows(self, entry: history_mod.Entry) -> tuple:
+        """The More menu's rows: (title, what picking it does with the entry's id, enabled)."""
+        shown = entry.id in self._originals
+        if entry.failed:
+            return ((RETRY, self.retry_entry, entry.id not in self._retrying), ("Delete", self.delete_entry, True))
+        return (
+            ("Hide Original" if shown else "Show Original", self.toggle_original, bool(entry.raw)),
+            ("Fix a Word…", self.fix_word, True),
+            ("Delete", self.delete_entry, True),
+        )
 
     def _more_menu(self, entry: history_mod.Entry) -> QMenu:
         menu = QMenu(self)
         menu.setToolTipsVisible(False)
         menu.setStyleSheet(menu_style())
-        shown = entry.id in self._originals
-        if entry.failed:
-            rows = ((RETRY, self.retry_entry, entry.id not in self._retrying), ("Delete", self.delete_entry, True))
-        else:
-            rows = (
-                ("Hide Original" if shown else "Show Original", self.toggle_original, bool(entry.raw)),
-                ("Fix a Word…", self.fix_word, True),
-                ("Delete", self.delete_entry, True),
-            )
-        for title, action, enabled in rows:
+        for title, action, enabled in self._more_rows(entry):
             item = menu.addAction(title)
             item.setEnabled(enabled)
             item.triggered.connect(lambda _checked=False, fn=action, entry_id=entry.id: fn(entry_id))
@@ -1404,7 +1412,10 @@ class HistoryWindow(LyssnaWindow):
         self._confirm("Delete all saved dictations?", "Word totals are kept.", "Delete", clear)
 
     def _confirm(self, message: str, info: str, ok: str, then: Callable[[], None]) -> None:
-        """Ask over the window (a sheet on the Mac) and call `then` if the user agrees."""
+        """Ask over the window (the system's own sheet on the Mac, host.window.confirm_sheet) and
+        call `then` if the user agrees."""
+        if host.window.confirm_sheet(self, message, info, ok, then):
+            return
         box = QMessageBox(self)
         box.setWindowTitle("Lyssna")
         box.setIcon(QMessageBox.Icon.NoIcon)

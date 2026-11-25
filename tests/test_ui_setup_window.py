@@ -999,3 +999,20 @@ def test_key_caps_and_tags_are_drawn_on_the_macs_half_points(window):
     tag = window.key_tag if window.key_tag.isVisibleTo(window) else window.local_tag
     assert tag.x() + tag.width() == CARD_R and tag.width() == tag.natural_width() >= tag.exact_width()
     assert half_point_width(10.2) == 14.5 and half_point_width(10.5) == 14.5 and half_point_width(10.6) == 15.0
+
+
+def test_a_click_takes_the_focus_only_where_the_system_does_so(qapp, monkeypatch):
+    """On the Mac a click on a radio or a tab leaves no focus ring behind it (an NSButton takes
+    the keyboard from Tab only); on Windows the click focuses it, as before."""
+    from PySide6.QtWidgets import QWidget
+
+    from lyssna.ui import setup_window, widgets
+
+    parent = QWidget()
+    for clicks, policy in ((False, Qt.FocusPolicy.TabFocus), (True, Qt.FocusPolicy.StrongFocus)):
+        monkeypatch.setattr(host, "CLICK_TAKES_FOCUS", clicks)
+        assert widgets.button_focus() == policy
+        assert setup_window.Radio("On this Mac", parent).focusPolicy() == policy
+        assert setup_window.TabButton("Listen", parent).focusPolicy() == policy
+        assert widgets.PillButton("Done", parent, focusable=True).focusPolicy() == policy
+        assert widgets.PillButton("Play", parent).focusPolicy() == Qt.FocusPolicy.NoFocus

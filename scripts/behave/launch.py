@@ -11,7 +11,11 @@ The interface comes from LYSSNA_INTERFACE in the environment (legacy or new), as
 the scaled pill on the Qt side). Nothing in lyssna/ changes: the probes wrap functions from here.
 --no-nap holds an NSProcessInfo activity (user initiated, latency critical) for the whole run,
 which turns App Nap and timer coalescing off for this process, to test whether they slow it.
---enter-poll overrides lyssna.mac.window.ENTER_POLL_SECS, to test whether the poll is the delay."""
+--enter-poll overrides lyssna.mac.window.ENTER_POLL_SECS, to test whether the poll is the delay.
+--models lets the speech, cleanup and voice models load (isolate.py refuses that); the harness
+put copies of their files in the profile first. --mic DIR puts scripts/behave/feed.py's recorded
+input in place of the microphone. --kokoro-dir puts the voice's folder at a short path (see
+feed.link_models)."""
 
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 
 log = logging.getLogger("behave.probe")
 
@@ -115,6 +120,17 @@ def install_probes() -> None:
     _wrap(sliver.Sliver, "set_slide", "slide_step", lambda self, points: f"p={float(points):.2f}")
 
 
+def _model_loaders() -> list:
+    """The three model loaders isolate.py refuses, to put back after it: the speech, cleanup and
+    voice models then load from the profile's own copies. Downloads and the network stay refused."""
+    from lyssna.dictation.cleaners import s1mini
+    from lyssna.dictation.transcribers import parakeet
+    from lyssna.providers import kokoro
+
+    return [(parakeet, "_make_model", parakeet._make_model), (s1mini, "_make_runner", s1mini._make_runner),
+            (kokoro, "_make_engine", kokoro._make_engine)]
+
+
 def hold_activity() -> None:
     global _activity
     from Foundation import NSProcessInfo
@@ -131,11 +147,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--probe", action="store_true")
     ap.add_argument("--no-nap", action="store_true")
     ap.add_argument("--enter-poll", type=float)
+    ap.add_argument("--models", action="store_true")
+    ap.add_argument("--mic")
+    ap.add_argument("--kokoro-dir")
     args = ap.parse_args(argv)
 
     from scripts.compare.isolate import isolate
 
+    loaders = _model_loaders() if args.models else []
     isolate(home=args.home, socket_path=args.socket)
+    for owner, attr, original in loaders:  # the files are in the profile (feed.link_models): let them load
+        setattr(owner, attr, original)
+    if args.kokoro_dir:
+        from lyssna.providers import kokoro
+
+        kokoro.DATA_DIR = Path(args.kokoro_dir)
+    if args.mic:
+        from . import feed
+
+        feed.install(args.mic)
     if args.probe:
         install_probes()
     if args.no_nap:

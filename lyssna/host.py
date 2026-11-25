@@ -42,6 +42,7 @@ MIC_SETTINGS_PLACE = (  # where the user allows the microphone, as the system's 
 NEEDS_ACCESSIBILITY = not IS_WINDOWS  # reading the selection and the global keys need the Accessibility permission
 HAS_GLOBE_KEY = not IS_WINDOWS  # the fn key doubles as the Globe key, and a system setting decides what it does
 STATUS_TEXT_BESIDE_ICON = not IS_WINDOWS  # the menu bar can show text (the reading progress) next to the icon
+CLICK_TAKES_FOCUS = IS_WINDOWS  # a click on a button or radio also gives it the keyboard focus; on the Mac only Tab does
 # The menu's shortcut column can show free text such as "Hold Ctrl+Win". Qt draws the tray menu on
 # Windows; the Mac's native menu shows only real key equivalents there.
 MENU_SHORTCUT_FREE_TEXT = IS_WINDOWS

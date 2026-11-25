@@ -99,8 +99,28 @@ def windows(pid: int) -> list:
     return list(attr(app(pid), "AXWindows") or [])
 
 
-def tree(el, depth: int = 0, limit: int = 400) -> list[dict]:
-    """A flat list of the element and its descendants: role, title or value, enabled, depth."""
+def frame(el) -> tuple[float, float, float, float] | None:
+    """The element's (x, y, w, h) on screen, top-left points."""
+    pos, size = attr(el, "AXPosition"), attr(el, "AXSize")
+    if pos is None or size is None:
+        return None
+    ok1, p = AX.AXValueGetValue(pos, AX.kAXValueCGPointType, None)
+    ok2, s = AX.AXValueGetValue(size, AX.kAXValueCGSizeType, None)
+    return (float(p.x), float(p.y), float(s.width), float(s.height)) if ok1 and ok2 else None
+
+
+def find(el, test, depth: int = 0) -> list:
+    """Every descendant of `el` (and itself) for which test(element) is true."""
+    out = [el] if test(el) else []
+    if depth < MAX_DEPTH:
+        for c in children(el):
+            out += find(c, test, depth + 1)
+    return out
+
+
+def tree(el, depth: int = 0, limit: int = 400, frames: bool = False) -> list[dict]:
+    """A flat list of the element and its descendants: role, title or value, enabled, depth (and
+    the frame with `frames`)."""
     out: list[dict] = []
 
     def visit(e, d):
@@ -111,6 +131,9 @@ def tree(el, depth: int = 0, limit: int = 400) -> list[dict]:
         if not isinstance(text, str):
             text = str(text)
         out.append({"role": role, "text": text[:120], "enabled": attr(e, "AXEnabled"), "depth": d})
+        if frames:
+            f = frame(e)
+            out[-1]["frame"] = [round(v) for v in f] if f else None
         for c in children(e):
             visit(c, d + 1)
 

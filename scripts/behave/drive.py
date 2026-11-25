@@ -18,9 +18,10 @@ _button_down = False
 # Virtual key codes (Carbon's kVK_ values, HIToolbox/Events.h).
 KEY = {
     "a": 0x00, "s": 0x01, "v": 0x09, "b": 0x0B, "x": 0x07, "c": 0x08, "space": 0x31, "escape": 0x35, "return": 0x24,
-    "left": 0x7B, "right": 0x7C, "down": 0x7D, "up": 0x7E, "=": 0x18, "-": 0x1B, "tab": 0x30,
+    "left": 0x7B, "right": 0x7C, "delete": 0x33, "down": 0x7D, "up": 0x7E, "=": 0x18, "-": 0x1B, "tab": 0x30,
     "command": 0x37, "shift": 0x38, "option": 0x3A, "control": 0x3B, "fn": 0x3F,
 }
+MODIFIER_CODES = (0x36, 0x37, 0x38, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E)  # right and left Command, Shift, Option, Control
 FLAGS = {"command": Quartz.kCGEventFlagMaskCommand, "shift": Quartz.kCGEventFlagMaskShift,
          "option": Quartz.kCGEventFlagMaskAlternate, "control": Quartz.kCGEventFlagMaskControl}
 
@@ -112,46 +113,57 @@ def drag(points: list[tuple[float, float]], hz: float = 125.0, hold: float = 0.1
     return trail
 
 
+def _post_key(code: int, down: bool, flags: int) -> None:
+    ev = Quartz.CGEventCreateKeyboardEvent(_source(), code, down)
+    Quartz.CGEventSetFlags(ev, flags)
+    Quartz.CGEventPost(HID, ev)
+    (_held_keys.add if down else _held_keys.discard)(code)
+
+
 def key(name: str, mods: tuple[str, ...] = (), down: bool | None = None) -> float:
-    """Press and release a key with modifiers held (or only press or release it with `down`)."""
+    """Press and release a key (or only press or release it with `down`). With modifiers it is a
+    chord: an event carrying a modifier flag without its key going up afterwards leaves the
+    system believing the modifier is held (seen 2026-11-25: Command stuck after Command+A, every
+    later keystroke a shortcut), so the modifiers go down and up as keys."""
+    if mods and down is None:
+        return chord(name, mods)
     code = KEY[name]
-    flags = 0
-    for m in mods:
-        flags |= FLAGS[m]
     t = time.time()
     for state in ((True, False) if down is None else (down,)):
-        ev = Quartz.CGEventCreateKeyboardEvent(_source(), code, state)
-        if flags:
-            Quartz.CGEventSetFlags(ev, flags)
-        Quartz.CGEventPost(HID, ev)
-        if state:
-            _held_keys.add(code)
-        else:
-            _held_keys.discard(code)
+        _post_key(code, state, 0)
         time.sleep(0.02)
     return t
 
 
 def chord(name: str, mods: tuple[str, ...]) -> float:
-    """A shortcut as a person types it: the modifiers go down one by one, the key, then all up."""
-    held = []
+    """A shortcut as a person types it: the modifiers go down one by one, the key, then all up,
+    the last of them with no flag left."""
     flags = 0
     for m in mods:
         flags |= FLAGS[m]
-        ev = Quartz.CGEventCreateKeyboardEvent(_source(), KEY[m], True)
-        Quartz.CGEventSetFlags(ev, flags)
-        Quartz.CGEventPost(HID, ev)
-        _held_keys.add(KEY[m])
-        held.append(m)
+        _post_key(KEY[m], True, flags)
         time.sleep(0.02)
-    t = key(name, tuple(mods))
-    for m in reversed(held):
+    t = time.time()
+    for state in (True, False):
+        _post_key(KEY[name], state, flags)
+        time.sleep(0.02)
+    for m in reversed(mods):
         flags &= ~FLAGS[m]
-        ev = Quartz.CGEventCreateKeyboardEvent(_source(), KEY[m], False)
-        Quartz.CGEventSetFlags(ev, flags)
-        Quartz.CGEventPost(HID, ev)
-        _held_keys.discard(KEY[m])
+        _post_key(KEY[m], False, flags)
         time.sleep(0.02)
+    return t
+
+
+def type_text(text: str, every: float = 0.03) -> float:
+    """Type `text` one character at a time, each as a key press carrying that character (the way
+    the system's own character viewer types), so no keyboard layout is assumed."""
+    t = time.time()
+    for ch in text:
+        for state in (True, False):
+            ev = Quartz.CGEventCreateKeyboardEvent(_source(), 0, state)
+            Quartz.CGEventKeyboardSetUnicodeString(ev, len(ch.encode("utf-16-le")) // 2, ch)
+            Quartz.CGEventPost(HID, ev)
+        time.sleep(every)
     return t
 
 
@@ -160,8 +172,12 @@ def release_all() -> None:
     window server still thinks it is held."""
     global _button_down
     for code in list(_held_keys):
-        Quartz.CGEventPost(HID, Quartz.CGEventCreateKeyboardEvent(_source(), code, False))
+        _post_key(code, False, 0)
     _held_keys.clear()
+    state = Quartz.kCGEventSourceStateHIDSystemState
+    for code in MODIFIER_CODES:  # one the system still believes held, whoever pressed it last
+        if Quartz.CGEventSourceKeyState(state, code):
+            _post_key(code, False, 0)
     state = Quartz.kCGEventSourceStateCombinedSessionState
     if _button_down or Quartz.CGEventSourceButtonState(state, Quartz.kCGMouseButtonLeft):
         x, y = cursor()

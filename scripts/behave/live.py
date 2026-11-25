@@ -30,7 +30,7 @@ INTERFACES = ("legacy", "new")
 START_WAIT = 30.0
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) (\w+) ([\w.]+): (.*)$")
 
-BASE_CONFIG = """provider = "say"
+BASE_CONFIG = """provider = "{provider}"
 speed = 1.2
 cache = false
 local_only = true
@@ -48,7 +48,13 @@ wave = false
 dictation_dock = "{rest_dock}"
 dictation_y = {rest_y}
 interface = "{interface}"
+
+[dictation]
+hotkey = "{hotkey}"
 """
+
+BUNDLE_ENV = "LYSSNA_BEHAVE_EXE"  # a frozen build's lyssna-check, built with scripts/behave/launch.py as its entry
+MODELS_ENV = "LYSSNA_BEHAVE_MODELS"  # a folder laid out as the data folder, holding only model files (default: the owner's)
 
 
 def version() -> str:
@@ -63,17 +69,23 @@ class LiveApp:
 
     def __init__(self, interface: str, out: Path, *, dock: str = "right", along: float = 0.5, auto_hide: bool = False,
                  rest_dock: str = "right", rest_along: float = 0.5, probe: bool = True, no_nap: bool = False,
-                 enter_poll: float | None = None, x: float = -1.0, seen: str | None = None):
+                 enter_poll: float | None = None, x: float = -1.0, seen: str | None = None, models: bool = False,
+                 hotkey: str = "right_option"):
         assert interface in INTERFACES
         self.interface = interface
         self.out = out
         self.home = out / "profile"
         self.settings = dict(dock=dock, x=x, y=along, auto_hide=str(auto_hide).lower(), rest_dock=rest_dock, rest_y=rest_along,
-                             interface=interface)
+                             interface=interface, provider="kokoro" if models else "say", hotkey=hotkey)
+        self.models = models  # the real speech, cleanup and voice models (feed.link_models), and the recorded microphone
         self.seen = seen  # the What's New version marked seen (default: this version, so nothing is offered)
         self.flags = (["--probe"] if probe else []) + (["--no-nap"] if no_nap else []) + (
             ["--enter-poll", str(enter_poll)] if enter_poll else [])
         self._sockdir = Path(tempfile.mkdtemp(prefix="lyb-"))
+        self.mic = out / "mic"  # what the recorder hears (feed.say_next)
+        self.kokoro_dir = self._sockdir / "k"  # short: see feed.link_models
+        if models:
+            self.flags += ["--models", "--mic", str(self.mic), "--kokoro-dir", str(self.kokoro_dir)]
         self.socket = self._sockdir / "s.sock"
         self.proc: subprocess.Popen | None = None
         self.started_at = 0.0
@@ -88,6 +100,14 @@ class LiveApp:
         (self.home / "config" / "config.toml").write_text(BASE_CONFIG.format(**self.settings))
         (self.home / "state" / "welcomed").write_text("")
         (self.home / "state" / "whats_new_seen").write_text(self.seen or version())
+        if self.models:
+            from . import feed
+
+            source = os.environ.get(MODELS_ENV)
+            missing = feed.link_models(self.home / "state", self.kokoro_dir, Path(source) if source else None)
+            if missing:
+                raise RuntimeError(f"model files missing (not downloaded by the harness): {', '.join(missing)}")
+            self.mic.mkdir(parents=True, exist_ok=True)
 
     @property
     def log_path(self) -> Path:
@@ -114,8 +134,10 @@ class LiveApp:
             self._stderr.close()
         stderr = self._stderr = open(self.out / f"stderr-{self.launches}.txt", "w")
         self.started_at = time.time()
+        exe = os.environ.get(BUNDLE_ENV)  # the frozen bundle's check program (run.py --bundle), else this Python
+        program = [exe] if exe else [sys.executable, "-m", "scripts.behave.launch"]
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "scripts.behave.launch", "--home", str(self.home), "--socket", str(self.socket), *self.flags],
+            [*program, "--home", str(self.home), "--socket", str(self.socket), *self.flags],
             cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=stderr, stderr=stderr)
         if wait:
             self.wait_ready()

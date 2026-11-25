@@ -83,9 +83,19 @@ def foreign_full_screen(ours: tuple[int, ...] = ()) -> str | None:
 
 
 def front_app() -> tuple[int, str]:
-    """(pid, name) of the app in front."""
-    from AppKit import NSWorkspace
+    """(pid, name) of the app in front: the one with the keyboard, asked of Accessibility each
+    time. NSWorkspace's frontmostApplication is only brought up to date by a run loop, which the
+    harness does not run, so it can name an app that left the front a while ago (seen
+    2026-11-25: it named the harness itself)."""
+    import ApplicationServices as AXS
+    from AppKit import NSRunningApplication, NSWorkspace
 
+    err, focused = AXS.AXUIElementCopyAttributeValue(AXS.AXUIElementCreateSystemWide(), "AXFocusedApplication", None)
+    if err == 0 and focused is not None:
+        err, pid = AXS.AXUIElementGetPid(focused, None)
+        if err == 0 and pid:
+            running = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            return int(pid), str(running.localizedName()) if running is not None else ""
     front = NSWorkspace.sharedWorkspace().frontmostApplication()
     if front is None:
         return 0, ""

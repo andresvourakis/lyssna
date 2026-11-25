@@ -824,3 +824,13 @@ def test_preview_shots_cover_every_preview_in_both_schemes(qapp, tmp_path):
         assert not img.isNull(), f
         colours = {img.pixel(x, y) for x in range(0, img.width(), 3) for y in range(0, img.height(), 3)} - backdrop
         assert len(colours) > 1, f"{f.name} is blank"
+
+
+def test_a_half_point_frame_rounds_down_the_screen_as_appkit_does(qapp):
+    """A frame whose top lands on a half point goes half a point down the screen, both for an
+    even and an odd whole part (Python's round would send 448.5 up and 475.5 down)."""
+    fp = _panel()
+    m = fp.margin
+    for top, expected in ((448.5, 449), (475.5, 476), (300.0, 300), (300.4, 300)):
+        fp.set_frame((100.0, top, 34.0, 118.0))
+        assert fp.panel.geometry().y() == expected - m

@@ -29,6 +29,8 @@ APPROACH = 220.0     # points from the form's outer edge where each approach sta
 DWELL = 1.2          # seconds the cursor stays on the open form
 AFTER = 1.0          # seconds recorded after leaving
 LEAVE_MARGIN = 6.0   # the app's _mouse_inside margin
+BOTTOM_BAND = 60.0   # the frames recorded on the bottom edge: only the band the forms use, so a window behind
+                     # them (a blinking text cursor 98 points up, seen 2026-11-25) does not count as motion
 QT_MARGIN = 18.0     # the Qt panel's shadow margin around the surface (ui/panel.py MARGIN)
 
 ENTER_MARKERS = {"legacy": ("lyssna.ui.player", "mouseEntered"), "new": ("behave.probe", "probe mouse_entered")}
@@ -60,7 +62,7 @@ def _edge_of(frame: tuple[float, float, float, float], dock: str) -> dict:
                 "region": (0, max(0, cy - 160), 110, 320)}
     cx = x + w / 2
     return {"start": (cx, y - APPROACH), "end": (cx, y + h / 2), "inside": lambda px, py: py >= y,
-            "region": (max(0, cx - 160), sh - 110, 320, 110)}
+            "region": (max(0, cx - 160), sh - BOTTOM_BAND, 320, BOTTOM_BAND)}
 
 
 def _first(trail, test) -> float | None:

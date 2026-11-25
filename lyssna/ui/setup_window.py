@@ -94,7 +94,7 @@ from .layout.setup import (
 )
 from .mainthread import on_main
 from .mark import MarkView
-from .widgets import BAR_H, DISABLED_TITLE_ALPHA, PillButton, ProgressBar, rounded
+from .widgets import BAR_H, DISABLED_TITLE_ALPHA, PillButton, ProgressBar, button_focus, rounded
 from .window import (
     TEXT_INSET,
     Hairline,
@@ -161,7 +161,7 @@ class Radio(QRadioButton):
     def __init__(self, title: str, parent: QWidget):
         super().__init__(title, parent)
         self.setFont(theme.ui_font(13))
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(button_focus())
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.resize(self.sizeHint())
 
@@ -209,7 +209,7 @@ class TabButton(QRadioButton):
         super().__init__(name, parent)
         self.name = name
         self.status = ""
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(button_focus())
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setAccessibleName(name)
 
@@ -564,7 +564,7 @@ class Dropdown(QComboBox):
     def __init__(self, items: list[str], parent: QWidget):
         super().__init__(parent)
         self.setFont(theme.ui_font(13))
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(button_focus())
         self.addItems(items)
         self.restyle()
         self.setFixedSize(self.sizeHint())

@@ -40,6 +40,7 @@ does not, so the side-by-side stage can see whether the quirk exists under Qt to
 from __future__ import annotations
 
 import logging
+import math
 import weakref
 from collections.abc import Callable
 
@@ -384,7 +385,10 @@ class FloatingPanel:
         x, y, w, h = rect
         m = self.margin
         self._size = (max(0.0, w), max(0.0, h))
-        self.panel.setGeometry(round(x - m), round(y - m), max(1, round(w + 2 * m)), max(1, round(h + 2 * m)))
+        # A half point down from the top rounds down the screen, as AppKit puts a window whose
+        # Mac-style origin ends in .5 (the hands-free capsule and its toast on a side edge sat
+        # a point higher than the original's with Python's round-half-to-even).
+        self.panel.setGeometry(round(x - m), math.floor(y - m + 0.5), max(1, round(w + 2 * m)), max(1, round(h + 2 * m)))
         self._place_content()
         self.panel.update()
 

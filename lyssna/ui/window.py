@@ -29,7 +29,7 @@ from .layout.setup import SCREEN_GAP
 from .layout.tokens import CREAM, INK
 from .layout.window import LIFTED, open_at
 from .mark import MarkView, draw_mark
-from .widgets import Color, resolve
+from .widgets import Color, button_focus, resolve
 
 log = logging.getLogger("lyssna.ui.window")
 
@@ -312,7 +312,7 @@ class TextButton(QAbstractButton):
         self.symbol = symbol
         self.hovered = False
         self.paint_offset = QPointF(0.0, 0.0)  # see place()
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(button_focus())
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         if clicked is not None:

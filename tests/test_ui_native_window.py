@@ -195,10 +195,11 @@ def test_the_twins_offer_the_same_functions():
     assert _public_functions(mac_window) == _public_functions(win_window)
     assert {"make_floating", "set_click_through", "bring_to_top", "is_on_screen", "prepare_app", "hide_dock_icon",
             "activate_app", "set_dark_title_bar", "left_button_down", "popups_over", "front_app",
-            "watch_mouse_enter", "pop_up_menu"} == _public_functions(mac_window)
+            "watch_mouse_enter", "pop_up_menu", "confirm_sheet"} == _public_functions(mac_window)
     assert win_window.DETECTS_POPUPS is True and mac_window.DETECTS_POPUPS is False
     assert win_window.NATIVE_MENUS is False and mac_window.NATIVE_MENUS is True
     assert win_window.pop_up_menu([("1×", True)], 0, 0, lambda i: None) is False
+    assert win_window.confirm_sheet(FakeWidget(), "Delete?", "", "Delete", lambda: None) is False
     assert win_window.WATCHES_MOUSE_ENTER is False and mac_window.WATCHES_MOUSE_ENTER is True
     assert win_window.watch_mouse_enter(FakeWidget(), lambda: None) is False
     assert mac_window.popups_over((0, 0, 100, 100)) == []
@@ -680,6 +681,8 @@ def test_the_mac_watch_does_nothing_without_cocoa(qapp, monkeypatch):
     assert mac_window.watch_mouse_enter(QWidget(), lambda: None) is False
     assert mac_window._watches == {}
     assert mac_window.pop_up_menu([("1×", True)], 0, 0, lambda i: None) is False  # the caller draws its own menu
+    assert mac_window.pop_up_menu([("Show Original", False, False)], 0, 0, lambda i: None) is False
+    assert mac_window.confirm_sheet(QWidget(), "Delete?", "", "Delete", lambda: None) is False  # the caller asks its own way
 
 
 def test_the_mac_watch_owner_is_a_real_nsobject_with_the_appkit_options():

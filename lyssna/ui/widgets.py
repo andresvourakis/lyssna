@@ -21,11 +21,20 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QPushButton, QWidget
 
+from .. import host
 from . import icons, theme
 from .layout.setup import PILL_H, PILL_PAD
 from .layout.wave import BAR_H, KNOB
 from .motion import PacedAnimation
 from .sliver import EASE_DEFAULT
+
+
+def button_focus() -> Qt.FocusPolicy:
+    """The focus a button or radio in a normal window takes: on the Mac only from Tab, as an
+    NSButton does, so a click leaves no focus ring behind it (host.CLICK_TAKES_FOCUS); on
+    Windows from a click too."""
+    return Qt.FocusPolicy.StrongFocus if host.CLICK_TAKES_FOCUS else Qt.FocusPolicy.TabFocus
+
 
 Color = QColor | Callable[[], QColor] | None
 
@@ -284,7 +293,7 @@ class PillButton(QPushButton):
         super().__init__(title, parent)
         self.primary = primary
         self.setFont(theme.ui_font(13, "medium" if primary else "regular"))
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if focusable else Qt.FocusPolicy.NoFocus)
+        self.setFocusPolicy(button_focus() if focusable else Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         if clicked is not None:
             self.clicked.connect(lambda _checked=False: clicked())

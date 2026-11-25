@@ -359,8 +359,9 @@ def _owner_event(owner, kind: str) -> None:
 
 
 def pop_up_menu(rows, x: float, y: float, picked) -> bool:
-    """Open a native menu of `rows` ((title, checked) each) with its top-left corner at the
-    global Qt point (x, y), as the legacy player opened its speed and voice menus: an NSMenu,
+    """Open a native menu of `rows` ((title, checked) or (title, checked, enabled) each) with its
+    top-left corner at the global Qt point (x, y), as the legacy player opened its speed and voice
+    menus and the legacy History window its More menu: an NSMenu,
     so it has the system's own size, rows and look. It returns once the menu has closed, then
     calls `picked(index)` if a row was chosen. Returns True when the menu was shown, False when
     there is no native menu to show (off Cocoa: the caller draws its own); never raises."""
@@ -375,11 +376,13 @@ def pop_up_menu(rows, x: float, y: float, picked) -> bool:
         height = primary.geometry().height() if primary is not None else 0
         target = _menu_target()
         menu = NSMenu.alloc().initWithTitle_("")
-        for index, (title, checked) in enumerate(rows):
+        menu.setAutoenablesItems_(False)
+        for index, (title, checked, *rest) in enumerate(rows):
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(str(title), "pick:", "")
             item.setTarget_(target)
             item.setTag_(index)
             item.setState_(1 if checked else 0)
+            item.setEnabled_(bool(rest[0]) if rest else True)
             menu.addItem_(item)
         target.chosen = None
         menu.popUpMenuPositioningItem_atLocation_inView_(None, (float(x), float(height - y)), None)
@@ -392,6 +395,43 @@ def pop_up_menu(rows, x: float, y: float, picked) -> bool:
             picked(int(chosen))
         except Exception:
             log.exception("the menu's choice failed")
+    return True
+
+
+def confirm_sheet(widget, message: str, info: str, ok: str, then) -> bool:
+    """Ask on a sheet over `widget`'s window, as the legacy History window asked before clearing:
+    an NSAlert with `ok` as a destructive first button and Cancel, `then()` called if the user
+    agrees. Returns True when the sheet was shown, False when there is no native window to put it
+    on (off Cocoa: the caller asks its own way); never raises."""
+    win = None
+    try:
+        win = _native_window(widget)
+    except Exception:
+        log.debug("no native window for a sheet", exc_info=True)
+    if win is None:
+        return False
+    try:
+        import AppKit
+
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_(message)
+        alert.setInformativeText_(info)
+        button = alert.addButtonWithTitle_(ok)
+        if hasattr(button, "setHasDestructiveAction_"):
+            button.setHasDestructiveAction_(True)
+        alert.addButtonWithTitle_("Cancel")
+
+        def done(response) -> None:
+            if response == AppKit.NSAlertFirstButtonReturn:
+                try:
+                    then()
+                except Exception:
+                    log.exception("the confirmed action failed")
+
+        alert.beginSheetModalForWindow_completionHandler_(win, done)
+    except Exception:
+        log.warning("could not show a sheet", exc_info=True)
+        return False
     return True
 
 
