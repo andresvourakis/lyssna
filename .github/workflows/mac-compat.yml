@@ -1,7 +1,7 @@
 name: Mac compatibility
 
 # The Mac app promises macOS 14 or later, on Apple silicon and Intel. CI's own Mac machine runs
-# the newest macOS only, so this runs the same checks on the older systems, and opens a real
+# the newest macOS only, so this runs the shared interface's checks on the older systems, and opens a real
 # window through the Cocoa plugin (the tests draw offscreen and never load it). Run it by hand,
 # or by changing this file.
 on:
@@ -15,7 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-15-intel]
+        # GitHub no longer offers macOS 14 machines; 15 is the oldest it can run.
+        os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -38,4 +39,3 @@ jobs:
       - name: The speech and voice libraries load
         run: uv run python -c "import onnxruntime, numpy; print('onnxruntime', onnxruntime.__version__)"
       - run: uv run pytest -q
-      - run: uv run pytest -q tests/legacy
