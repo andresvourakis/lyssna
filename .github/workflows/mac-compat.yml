@@ -1,0 +1,41 @@
+name: Mac compatibility
+
+# The Mac app promises macOS 14 or later, on Apple silicon and Intel. CI's own Mac machine runs
+# the newest macOS only, so this runs the same checks on the older systems, and opens a real
+# window through the Cocoa plugin (the tests draw offscreen and never load it). Run it by hand,
+# or by changing this file.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/mac-compat.yml
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: sw_vers && uname -m
+      - run: uv sync
+      - name: Qt loads and opens a window through Cocoa
+        run: |
+          uv run python -c "
+          import PySide6, shiboken6
+          from PySide6.QtCore import QTimer
+          from PySide6.QtWidgets import QApplication, QWidget
+          app = QApplication([])
+          assert app.platformName() == 'cocoa', app.platformName()
+          w = QWidget(); w.resize(200, 100); w.show()
+          QTimer.singleShot(1500, app.quit)
+          app.exec()
+          print('PySide6', PySide6.__version__, 'on', app.platformName(), 'ok')
+          "
+      - name: The speech and voice libraries load
+        run: uv run python -c "import onnxruntime, numpy; print('onnxruntime', onnxruntime.__version__)"
+      - run: uv run pytest -q
+      - run: uv run pytest -q tests/legacy
