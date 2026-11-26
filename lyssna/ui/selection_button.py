@@ -13,21 +13,28 @@ is showing and, only when one covers it, moves to the first clear spot (layout/b
 With nothing found it never moves.
 
 So that it does not visibly jump each time, the button remembers the apps where a pop-up covered
-it (layout/popup_wait, in memory only). In such an app it shows nothing at first: it looks for the
-pop-up over its spot every few hundredths of a second and shows once, clear of it, the moment it
-is there, or at its usual spot when the app's short deadline passes. Anything going wrong in that
-wait shows it at its usual spot at once. Every other app shows it at once, as before."""
+it (layout/popup_wait). In such an app it shows nothing at first: it looks for the pop-up over
+its spot every few hundredths of a second and shows once, clear of it, the moment it is there, or
+at its usual spot when the app's short deadline passes. Anything going wrong in that wait shows it
+at its usual spot at once. Every other app shows it at once, as before.
+
+The learned apps are kept in STATE_DIR/popup_apps.json (MEMORY_FILE), read once when the button
+is made and written, atomically, only when they change, so an app jumps once ever, not once per
+launch. Only where pop-ups can be found: elsewhere the file is never read or written. A file that
+is missing or cannot be read means no learned apps, and a failed write is logged and ignored."""
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
 
 from PySide6.QtWidgets import QWidget
 
-from .. import host
+from .. import config, host
 from . import coords, theme
 from .layout.button import clear_spot, place
 from .layout.popup_wait import POLL, PopupMemory
@@ -37,6 +44,8 @@ from .widgets import IconButton
 
 ICON = 13.0  # the play symbol's point size, as on the Mac
 POPUP_CHECKS = (0.12, 0.35, 0.7)  # seconds after showing: Edge's toolbar opens a moment after mouse-up
+MEMORY_FILE = "popup_apps.json"  # in STATE_DIR: the apps whose pop-up covers the button (layout/popup_wait)
+MEMORY_MAX_BYTES = 64 * 1024  # a bigger file is not one the button wrote, so it is not read
 
 log = logging.getLogger("lyssna.ui.selection_button")
 
@@ -74,6 +83,8 @@ class SelectionButton(FloatingPanel):
         self._memory = PopupMemory()  # the apps whose pop-up covers the button, and how long to wait there
         self._wait = None         # the presentation waiting for its app's pop-up, if any
         self._presented = None    # the presentation showing now, for learning from the checks
+        self._saved = None        # the memory as last read from or written to MEMORY_FILE
+        self._load_memory()
         super().__init__()
         # A solid content-coloured circle: ink on light, cream on dark.
         self.fill_color = theme.content
@@ -215,6 +226,7 @@ class SelectionButton(FloatingPanel):
             log.debug("could not note the pop-up's timing", exc_info=True)
         self._wait = None
         self._show(p.x, p.y, p.screen, p, clear)
+        self._save_memory()  # after showing, so the file never delays the button
 
     def _settle(self) -> None:
         """The current presentation is over: when it waited the whole deadline and nothing came,
@@ -223,8 +235,10 @@ class SelectionButton(FloatingPanel):
         if p is None or p.settled:
             return
         p.settled = True
-        if p.waited and not p.found and self._memory.missed(p.app):
-            log.info("play button in %s: no pop-up three times in a row, it shows at once there again", p.app)
+        if p.waited and not p.found:
+            if self._memory.missed(p.app):
+                log.info("play button in %s: no pop-up three times in a row, it shows at once there again", p.app)
+            self._save_memory()
 
     def _cancel_checks(self) -> None:
         self._wait = None
@@ -235,6 +249,50 @@ class SelectionButton(FloatingPanel):
             self._settle()
         except Exception:
             log.debug("could not settle the play button's presentation", exc_info=True)
+
+    # -- the learned apps between launches (MEMORY_FILE) --------------------------------------
+
+    def _load_memory(self) -> None:
+        """Read the learned apps once, where pop-ups can be found. Never raises: a missing,
+        unreadable, oversized or wrong-shaped file leaves the memory empty."""
+        try:
+            if not getattr(host.window, "DETECTS_POPUPS", False):
+                return
+            try:
+                with open(config.STATE_DIR / MEMORY_FILE, "rb") as f:
+                    raw = f.read(MEMORY_MAX_BYTES + 1)
+            except FileNotFoundError:
+                raw = None
+            if raw is not None and len(raw) > MEMORY_MAX_BYTES:
+                log.warning("the apps with a pop-up were not read: the file is too big")
+            elif raw is not None:
+                self._memory.load(json.loads(raw.decode("utf-8")))
+        except Exception as e:
+            log.warning("the apps with a pop-up could not be read (%s); starting with none", type(e).__name__)
+            self._memory = PopupMemory()
+        try:
+            self._saved = self._memory.export()
+        except Exception:
+            self._saved = None
+
+    def _save_memory(self) -> None:
+        """Write the learned apps when they changed since the last read or write, through a
+        temporary file so a reader never sees half of it. Never raises: a failed write is
+        logged, and the apps stay in memory."""
+        try:
+            if not getattr(host.window, "DETECTS_POPUPS", False):
+                return
+            state = self._memory.export()
+            if state == self._saved:
+                return
+            path = config.STATE_DIR / MEMORY_FILE
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
+            os.replace(tmp, path)
+            self._saved = state
+        except Exception as e:
+            log.warning("the apps with a pop-up could not be saved (%s); they stay in memory", type(e).__name__)
 
     def _clear_of(self, default, popups, lx, ly, sel, avoid) -> tuple[float, float]:
         """The first spot clear of `popups` (physical l, t, r, b) and of `avoid`, from `default`."""
@@ -256,6 +314,7 @@ class SelectionButton(FloatingPanel):
             log.info("play button in %s: a pop-up covered it, it waits for one there from now on", p.app)
         elif p.waited:
             log.info("play button in %s: pop-up after %.0f ms, later than the wait", p.app, arrival * 1000)
+        self._save_memory()
 
     def _check_popups(self, shown: int) -> None:
         """Move off another app's pop-up when one covers the button. Only for the presentation

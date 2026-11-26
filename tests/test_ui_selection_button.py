@@ -585,3 +585,211 @@ def test_a_late_pop_up_raises_the_deadline(button, waits):
     clock.advance(0.12)  # the first check after showing finds it: one jump, as before
     assert button.frame()[0] != 133.0
     assert button._memory.deadline("msedge.exe") == MAX_WAIT  # 0.37 s plus the margin, capped
+
+
+# -- the learned apps survive a restart (MEMORY_FILE) -----------------------------------------
+
+
+def test_the_memory_exports_and_loads_its_state():
+    from lyssna.ui.layout.popup_wait import FIRST_WAIT, MARGIN, PopupMemory
+
+    m = PopupMemory()
+    m.covered("msedge.exe")
+    m.covered("msedge.exe", 0.12)
+    m.covered("chrome.exe")
+    m.missed("chrome.exe")
+    state = m.export()
+    assert state == {"version": 1, "apps": {"msedge.exe": {"slowest": 0.12, "misses": 0},
+                                            "chrome.exe": {"slowest": None, "misses": 1}}}
+    again = PopupMemory()
+    again.load(state)
+    assert again.export() == state
+    assert again.deadline("msedge.exe") == pytest.approx(0.12 + MARGIN) and again.deadline("chrome.exe") == FIRST_WAIT
+    assert again.missed("chrome.exe") is False and again.missed("chrome.exe") is True  # the run of misses carried over
+
+
+@pytest.mark.parametrize("state", [None, "", [], 3, {}, {"apps": []}, {"apps": "msedge.exe"}, {"version": 1, "apps": None},
+                                   {"apps": {"msedge.exe": 0.1, "": {}, "x" * 300: {}}}])
+def test_the_memory_loads_a_wrong_shape_as_no_apps(state):
+    from lyssna.ui.layout.popup_wait import PopupMemory
+
+    m = PopupMemory()
+    m.covered("notepad.exe")
+    m.load(state)
+    assert m.export() == {"version": 1, "apps": {}}
+
+
+def test_the_memory_clamps_what_it_loads():
+    from lyssna.ui.layout.popup_wait import FORGET_AFTER, MAX_APPS, MAX_WAIT, PopupMemory
+
+    m = PopupMemory()
+    m.load({"version": 7, "extra": True, "apps": {
+        "slow.exe": {"slowest": 9.0, "misses": 99, "colour": "red"},
+        "negative.exe": {"slowest": -1, "misses": -3},
+        "words.exe": {"slowest": "fast", "misses": "two"},
+        "flags.exe": {"slowest": True, "misses": True},
+        "nan.exe": {"slowest": float("nan")},
+        "empty.exe": {},
+    }})
+    apps = m.export()["apps"]
+    assert apps["slow.exe"] == {"slowest": MAX_WAIT, "misses": FORGET_AFTER - 1}
+    assert apps["negative.exe"] == {"slowest": 0.0, "misses": 0}
+    for name in ("words.exe", "flags.exe", "nan.exe", "empty.exe"):
+        assert apps[name] == {"slowest": None, "misses": 0}
+    many = PopupMemory()
+    many.load({"apps": {f"app{i}.exe": {} for i in range(MAX_APPS + 10)}})
+    assert list(many.export()["apps"]) == [f"app{i}.exe" for i in range(10, MAX_APPS + 10)]
+
+
+@pytest.fixture
+def make_button(screen):
+    """Make the button after the test has set host.window (it reads the learned apps then)."""
+    from lyssna.ui.selection_button import SelectionButton
+
+    made = []
+
+    def make():
+        b = SelectionButton()
+        made.append(b)
+        return b
+    yield make
+    for b in made:
+        if b._timer:
+            b._timer.cancel()
+        b.hide()
+
+
+def _memory_file():
+    from lyssna import config
+    from lyssna.ui.selection_button import MEMORY_FILE
+
+    return config.STATE_DIR / MEMORY_FILE
+
+
+def _stored():
+    import json
+
+    return json.loads(_memory_file().read_text(encoding="utf-8"))
+
+
+def test_a_learned_app_is_on_disk_and_waits_after_a_restart(make_button, waits):
+    twin, clock = waits()
+    assert not _memory_file().exists()
+    button = make_button()
+    _learn(button, twin, clock)
+    assert _stored() == {"version": 1, "apps": {"msedge.exe": {"slowest": None, "misses": 0}}}
+    # The next launch: a new button waits in Edge straight away.
+    again = make_button()
+    assert again._memory.knows("msedge.exe")
+    twin.popups = []
+    again._present(150, 310, None, (100, 300, 200, 20))
+    assert not again.visible()
+
+
+def test_a_forgotten_app_is_gone_from_the_file(make_button, waits):
+    twin, clock = waits()
+    button = make_button()
+    _learn(button, twin, clock)
+    twin.popups = []
+    for misses in (1, 2):
+        button._present(150, 310, None, (100, 300, 200, 20))
+        clock.advance(1.0)
+        button.hide()
+        assert _stored()["apps"]["msedge.exe"]["misses"] == misses
+    button._present(150, 310, None, (100, 300, 200, 20))
+    clock.advance(1.0)
+    button.hide()
+    assert not button._memory.knows("msedge.exe")
+    assert _stored() == {"version": 1, "apps": {}}
+    assert not make_button()._memory.knows("msedge.exe")
+
+
+def test_nothing_is_written_when_nothing_changed(make_button, waits, monkeypatch):
+    import os
+
+    twin, clock = waits()
+    button = make_button()
+    _learn(button, twin, clock)
+    for _ in range(2):  # the first wait measures the arrival (a change), the second matches it
+        button._present(150, 310, None, (100, 300, 200, 20))
+        clock.advance(1.0)
+        button.hide()
+    writes = []
+    real = os.replace
+    monkeypatch.setattr(os, "replace", lambda *a: (writes.append(a), real(*a)))
+    for _ in range(3):
+        button._present(150, 310, None, (100, 300, 200, 20))
+        clock.advance(1.0)
+        button.hide()
+    twin.app = "notepad.exe"  # an app that was never learned, without a pop-up
+    twin.popups = []
+    button._present(150, 310, None, (100, 300, 200, 20))
+    clock.advance(1.0)
+    button.hide()
+    assert writes == []
+    assert _stored()["apps"] == {"msedge.exe": {"slowest": 0.0, "misses": 0}}
+
+
+@pytest.mark.parametrize("content", [b"", b"{not json", b'["msedge.exe"]', b'{"apps": 3}', b"\xff\xfe\x00",
+                                     b'{"apps": {}, "pad": "' + b"x" * (70 * 1024) + b'"}'])
+def test_a_bad_file_means_no_learned_apps(make_button, waits, content):
+    waits(popups=[(600, 100, 700, 200)])
+    path = _memory_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    button = make_button()
+    assert button._memory.export()["apps"] == {}
+    button._present(150, 310, None, (100, 300, 200, 20))
+    assert button.visible() and button.frame() == (133.0, 256.0, 34.0, 34.0)
+
+
+def test_an_oversized_file_is_not_read_even_when_it_is_valid(make_button, waits):
+    import json
+
+    from lyssna.ui.selection_button import MEMORY_MAX_BYTES
+
+    waits()
+    path = _memory_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"apps": {"msedge.exe": {}}, "pad": "x" * MEMORY_MAX_BYTES}), encoding="utf-8")
+    assert not make_button()._memory.knows("msedge.exe")
+
+
+def test_an_unreadable_file_means_no_learned_apps(make_button, waits):
+    waits()
+    _memory_file().mkdir(parents=True)  # a folder where the file should be
+    button = make_button()
+    assert button._memory.export()["apps"] == {}
+
+
+def test_no_file_is_read_or_written_where_pop_ups_cannot_be_found(make_button, waits):
+    import json
+
+    _, clock = waits(detects=False, popups=[TOOLBAR_PX])
+    path = _memory_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"apps": {"msedge.exe": {}}}), encoding="utf-8")
+    button = make_button()
+    assert not button._memory.knows("msedge.exe")
+    path.unlink()
+    button._present(150, 310, None, (100, 300, 200, 20))
+    clock.advance(1.0)
+    button.hide()
+    assert not path.exists() and not path.with_name(path.name + ".tmp").exists()
+
+
+def test_a_failing_write_does_not_stop_the_button(make_button, waits, monkeypatch):
+    import os
+
+    twin, clock = waits()
+    button = make_button()
+
+    def fail(*a):
+        raise PermissionError("the folder is locked")
+    monkeypatch.setattr(os, "replace", fail)
+    _learn(button, twin, clock)  # shows, jumps once and learns, as without a file
+    assert button._memory.knows("msedge.exe") and not _memory_file().exists()
+    twin.popups = [TOOLBAR_PX]
+    button._present(150, 310, None, (100, 300, 200, 20))
+    clock.advance(0.05)
+    assert button.visible()
