@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/header.png" alt="Lyssna. Speak to write. Select to listen. A free, open-source Mac app. Everything runs on your Mac.">
+  <img src="docs/images/header.png" alt="Lyssna. Speak to write. Select to listen. A free, open-source app for Mac and Windows. Everything runs on your computer.">
 </p>
 
 <p align="center">
@@ -192,9 +192,9 @@ The Windows app is built on Windows: `uv sync --group build`, then `uv run pytho
 <summary>A short tour of the code</summary>
 
 ```
-cli.py ──socket──▶ controller.py ◀── legacy/app.py (menu bar, hotkeys, mouse gestures)
+cli.py ──socket──▶ controller.py ◀── app.py (menu bar or tray, hotkeys, mouse gestures)
                         │                │
-                     player.py        legacy/ui/ (selection_button, mini_player, panel)
+                     player.py        ui/ (selection_button, mini_player, panel)
                         │
           providers/ + cache.py + keystore.py
 ```
@@ -203,7 +203,7 @@ cli.py ──socket──▶ controller.py ◀── legacy/app.py (menu bar, ho
 - `mac/events.py` has the keyboard tap for hotkeys and a listen-only mouse tap that spots selection gestures. `selection.py` shows the play button only on proof that text was selected: a new selection reported through Accessibility, or a copy on select.
 - `mac/capture.py` reads the selection through the Accessibility API first. Only where an app does not expose it does it send Command-C, then put the whole previous clipboard back.
 - `text.py` strips markdown, code fences, URLs, tables and hashtags, then splits the text into sentences.
-- `player.py` synthesizes up to four sentences ahead with two parallel requests, so stopping early does not pay for the rest, and plays them with AVAudioPlayer. Speed changes are time-stretched with pitch preserved.
+- `player.py` synthesizes up to four sentences ahead with two parallel requests, so stopping early does not pay for the rest, and plays them with AVAudioPlayer on the Mac (`mac/audio.py`) and Qt's audio output on Windows (`win/audio.py`). Speed changes are time-stretched with pitch preserved.
 - `providers/` has one small class per voice provider. `providers/kokoro.py` runs the local voice and `download.py` fetches its model files once, with pinned hashes.
 - `cache.py` keeps synthesized audio in `~/Library/Caches/Lyssna` (`%LOCALAPPDATA%\Lyssna\Cache` on Windows), so reading the same text again is free and instant.
 - `dictation/` turns speech into text: `recorder.py` records in memory, `pipeline.py` runs a speech engine (`transcribers/`) and a cleanup engine (`cleaners/`), `insert.py` pastes the result, `vocabulary.py` and `learn.py` keep the dictionary, and `history.py` keeps the history.
