@@ -609,7 +609,9 @@ def test_the_memory_exports_and_loads_its_state():
 
 
 @pytest.mark.parametrize("state", [None, "", [], 3, {}, {"apps": []}, {"apps": "msedge.exe"}, {"version": 1, "apps": None},
-                                   {"apps": {"msedge.exe": 0.1, "": {}, "x" * 300: {}}}])
+                                   {"apps": {"msedge.exe": 0.1, "": {}, "x" * 300: {}}}],
+                         ids=["none", "empty-text", "list", "number", "empty-dict", "apps-list", "apps-text", "apps-none",
+                              "bad-entries"])
 def test_the_memory_loads_a_wrong_shape_as_no_apps(state):
     from lyssna.ui.layout.popup_wait import PopupMemory
 
@@ -731,7 +733,10 @@ def test_nothing_is_written_when_nothing_changed(make_button, waits, monkeypatch
 
 
 @pytest.mark.parametrize("content", [b"", b"{not json", b'["msedge.exe"]', b'{"apps": 3}', b"\xff\xfe\x00",
-                                     b'{"apps": {}, "pad": "' + b"x" * (70 * 1024) + b'"}'])
+                                     b'{"apps": {}, "pad": "' + b"x" * (70 * 1024) + b'"}'],
+                         # Short plain ids: pytest puts the test's id in an environment variable,
+                         # which Windows caps at 32767 characters (the last case is 70 KB).
+                         ids=["empty", "not-json", "list", "apps-number", "not-utf8", "oversized"])
 def test_a_bad_file_means_no_learned_apps(make_button, waits, content):
     waits(popups=[(600, 100, 700, 200)])
     path = _memory_file()
