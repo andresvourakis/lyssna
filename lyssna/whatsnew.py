@@ -20,6 +20,11 @@ from . import config
 log = logging.getLogger("lyssna.whatsnew")
 
 NOTES: dict[str, tuple[str, ...]] = {
+    "0.4.0": (
+        "The free Kokoro voice for read-aloud sounds cleaner. Lyssna downloads the new voice file once, in the background.",
+        "The menu has a Support Lyssna row. It opens the support page on the website.",
+        "Lyssna is now available for Windows as well, for read-aloud and dictation.",
+    ),
     "0.3.2": (
         "Retry a dictation that failed, from the message or from History. No need to speak again.",
         "Paste Last Dictation (⌃⌥V) pastes your latest dictation again, in case it landed in the wrong place.",

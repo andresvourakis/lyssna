@@ -1,10 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
-- The voice on this Mac sounds cleaner. If you already use it, Lyssna
+- Lyssna for Windows 10 and 11 (64-bit). Select text and hear it read; hold
+  Ctrl+Win and speak to dictate. Everything runs on the PC. The install guide
+  is in docs/INSTALL.md.
+- The Mac app has a rebuilt interface, shared with the Windows app. It looks
+  and behaves as before. It needs macOS 14 or later, on Apple silicon and on
+  Intel Macs.
+- The voice on the Mac sounds cleaner. If you already use it, Lyssna
   downloads the new voice file once, in the background, and keeps reading
   with the old one until it is ready.
+- The Support Lyssna row in the menu, the line in History and the line in
+  What's New now show. They were hidden in 0.3.0 to 0.3.2 because the
+  website's address was missing from the app.
 
 ## 0.3.2
 
