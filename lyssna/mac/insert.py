@@ -34,6 +34,10 @@ CONCEALED_TYPE = "org.nspasteboard.ConcealedType"
 # not proof that there is no text field, so we paste.
 CONTAINER_ROLES = {"AXWindow", "AXGroup", "AXWebArea", "AXUnknown", "AXApplication", "AXLayoutArea", "AXSplitGroup"}
 
+# Text roles whose value Accessibility reports as read-only although the app takes typed text:
+# terminals such as Ghostty show their screen as an AXTextArea and read keystrokes, not AXValue.
+TEXT_ROLES = {"AXTextArea", "AXTextField"}
+
 
 def text_target() -> str:
     """"text" when the focused element in the front app takes typed text, "maybe" when we
@@ -49,7 +53,7 @@ def _classify(element) -> str:
     if capture.ax_settable(element, "AXSelectedTextRange"):
         return "text"
     role = capture.ax_role(element)
-    if role is None or role in CONTAINER_ROLES:
+    if role is None or role in CONTAINER_ROLES or role in TEXT_ROLES:
         return "maybe"
     return "none"
 
