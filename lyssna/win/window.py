@@ -6,7 +6,8 @@ Why native calls at all: Qt's Tool, frameless, stay-on-top and does-not-accept-f
 stop Windows from activating a window that is clicked, and a tool window still gets a taskbar
 button. WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW on the native window fix both. Qt may rebuild the
 native window or its styles (on show, on a new window id, on a flag change), so the panel calls
-make_floating again after each of those.
+make_floating again after each of those. The HWND is read from the top-level widget's QWindow,
+which follows a rebuilt window, where widget.winId() can still answer the old one.
 
 The app's identity in the taskbar (the AppUserModelID) is set in lyssna/win/instance.py, before
 any window exists."""
@@ -87,19 +88,29 @@ def _set_ex_style(win_id: int, add: int, remove: int = 0) -> None:
         log.warning("could not set the window's extended style", exc_info=True)
 
 
+def _hwnd(widget) -> int:
+    """The HWND of the widget's window as it is now: the top-level widget's QWindow's (see the
+    module docstring), the widget's own id only when there is no QWindow yet."""
+    top = widget.window()
+    handle = top.windowHandle()
+    if handle is not None:
+        return int(handle.winId())
+    return int(top.winId())
+
+
 def make_floating(widget) -> None:
     """Make the widget's window a floating panel that never activates: no activation on a click
     and no taskbar button. Safe to call again, and called again whenever Qt may have rebuilt
     the native window's styles."""
-    _set_ex_style(widget.winId(), WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+    _set_ex_style(_hwnd(widget), WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
 
 
 def set_click_through(widget, on: bool) -> None:
     """Let every click on the window fall through to the window below (or stop doing so)."""
     if on:
-        _set_ex_style(widget.winId(), WS_EX_TRANSPARENT)
+        _set_ex_style(_hwnd(widget), WS_EX_TRANSPARENT)
     else:
-        _set_ex_style(widget.winId(), 0, WS_EX_TRANSPARENT)
+        _set_ex_style(_hwnd(widget), 0, WS_EX_TRANSPARENT)
 
 
 def watch_mouse_enter(widget, callback) -> bool:
@@ -124,7 +135,7 @@ def bring_to_top(widget) -> None:
     """Topmost and shown, without activating."""
     try:
         u = _user32()
-        u.SetWindowPos(int(widget.winId()), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        u.SetWindowPos(_hwnd(widget), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
     except Exception:
         log.warning("could not bring the window to the top", exc_info=True)
 
@@ -159,7 +170,7 @@ def set_dark_title_bar(widget, dark: bool) -> bool:
         fn.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
         fn.restype = ctypes.c_long
         value = ctypes.c_int(1 if dark else 0)
-        return fn(wintypes.HWND(int(widget.winId())), DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value),
+        return fn(wintypes.HWND(_hwnd(widget)), DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value),
                   ctypes.sizeof(value)) == 0
     except Exception:
         log.debug("could not set the title bar colour", exc_info=True)

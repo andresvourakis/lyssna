@@ -28,6 +28,11 @@ the watched widget is noticed with the move that carries it there, as the legacy
 noticed it. A short poll of the cursor runs as well until it leaves, for an arrival no move
 announces (WATCHES_MOUSE_ENTER).
 
+The native view is found from the top-level widget's QWindow (windowHandle().winId()), not
+from widget.winId(). When Qt destroys and re-creates the QWindow under a widget (it does so when
+the window's screen goes away), widget.winId() keeps answering the old view, which no longer has
+a window, so every setting here would silently miss the new NSWindow.
+
 Everything is reached through objc messages on the window Qt made, with the AppKit numbers
 written out below, so nothing here imports a Mac framework when the module loads (the
 pretend-Windows import test loads it) and the settings logic can be tested with a stand-in
@@ -87,6 +92,17 @@ _stuck_owners: list = []  # owners of areas that could not be removed
 _owner_cls = None
 
 
+def _view_id(widget) -> int:
+    """The id of the native view of the widget's window as it is now: the top-level widget's
+    QWindow's, which follows a rebuilt window, where widget.winId() can still answer the old view
+    (see the module docstring). The widget's own id only when there is no QWindow yet."""
+    top = widget.window()
+    handle = top.windowHandle()
+    if handle is not None:
+        return int(handle.winId())
+    return int(top.winId())
+
+
 def _native_window(widget):
     """The NSWindow behind a Qt widget's window, or None when Qt is not drawing with Cocoa."""
     from PySide6.QtGui import QGuiApplication
@@ -97,7 +113,7 @@ def _native_window(widget):
 
     import objc
 
-    view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+    view = objc.objc_object(c_void_p=ctypes.c_void_p(_view_id(widget)))
     return view.window()
 
 
@@ -167,7 +183,7 @@ def watch_mouse_enter(widget, callback) -> bool:
         view = _native_view(widget)
         if view is None:
             return False
-        win_id = int(widget.window().winId())
+        win_id = _view_id(widget)
         w = _watches.get(id(widget))
         if w is not None and w.widget() is not widget:  # a dead widget's id, used again
             w.stop()
@@ -310,7 +326,7 @@ def _native_view(widget):
 
     import objc
 
-    return objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.window().winId())))
+    return objc.objc_object(c_void_p=ctypes.c_void_p(_view_id(widget)))
 
 
 def _make_area(options: int, owner):

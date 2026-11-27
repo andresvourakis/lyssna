@@ -1,11 +1,13 @@
 """The native window behaviour behind host.window: the floating panel hands every native setting to
-the platform twin (at creation, on show, after every Qt window flag change), the twins keep the
+the platform twin (at creation, on show, on every order-front, after every Qt window flag change),
+the twins find the native window from the QWindow even after Qt has rebuilt it, the twins keep the
 same names, the Windows twin sets the same extended styles as before, and the Mac twin carries
 on when the undocumented call is missing.
 
 The last section runs only on a Mac with a window server: it starts a fresh Python with Qt's
 Cocoa platform (the other tests share an offscreen QApplication, which cannot switch platform),
-shows a real FloatingPanel for a moment and reads the NSWindow behind it."""
+shows a real FloatingPanel for a moment and reads the NSWindow behind it, also after Qt has
+destroyed and re-created the native window."""
 
 import json
 import logging
@@ -140,6 +142,17 @@ def test_order_front_brings_to_top_through_the_twin(qapp, twin):
     fp.hide()
 
 
+def test_order_front_applies_the_native_settings_every_time(qapp, twin):
+    """A native window Qt rebuilt without telling the panel is put right at the next order-front."""
+    fp = _panel()
+    for _ in range(3):
+        twin.calls.clear()
+        fp.order_front()
+        assert ("make_floating", fp.panel, False) in twin.calls
+        assert twin.names().index("make_floating") < twin.names().index("bring_to_top")
+    fp.hide()
+
+
 def test_a_window_missing_from_the_screen_is_logged(qapp, monkeypatch, caplog):
     from lyssna.ui import panel
 
@@ -228,8 +241,39 @@ class FakeUser32:
 
 
 class FakeWidget:
+    """A top-level widget whose QWindow does not exist yet: its own id is the window's."""
+
     def winId(self):
         return 4242
+
+    def window(self):
+        return self
+
+    def windowHandle(self):
+        return None
+
+
+class FakeHandle:
+    def __init__(self, win_id):
+        self.win_id = win_id
+
+    def winId(self):
+        return self.win_id
+
+
+class RebuiltWidget(FakeWidget):
+    """A widget whose QWindow Qt has destroyed and re-created: winId() still answers the old
+    native view, the QWindow the new one."""
+
+    def windowHandle(self):
+        return FakeHandle(5151)
+
+
+def test_the_twins_read_the_window_id_from_the_qwindow():
+    assert mac_window._view_id(RebuiltWidget()) == 5151
+    assert mac_window._view_id(FakeWidget()) == 4242
+    assert win_window._hwnd(RebuiltWidget()) == 5151
+    assert win_window._hwnd(FakeWidget()) == 4242
 
 
 def test_the_windows_twin_sets_the_same_extended_styles(monkeypatch):
@@ -867,3 +911,74 @@ def test_a_real_panel_on_the_mac_has_the_legacy_panel_settings():
     assert out["click_through_on"]["ignores_mouse"] and not out["click_through_off"]["ignores_mouse"]
     assert out["on_screen"] is True
     assert out["policy_accessory"]
+
+
+REBUILT_PANEL = textwrap.dedent(
+    """
+    import ctypes, json, time
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication(["lyssna-native-window-test"])
+    app.setQuitOnLastWindowClosed(False)
+
+    import objc
+    from lyssna import host
+    from lyssna.ui.panel import FloatingPanel
+
+    def pump(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            QCoreApplication.processEvents()
+            time.sleep(0.005)
+
+    pump(0.3)
+    host.window.hide_dock_icon()
+
+    def facts(fp):
+        handle = fp.panel.windowHandle()
+        win = objc.objc_object(c_void_p=ctypes.c_void_p(int(handle.winId()))).window()
+        return {"behaviour": int(win.collectionBehavior()), "level": int(win.level()), "style": int(win.styleMask()),
+                "hides_on_deactivate": bool(win.hidesOnDeactivate())}
+
+    class Panel(FloatingPanel):
+        width, height = 120.0, 40.0
+
+    fp = Panel()
+    out = {"platform": app.platformName()}
+    try:
+        from lyssna.ui import coords
+
+        vx, vy, vw, _vh = coords.visible_frame(coords.primary_screen())
+        fp.show_at(vx + vw - 160, vy + 80)
+        pump(0.3)
+        out["shown"] = facts(fp)
+        handle = fp.panel.windowHandle()
+        handle.destroy()  # what Qt does when the window's screen goes away
+        handle.create()
+        handle.setVisible(True)
+        pump(0.3)
+        out["rebuilt"] = facts(fp)
+    finally:
+        fp.hide()
+        pump(0.05)
+    print("RESULT " + json.dumps(out))
+    """
+)
+
+
+@pytest.mark.skipif(not _window_server(), reason="needs a Mac with a window server")
+def test_a_real_panel_keeps_its_settings_when_qt_rebuilds_the_window():
+    """The settings go back on the new NSWindow by themselves, without a show or a flag change."""
+    env = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
+    env["QT_QPA_PLATFORM"] = "cocoa"
+    env["QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM"] = "1"  # as in the test above
+    result = subprocess.run([sys.executable, "-c", REBUILT_PANEL], cwd=REPO, env=env, capture_output=True, text=True,
+                            timeout=60)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    line = next(x for x in result.stdout.splitlines() if x.startswith("RESULT "))
+    out = json.loads(line[len("RESULT "):])
+    assert out["platform"] == "cocoa"
+    want = {"behaviour": 0x111, "level": 25, "style": 0x80, "hides_on_deactivate": False}
+    assert out["shown"] == want
+    assert out["rebuilt"] == want

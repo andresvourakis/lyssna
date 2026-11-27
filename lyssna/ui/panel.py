@@ -8,7 +8,10 @@ frameless, stay-on-top and does-not-accept-focus flags plus WA_ShowWithoutActiva
 native settings Qt cannot express, which the platform twin applies (host.window.make_floating:
 on a Mac a non-activating NSPanel on every Space and above full-screen apps, on Windows
 WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW). Qt resets some of those settings when a window flag
-changes, so every flag change goes through _set_window_flag, which re-applies them.
+changes, so every flag change goes through _set_window_flag, which re-applies them. Qt can also
+destroy and re-create the native window under the panel (when its screen goes away), which
+loses them all; the widget hears a new winId then, and the settings go back on, as they do on
+every order_front.
 
 Hover. Where Qt's enter and leave events do not reach a window of an app in the background
 (host.window.WATCHES_MOUSE_ENTER: the Mac), the platform twin watches for the cursor itself:
@@ -426,9 +429,11 @@ class FloatingPanel:
     # -- showing --------------------------------------------------------------------------------
 
     def order_front(self) -> None:
-        """Show above everything without taking focus."""
+        """Show above everything without taking focus. The native settings go on again first:
+        cheap, and a window Qt rebuilt without telling the panel is put right here at the latest."""
         if not self.panel.isVisible():
             self.panel.show()
+        self._apply_native_styles()
         host.window.bring_to_top(self.panel)
         ref = weakref.ref(self)
 
@@ -534,8 +539,9 @@ class FloatingPanel:
     def _apply_native_styles(self) -> None:
         """The platform's floating-panel settings and the click-through state, on the native
         window. Qt may rebuild the native window or its styles, so this runs again on show, on a
-        new winId and after every window flag change. The mouse watches go back on too (the twin
-        leaves one it already has alone)."""
+        new winId (which is also how a re-created native window shows up), on every order_front
+        and after every window flag change. The mouse watches go back on too (the twin leaves
+        one it already has alone)."""
         host.window.make_floating(self.panel)
         host.window.set_click_through(self.panel, self._click_through)
         for widget, callback in self._enter_watches:
