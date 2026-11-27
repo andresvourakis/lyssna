@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+- On the Mac, the pill, the play button and the messages stay on every
+  desktop, including full-screen apps, after macOS rebuilds their window (for
+  example when a display changes). Before, they could get stuck on one
+  desktop.
+- When the microphone stops during a dictation and nothing was recorded,
+  Lyssna shows "The microphone stopped. Check your sound input." Before, the
+  dictation ended without a message.
+
 ## 0.4.0
 
 - Lyssna for Windows 10 and 11 (64-bit). Select text and hear it read; hold

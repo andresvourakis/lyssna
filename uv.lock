@@ -274,7 +274,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/7f/9a/3ebc0b3ef42b8d9cc
 
 [[package]]
 name = "lyssna"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "comtypes", marker = "sys_platform == 'win32'" },

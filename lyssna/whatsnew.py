@@ -20,6 +20,10 @@ from . import config
 log = logging.getLogger("lyssna.whatsnew")
 
 NOTES: dict[str, tuple[str, ...]] = {
+    "0.4.1": (
+        "On the Mac, the dictation pill now stays on every desktop, including full-screen apps.",
+        "If the microphone stops while you dictate, Lyssna now tells you.",
+    ),
     "0.4.0": (
         "The free Kokoro voice for read-aloud sounds cleaner. Lyssna downloads the new voice file once, in the background.",
         "The menu has a Support Lyssna row. It opens the support page on the website.",
