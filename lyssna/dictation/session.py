@@ -51,6 +51,7 @@ TRANSCRIPTION_FAILED = "Dictation failed."   # a retryable failure with no messa
 RETRY_FAILED = "Retry failed. Try again."    # the same, on a retry
 NO_MIC = f"Lyssna can't use the microphone. Allow it in {host.MIC_SETTINGS_PLACE}."
 ASK_MIC = "Allow the microphone, then dictate again."
+MIC_STOPPED = "The microphone stopped. Check your sound input."
 
 _RECORDING = ("recording", "locked")
 _ACTIVE = ("recording", "locked", "working")
@@ -184,7 +185,7 @@ class DictationSession:
         """Finish recording and process the audio."""
         epoch = self._from(_RECORDING, state="working")
         if epoch is not None:
-            self._jobs.put(lambda: self._finish(self.recorder.stop(), epoch))
+            self._jobs.put(lambda: self._stopped(epoch))
 
     def cancel(self, quiet: bool = False) -> None:
         """Drop the recording. Quietly (a tap, a shortcut) it just ends; otherwise a notice
@@ -302,6 +303,10 @@ class DictationSession:
         except Exception:
             log.exception("pipeline warm-up failed")
 
+    def _stopped(self, epoch: int) -> None:
+        samples = self.recorder.stop()
+        self._finish(samples, epoch, mic_stopped=getattr(self.recorder, "ended_by", None) == "device")
+
     def _level(self, level: float) -> None:
         self._from(_RECORDING, level=level, seconds=self.recorder.seconds())
 
@@ -320,13 +325,18 @@ class DictationSession:
             return
         self._finish(samples, epoch)
 
-    def _finish(self, samples: np.ndarray, epoch: int, retry: _Retry | None = None) -> None:
+    def _finish(self, samples: np.ndarray, epoch: int, retry: _Retry | None = None, mic_stopped: bool = False) -> None:
+        """`mic_stopped`: the microphone ended the recording by itself, so a recording with
+        nothing usable is the microphone's fault and gets a notice, not silence."""
         if epoch != self._epoch:
             return  # the recording already ended another way (an error notice)
         seconds = len(samples) / recorder_mod.TARGET_RATE
         if seconds < MIN_SECONDS or float(np.max(np.abs(samples))) < SILENCE_PEAK:
-            log.info("dictation dropped: %.2f s, too short or silent", seconds)
-            self._set_if(epoch, state="idle")
+            log.info("dictation dropped: %.2f s, too short or silent%s", seconds, ", the microphone stopped" if mic_stopped else "")
+            if mic_stopped:
+                self._notice(MIC_STOPPED)
+            else:
+                self._set_if(epoch, state="idle")
             return
         try:
             result = self.pipeline.run(samples, recorder_mod.TARGET_RATE)

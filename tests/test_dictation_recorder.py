@@ -178,6 +178,41 @@ def test_a_lost_device_keeps_what_was_captured():
     assert len(rec.stop()) == 8000
 
 
+def test_a_rate_change_mid_recording_is_resampled_from_the_new_rate(caplog):
+    """A Bluetooth headset switching profile: 0.5 s at 48 kHz, then 0.5 s at 16 kHz, in one recording."""
+    src = FakeInput(rate=48000.0)
+    rec = Recorder(source=src)
+    rec.start()
+    first = tone(1000, 48000, 0.5)
+    for k in range(0, len(first), 4800):
+        src.push(first[k:k + 4800])
+    src.rate = 16000.0
+    second = tone(1000, 16000, 0.5)
+    with caplog.at_level("INFO", logger="lyssna.dictation.recorder"):
+        for k in range(0, len(second), 1600):
+            src.push(second[k:k + 1600])
+    samples = rec.stop()
+    assert samples.dtype == np.float32 and abs(len(samples) - 16000) <= 40
+    assert abs(dominant_frequency(samples[1000:7000]) - 1000) < 10
+    assert abs(dominant_frequency(samples[9000:15000]) - 1000) < 10
+    assert 0.45 < np.max(np.abs(samples[9000:15000])) < 0.55
+    assert [r.getMessage() for r in caplog.records if "rate changed" in r.getMessage()] == [
+        "microphone rate changed from 48000 Hz to 16000 Hz"]
+
+
+def test_ended_by_says_why_the_recording_ended():
+    src = FakeInput(rate=16000.0)
+    rec = Recorder(source=src)
+    rec.start()
+    src.on_lost()
+    assert rec.ended_by == "device"
+    rec.stop()
+    rec.start()
+    assert rec.ended_by is None
+    rec.stop()
+    assert rec.ended_by is None  # stopped by the caller, not by itself
+
+
 def test_level_callbacks_arrive_while_recording():
     src = FakeInput(rate=16000.0)
     rec = Recorder(source=src)

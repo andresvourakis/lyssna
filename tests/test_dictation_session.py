@@ -21,6 +21,7 @@ class FakeRecorder:
         self.fail = fail
         self.calls = []
         self.on_level = self.on_stopped = None
+        self.ended_by = None
 
     def start(self, on_level=None, on_stopped=None):
         self.calls.append("start")
@@ -363,6 +364,53 @@ def test_the_recorder_ending_by_itself_finishes_normally(make):
     s.lock()
     settle(s)
     p["recorder"].on_stopped()  # the ten-minute cap
+    settle(s)
+    assert p["pasted"] == ["Hello there."] and s.state == "idle"
+
+
+def test_the_microphone_stopping_with_nothing_recorded_says_so(make):
+    p = make(recorder=FakeRecorder(samples=np.zeros(0, dtype=np.float32)))
+    s = p["session"]
+    s.start()
+    settle(s)
+    p["recorder"].ended_by = "device"
+    p["recorder"].on_stopped()  # the microphone went away after half a second
+    settle(s)
+    assert s.state == "notice" and s.status.message == session_mod.MIC_STOPPED
+    assert s.status.message == "The microphone stopped. Check your sound input."
+    assert p["pipeline"].runs == [] and p["pasted"] == []
+    p["timers"].fire()
+    assert s.state == "idle"
+
+
+def test_a_short_recording_the_user_stopped_still_ends_quietly(make):
+    p = make(recorder=FakeRecorder(samples=SPEECH[:2000]))
+    s = p["session"]
+    s.start()
+    settle(s)
+    s.stop()
+    settle(s)
+    assert states(p) == ["recording", "working", "idle"]
+
+
+def test_a_short_recording_that_hit_the_time_cap_ends_quietly(make):
+    p = make(recorder=FakeRecorder(samples=np.zeros(16000, dtype=np.float32)))
+    s = p["session"]
+    s.start()
+    settle(s)
+    p["recorder"].ended_by = "limit"
+    p["recorder"].on_stopped()
+    settle(s)
+    assert states(p) == ["recording", "working", "idle"]
+
+
+def test_a_device_ended_recording_with_speech_is_transcribed(make):
+    p = make()
+    s = p["session"]
+    s.start()
+    settle(s)
+    p["recorder"].ended_by = "device"
+    p["recorder"].on_stopped()
     settle(s)
     assert p["pasted"] == ["Hello there."] and s.state == "idle"
 

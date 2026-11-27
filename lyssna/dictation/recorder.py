@@ -11,8 +11,9 @@ text.
 Audio is never written to disk and never logged; the log gets durations and counts only.
 
 The input is opened for each recording and closed after it, which releases the microphone so
-the system's indicator goes off. When the input device goes away mid-recording the input says
-so: we end the recording there and keep what was captured."""
+the system's indicator goes off. If the rate changes within one recording, the resampler for
+the old rate is flushed into the recording and a new one starts. When the input device goes away
+mid-recording the input says so: we end the recording there and keep what was captured."""
 
 from __future__ import annotations
 
@@ -152,7 +153,8 @@ class Recorder:
     """One recording at a time: start(on_level) -> stop() samples, or cancel().
 
     `on_stopped` (optional) is called once when the recording ends by itself: the ten-minute
-    cap or the microphone going away. The caller then calls stop() as usual to get the audio.
+    cap or the microphone going away. The caller then calls stop() as usual to get the audio;
+    `ended_by` then says why ("limit" or "device"; None when it did not end by itself).
 
     Stopping the engine drops the buffer it was filling, up to 0.1 s of audio, which is often
     the end of the last word. So stop() first waits (at most TAIL_WAIT) for the next buffer."""
@@ -161,6 +163,7 @@ class Recorder:
         self.max_seconds = max_seconds
         self._source = source  # the microphone input; host.mic's EngineInput unless a test passes one
         self.start_latency: float | None = None  # seconds from start() to the first buffer, last recording
+        self.ended_by: str | None = None  # why the last recording ended by itself, if it did
         self._lock = threading.Lock()
         self._arrived = threading.Condition(self._lock)  # notified on every buffer
         self._buffers = 0
@@ -207,6 +210,7 @@ class Recorder:
             self._meter = LevelMeter()
             self._on_level, self._on_stopped = on_level, on_stopped
             self.start_latency = None
+            self.ended_by = None
             self._t_start = time.monotonic()
             self._state = "recording"
         try:
@@ -227,6 +231,7 @@ class Recorder:
                 log.info("microphone started in %.0f ms at %d Hz", self.start_latency * 1000, int(rate))
             if self._resampler is None or self._resampler.source != rate:
                 if self._resampler is not None:
+                    log.info("microphone rate changed from %d Hz to %d Hz", int(self._resampler.source), int(rate))
                     self._keep(self._resampler.flush())
                 self._resampler = Resampler(rate)
             self._meter.feed(chunk, rate)
@@ -250,6 +255,7 @@ class Recorder:
             if gen != self._generation or self._state != "recording":
                 return
             self._state = "ended"
+            self.ended_by = why
             callback = self._on_stopped
         self.source.close()
         log.info("recording ended by itself (%s) after %.1f s", why, self.seconds())
