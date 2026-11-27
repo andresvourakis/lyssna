@@ -143,6 +143,7 @@ def fake_ax(monkeypatch):
         (Element("AXGroup", None, range_settable=True), "text"),                 # a web editor exposing a caret
         (Element("AXWebArea"), "maybe"),                                         # a page that hides its editor
         (Element("AXWindow"), "maybe"),
+        (Element("AXTextArea", "$ ls"), "maybe"),                                # a terminal (Ghostty): read-only value
         (Element(None), "maybe"),
         (Element("AXList"), "none"),                                             # Finder icons, the desktop
         (Element("AXButton"), "none"),
